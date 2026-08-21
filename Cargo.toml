@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "crates/reproit-sdk-rust",
+    "crates/reproit-sdk-rust-axum",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/ReproIt/reproit-sdk"
+rust-version = "1.94.0"
+version = "1.0.0"
+
+[workspace.dependencies]
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "matched-path", "tokio", "tracing"] }
+criterion = { version = "=0.8.2", default-features = false }
+ed25519-dalek = "=3.0.0"
+getrandom = "=0.4.3"
+hickory-resolver = { version = "=0.26.1", default-features = false, features = ["system-config", "tokio"] }
+proptest = "=1.11.0"
+reproit-backend = { git = "https://github.com/ReproIt/reproit-core", rev = "76cccb924ee2717388c70487d7d09486664fe148", version = "=1.0.0" }
+reproit-cloud-api = { git = "https://github.com/ReproIt/reproit-core", rev = "76cccb924ee2717388c70487d7d09486664fe148", version = "=1.0.0" }
+reproit-core = { git = "https://github.com/ReproIt/reproit-core", rev = "76cccb924ee2717388c70487d7d09486664fe148", version = "=1.0.0" }
+rustls = { version = "=0.23.40", default-features = false, features = ["aws_lc_rs", "std"] }
+rustls-platform-verifier = "=0.7.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.11.0"
+tempfile = "=3.27.0"
+time = { version = "=0.3.55", default-features = false, features = ["formatting", "parsing", "serde", "std"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+toml = "=1.1.4"
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }
+uuid = { version = "=1.24.0", default-features = false, features = ["serde", "std"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

@@ -1,0 +1,39 @@
+[package]
+name = "reproit-sdk-rust"
+description = "Bounded Rust SDK capture for Repro It"
+edition.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+hickory-resolver.workspace = true
+reproit-backend.workspace = true
+reproit-cloud-api.workspace = true
+reproit-core.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+toml.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "capture"
+harness = false
+
+[lints]
+workspace = true

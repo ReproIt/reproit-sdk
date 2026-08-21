@@ -1,0 +1,33 @@
+{
+  "format": "reproit.deployment.v1",
+  "organization_id": "org_01890f3e-7b1c-7cc0-8a1b-123456789abd",
+  "processing_mode": "private",
+  "project_id": "prj_01890f3e-7b1c-7cc0-8a1b-123456789abe",
+  "repository_id": "source.example/acme/commerce",
+  "runtime_capabilities": [
+    "architecture.native",
+    "operating-system.linux",
+    "runtime.rust-native"
+  ],
+  "runtime_endpoint": "https://runtime.customer.example",
+  "service_id": "svc_01890f3e-7b1c-7cc0-8a1b-123456789abf",
+  "service_path": "services/orders",
+  "signature": "XCHurZtzMjzIW3JXBb6RXGK4JKnSSihb1P-NsCVCKrYhS6jVSR9vBWdQi2xeGwUZmNm3XHWGTOAEROr-F7tbDQ",
+  "signed_at": "2026-01-01T00:00:00.000Z",
+  "signer_key_id": "customer-deployment-test",
+  "source_revision": "0123456789abcdef",
+  "subject": {
+    "architecture": "architecture.native",
+    "arguments": [],
+    "artifact_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "artifact_media_type": "application/vnd.reproit.native-executable.v1",
+    "artifact_uri": "oci://customer.example/orders@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "environment_names": [
+      "RUST_LOG"
+    ],
+    "executable": "/reproit/subject/orders",
+    "format": "reproit.subject.v1",
+    "operating_system": "operating-system.linux",
+    "working_directory": "/reproit/subject"
+  }
+}

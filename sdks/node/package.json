@@ -1,0 +1,27 @@
+{
+  "name": "@reproit/sdk",
+  "version": "1.0.0",
+  "description": "Bounded Repro It Backend operation capture for Node.js",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./http": {
+      "types": "./src/http.d.ts",
+      "default": "./src/http.js"
+    }
+  },
+  "types": "./src/index.d.ts",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test"
+  }
+}

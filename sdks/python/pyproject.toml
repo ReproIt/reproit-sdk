@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reproit-sdk"
+version = "1.0.0"
+description = "Bounded Repro It Backend operation capture for Python"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = "Apache-2.0"
+dependencies = ["cryptography==49.0.0"]
+
+[dependency-groups]
+dev = ["pytest==9.0.1"]
+
+[tool.setuptools]
+packages = ["reproit_sdk"]

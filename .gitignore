@@ -1,0 +1,17 @@
+.DS_Store
+/.core/
+/.work/
+/target/
+**/target/
+**/.pytest_cache/
+**/.venv/
+**/__pycache__/
+**/*.egg-info/
+**/build/
+**/node_modules/
+**/dist/
+**/bin/
+**/obj/
+*.nupkg
+*.snupkg
+*.tgz
