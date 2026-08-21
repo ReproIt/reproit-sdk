@@ -1,17 +1,12 @@
 # Repro It SDK for Node.js
 
-Install the official package archive from your Repro It release bundle:
+Capture failed Backend operations from a Node.js application.
 
-```sh
-npm install ./reproit-sdk-1.0.0.tgz
-```
+Install the package from the release directory that `reproit init` shows. Use
+`OfficialManagedProject` during application setup. Use `runOperation` at each top-level operation
+boundary.
 
-Use `OfficialManagedProject` for the reviewed project and source revision. Start one operation for
-each accepted unit of work. Record its inputs and observed dependencies. Mark successful operations
-as successful. Submit a failure only after its World closure is complete.
+Import `@reproit/sdk/http` for a Node.js HTTP adapter. Use the base package for streams, delivered
+work, other frameworks, and direct operation capture.
 
-The base package is framework-neutral. Import `@reproit/sdk/http` for the optional Node.js HTTP
-adapter. The SDK does not require a sidecar, container engine, orchestrator, or container socket.
-
-See the [Node.js guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/node.md) for source
-verification and release behavior.
+Read the [Node.js integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/node.md).

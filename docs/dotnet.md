@@ -1,22 +1,40 @@
 # .NET SDK
 
+Use this SDK when a .NET application must capture a Backend operation.
+
 ## Install
 
-Add `ReproIt.Sdk.1.0.0.nupkg` from the local release bundle or your internal NuGet source. Add
-`ReproIt.Sdk.AspNetCore.1.0.0.nupkg` only when you use the ASP.NET Core middleware.
+Use the package source from the Repro It release directory that `reproit init` shows:
 
-The packages target .NET 10. The base package does not require ASP.NET Core.
+```sh
+dotnet add package ReproIt.Sdk --version 1.0.0 --source <release-directory>
+```
 
-## Integrate
+Add `ReproIt.Sdk.AspNetCore` from the same source for an ASP.NET Core request boundary. The packages
+target .NET 10.
 
-Create `OfficialManagedProject` from the reviewed project binding and exact source revision. Start
-one operation for each accepted unit of work. Record inputs and dependency results. Discard
-successful operations. Submit a failed operation only after its World closure is complete.
+## Configure
 
-Source checkouts contain sentinel managed bindings. They reject official operation setup with
-`CONFIG_CONFLICT`. Use an official release package for a real managed capture.
+1. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
+2. Load `.reproit/project.toml` into a `JsonObject` during application setup.
+3. Get the repository identity and deployed Git revision from the build.
+4. Create `OfficialManagedProject` once.
 
-## Verify
+## Capture one operation
+
+1. Start the project operation with the World digest.
+2. Create its candidate sink from the complete World closure.
+3. Create `Sdk` with that sink.
+4. Create `CandidateStart` from the operation IDs, deployment, and World digest.
+5. Call `Operations.Run` around the application operation.
+
+The token provider must return `new ManagedProjectToken(token)`. `Operations.Run` returns the
+application result or throws the original application exception.
+
+Use the ASP.NET Core adapter only at an HTTP request boundary. Use the base API for streams,
+delivered work, other frameworks, and direct operation capture.
+
+## Verify SDK source
 
 ```sh
 ./tools/with-core.sh dotnet run --project sdks/dotnet/ReproIt.Sdk.Conformance

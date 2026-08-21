@@ -1,62 +1,55 @@
-# Repro It SDK
+# Repro It SDKs
 
-Use a Repro It SDK to capture failed backend operations in a running application. The SDK records
-the operation that your application already handles. It sends only complete failures to managed
-Repro It.
+Use an SDK when you want Repro It to capture a failed production operation.
 
-Choose the SDK for your application:
+The SDK records one operation and the World that affected it. Managed Repro It verifies the
+capture before it shows a Repro to your team.
 
-- [Rust](docs/rust.md), with an optional Axum adapter
-- [Python](docs/python.md), with an optional ASGI adapter
-- [Go](docs/go.md), with `net/http` support
-- [Node.js](docs/node.md), with HTTP support
-- [.NET](docs/dotnet.md), with an optional ASP.NET Core adapter
+## Add capture to an application
 
-Each SDK supports request-response, ordered-stream, and delivered-work operations. The core API is
-framework-neutral and container-neutral. You can run the SDK in a normal process or in an OCI
-container. It does not require a sidecar, container engine, orchestrator, or container socket.
+1. Install the [Repro It CLI](https://github.com/ReproIt/reproit-cli).
+2. Run `reproit init` in the application repository.
+3. Select the service and SDK.
+4. Install the release artifact shown by `reproit init`.
+5. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
+6. Wrap each top-level operation with the SDK operation API.
+7. Deploy the application and trigger the bug.
 
-## How capture works
+Choose the guide for your language:
 
-1. Start one SDK operation at the boundary where your application accepts work.
-2. Record each input and dependency result that can affect the outcome.
-3. Mark successful operations as successful. The SDK deletes their records.
-4. On failure, close the observed World and submit the complete failed operation.
+| Language | Base package | Optional adapter | Guide |
+| --- | --- | --- | --- |
+| Rust | `reproit-sdk-rust` | Axum | [Rust](docs/rust.md) |
+| Python | `reproit_sdk` | ASGI | [Python](docs/python.md) |
+| Go | `reproit.dev/sdk-go/reproit` | `net/http` | [Go](docs/go.md) |
+| Node.js | `@reproit/sdk` | Node.js HTTP | [Node.js](docs/node.md) |
+| .NET | `ReproIt.Sdk` | ASP.NET Core | [.NET](docs/dotnet.md) |
 
-The SDK has fixed limits for records, bytes, operations, and queued failures. A capture failure or
-managed-service outage does not change application behavior.
+The base APIs support request-response, ordered-stream, and delivered-work operations. They work in
+a host process or an OCI container. Framework adapters call the same base APIs.
 
-## Managed releases
+## Record an operation
 
-Official release packages contain the managed HTTPS origin and capture signer identity. Source
-packages fail closed until release construction installs valid production bindings. Applications do
-not select a Cloud endpoint or signer key.
+The World contains everything that the operation observed that can change its result.
 
-Release packages install from local files or an internal package source. A named public package
-registry is not required.
+Record the input and each observed dependency result that can change the outcome. Mark a successful
+operation as successful. Submit a failed operation only after the World closure is complete.
 
-## Shared contracts
+The SDK bounds records, bytes, active operations, and queued failures. A capture error keeps the
+original application result or exception.
 
-[Repro It Core](https://github.com/ReproIt/reproit-core) is the source of truth for shared protocol
-types, schemas, and conformance vectors. This repository pins one exact Core commit in
-`core-pin.json`. It does not copy or redefine those contracts.
+## Maintain the SDKs
 
-## Verify the repository
-
-The complete local check fetches the pinned Core commit into the ignored `.core` directory. It then
-runs the Rust, Python, Go, Node.js, and .NET checks that are available on the host.
-
-Install Git, Rust, Python 3.14 with `uv`, Go 1.26, and Node.js 24. Install .NET 10 or run Docker for
-the .NET check.
+This repository pins the shared contract revision in `core-pin.json`. Run the local checks with:
 
 ```sh
 ./tools/test.sh
 ```
 
-Use the native container matrix on Linux ARM64 and Linux x86_64:
+Run the native Linux package matrix with:
 
 ```sh
 ./tools/with-core.sh ./conformance/sdk/run.sh
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) before you change a shared SDK behavior.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before you change behavior shared by the five SDKs.

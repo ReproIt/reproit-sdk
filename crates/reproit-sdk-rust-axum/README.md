@@ -1,7 +1,8 @@
 # Repro It Axum adapter
 
-This crate connects the Repro It Rust SDK to an Axum request-response boundary. It preserves the
-application response when capture setup, recording, classification, or candidate handoff fails.
+Connect the Rust SDK to an Axum request-response boundary.
 
-Install it with the official `reproit-sdk-rust` crate from the same release bundle. The base Rust
-SDK remains framework-neutral.
+Install this crate with `reproit-sdk-rust` from the same Repro It release. Use the base SDK for
+streams, delivered work, other frameworks, and direct operation capture.
+
+Read the [Rust integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/rust.md).

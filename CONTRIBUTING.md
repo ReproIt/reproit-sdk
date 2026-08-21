@@ -1,5 +1,7 @@
 # Contributing to the Repro It SDKs
 
+Use this guide when you change capture behavior in one or more SDK packages.
+
 ## Change an SDK
 
 1. Confirm that `core-pin.json` names the required Core revision.

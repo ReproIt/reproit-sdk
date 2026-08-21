@@ -1,15 +1,12 @@
 # Repro It SDK for Rust
 
-Install the official crate from your Repro It release bundle or internal Cargo source.
+Capture failed Backend operations from a Rust application.
 
-Use `OfficialManagedProject` for the reviewed project and source revision. Start one
-`OfficialManagedRustOperation` for each accepted unit of work. Record its inputs and observed
-dependencies. Mark successful operations as successful. Submit a failure only after its World
-closure is complete.
+Install this crate from the release directory that `reproit init` shows. Use
+`OfficialManagedProject` during application setup. Use `OfficialManagedRustOperation` at each
+top-level operation boundary.
 
-The base crate is framework-neutral. Add `reproit-sdk-rust-axum` only when you need the Axum
-request adapter. The SDK does not require a sidecar, container engine, orchestrator, or container
-socket.
+The base crate supports request-response, ordered-stream, and delivered-work operations. Add
+`reproit-sdk-rust-axum` for an Axum request adapter.
 
-See the [Rust guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/rust.md) for source
-verification and release behavior.
+Read the [Rust integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/rust.md).

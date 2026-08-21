@@ -1,26 +1,39 @@
 # Node.js SDK
 
+Use this SDK when a Node.js application must capture a Backend operation.
+
 ## Install
 
-Install the released package archive from a local release bundle or an internal package source:
+Use the package from the Repro It release directory that `reproit init` shows:
 
 ```sh
-npm install ./reproit-sdk-1.0.0.tgz
+npm install <release-directory>/reproit-sdk-1.0.0.tgz
 ```
 
-Import `@reproit/sdk/http` only when you need its Node.js HTTP adapter. The base package does not
-require a web framework.
+Import `@reproit/sdk/http` only for a Node.js HTTP request boundary.
 
-## Integrate
+## Configure
 
-Create `OfficialManagedProject` from the reviewed project binding and exact source revision. Start
-one operation for each accepted unit of work. Record inputs and dependency results. Discard
-successful operations. Submit a failed operation only after its World closure is complete.
+1. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
+2. Load `.reproit/project.toml` into the project object during application setup.
+3. Get the repository identity and deployed Git revision from the build.
+4. Create `OfficialManagedProject` once.
 
-Source checkouts contain sentinel managed bindings. They reject official operation setup with
-`CONFIG_CONFLICT`. Use an official release package for a real managed capture.
+## Capture one operation
 
-## Verify
+1. Start the project operation with the World digest.
+2. Create its candidate sink from the complete World closure.
+3. Create `Sdk` with that sink.
+4. Build the start object from the operation IDs, deployment, and World digest.
+5. Call `runOperation` around the application operation.
+
+The token provider must return `new ManagedProjectToken(process.env.REPROIT_MANAGED_PROJECT_TOKEN)`.
+The wrapper returns the application result or throws the original application error.
+
+Use the HTTP adapter only at an HTTP request boundary. Use the base API for streams, delivered work,
+other frameworks, and direct operation capture.
+
+## Verify SDK source
 
 ```sh
 ./tools/with-core.sh sh -c 'cd sdks/node && npm test'

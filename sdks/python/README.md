@@ -1,17 +1,12 @@
 # Repro It SDK for Python
 
-Install the official wheel from your Repro It release bundle:
+Capture failed Backend operations from a Python application.
 
-```sh
-python -m pip install ./reproit_sdk-1.0.0-py3-none-any.whl
-```
+Install the wheel from the release directory that `reproit init` shows. Use
+`OfficialManagedProject` during application setup. Use `run_operation` at each top-level operation
+boundary.
 
-Use `OfficialManagedProject` for the reviewed project and source revision. Start one operation for
-each accepted unit of work. Record its inputs and observed dependencies. Mark successful operations
-as successful. Submit a failure only after its World closure is complete.
+Import `reproit_sdk.asgi` for an ASGI request adapter. Use the base package for streams, delivered
+work, other frameworks, and direct operation capture.
 
-The base package is framework-neutral. `reproit_sdk.asgi` supplies the optional ASGI adapter. The
-SDK does not require a sidecar, container engine, orchestrator, or container socket.
-
-See the [Python guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/python.md) for source
-verification and release behavior.
+Read the [Python integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/python.md).
