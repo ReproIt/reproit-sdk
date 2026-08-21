@@ -3,7 +3,10 @@
 use std::{
     pin::Pin,
     str::FromStr as _,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -16,16 +19,19 @@ use axum::{
 };
 use http_body::{Body as HttpBody, Frame};
 use reproit_core::{
-    Error,
+    Error, ErrorCode,
     crypto::encode_base64url,
     identity::{CaptureId, Digest, ObjectId, OperationId},
     model::{
-        Deployment, FailureIdentity, FailurePayload, FailurePayloadFormat, FailureReference,
-        InputChannel, OperationBeginFormat, OperationBeginPayload, OperationInputFormat,
-        OperationInputPayload, OperationKind, Validate as _,
+        DependencyCursorPayload, Deployment, FailureIdentity, FailurePayload, FailurePayloadFormat,
+        FailureReference, InputChannel, OperationBeginFormat, OperationBeginPayload,
+        OperationInputFormat, OperationInputPayload, OperationKind, Validate as _,
     },
 };
-use reproit_sdk_rust::{CandidateStart, Sdk};
+use reproit_sdk_rust::{
+    CandidateStart, ManagedProjectToken, ManagedRustCaptureClosureProvider,
+    ManagedRustOperationClosure, OfficialManagedProject, OfficialManagedRustOperation, Sdk,
+};
 use uuid::Uuid;
 
 const ADAPTER_ID: &str = "axum";
@@ -35,6 +41,7 @@ const MAX_CAPTURED_INPUT_BYTES: usize = 32 * 1_024;
 const MAX_CAPTURED_OUTPUT_BYTES: usize = 32 * 1_024;
 const MAX_CAPTURED_RESPONSE_HEADER_BYTES: usize = 16 * 1_024;
 const MAX_CAPTURED_RESPONSE_HEADERS: usize = 128;
+const MANAGED_PROJECT_TOKEN_ENVIRONMENT: &str = "REPROIT_MANAGED_PROJECT_TOKEN";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationContext {
@@ -141,10 +148,7 @@ impl AxumRequestCapture {
         classifier: Arc<dyn AxumFailureClassifier>,
     ) -> Result<Self, Error> {
         deployment.validate()?;
-        let operation_name = operation_name.into();
-        if operation_name.is_empty() || operation_name.len() > 128 {
-            return Err(Error::schema_invalid());
-        }
+        let operation_name = valid_operation_name(operation_name.into())?;
         Ok(Self {
             classifier,
             deployment,
@@ -170,9 +174,87 @@ impl AxumRequestCapture {
     }
 }
 
+/// Captures an Axum request through the official managed SDK entry.
+#[derive(Clone)]
+pub struct OfficialAxumRequestCapture {
+    classifier: Arc<dyn AxumFailureClassifier>,
+    operation_name: String,
+    project: OfficialManagedProject,
+    project_token: ProjectTokenProvider,
+    world_capture: WorldCaptureProvider,
+}
+
+type ProjectTokenProvider =
+    Arc<dyn Fn() -> Result<ManagedProjectToken, Error> + Send + Sync + 'static>;
+type WorldCaptureProvider =
+    Arc<dyn Fn() -> Result<OfficialAxumWorldCapture, Error> + Send + Sync + 'static>;
+
+pub struct OfficialAxumWorldCapture {
+    closure: Arc<dyn ManagedRustCaptureClosureProvider>,
+    world_id: Digest,
+}
+
+impl OfficialAxumWorldCapture {
+    pub fn new<C>(world_id: Digest, closure: C) -> Self
+    where
+        C: ManagedRustCaptureClosureProvider,
+    {
+        Self {
+            closure: Arc::new(closure),
+            world_id,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct OfficialAxumOperationContext {
+    operation: Arc<OfficialAxumOperation>,
+}
+
+impl OfficialAxumOperationContext {
+    pub fn operation_id(&self) -> Result<OperationId, Error> {
+        self.operation.operation_id()
+    }
+
+    pub fn record_dependency(&self, dependency: &DependencyCursorPayload) -> Result<(), Error> {
+        self.operation.record_dependency(dependency)
+    }
+}
+
+impl OfficialAxumRequestCapture {
+    pub fn new<W, C>(
+        project: OfficialManagedProject,
+        operation_name: impl Into<String>,
+        world_capture: W,
+        classifier: C,
+    ) -> Result<Self, Error>
+    where
+        W: Fn() -> Result<OfficialAxumWorldCapture, Error> + Send + Sync + 'static,
+        C: AxumFailureClassifier,
+    {
+        let operation_name = valid_operation_name(operation_name.into())?;
+        Ok(Self {
+            classifier: Arc::new(classifier),
+            operation_name,
+            project,
+            project_token: Arc::new(managed_project_token_from_environment),
+            world_capture: Arc::new(world_capture),
+        })
+    }
+
+    #[must_use]
+    pub fn with_project_token_provider<T>(mut self, provider: T) -> Self
+    where
+        T: Fn() -> Result<ManagedProjectToken, Error> + Send + Sync + 'static,
+    {
+        self.project_token = Arc::new(provider);
+        self
+    }
+}
+
 pub async fn capture_axum_request(
     State(capture): State<AxumRequestCapture>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
     let parent = request.extensions().get::<OperationContext>().cloned();
@@ -190,27 +272,80 @@ pub async fn capture_axum_request(
         operation_id,
         world_id: capture.world_id,
     };
-    let begin = OperationBeginPayload {
-        adapter_id: ADAPTER_ID.to_owned(),
-        adapter_version: ADAPTER_VERSION.to_owned(),
-        causal_parent_ids: context.causal_parent_id.into_iter().collect(),
-        format: OperationBeginFormat::V1,
-        operation_kind: OperationKind::RequestResponse,
-        operation_name: capture.operation_name.clone(),
-    };
+    let begin = operation_begin(&capture.operation_name, context.causal_parent_id);
     if capture.sdk.begin(start, &begin).is_err() {
         return next.run(request).await;
     }
-    let guard = OperationGuard {
-        active: true,
+    let operation: Arc<dyn ActiveAxumOperation> = Arc::new(SdkAxumOperation {
+        finished: AtomicBool::new(false),
         operation_id,
-        sdk: capture.sdk.clone(),
+        sdk: capture.sdk,
+    });
+    capture_request(
+        request,
+        next,
+        capture.classifier,
+        capture.operation_name,
+        context,
+        operation,
+    )
+    .await
+}
+
+pub async fn capture_official_axum_request(
+    State(capture): State<OfficialAxumRequestCapture>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let parent = request
+        .extensions()
+        .get::<OperationContext>()
+        .map(|context| context.operation_id);
+    let begin = operation_begin(&capture.operation_name, parent);
+    let Ok(world_capture) = (capture.world_capture)() else {
+        return next.run(request).await;
     };
-    let input = InputCapture::new(
-        capture.sdk.clone(),
-        operation_id,
-        request_content_type(request.headers()),
-    );
+    let Ok(operation) =
+        OfficialManagedRustOperation::start_open(&capture.project, world_capture.world_id, &begin)
+    else {
+        return next.run(request).await;
+    };
+    let context = OperationContext {
+        causal_parent_id: parent,
+        operation_id: operation.operation_id(),
+    };
+    let operation = Arc::new(OfficialAxumOperation {
+        operation: Mutex::new(Some(operation)),
+        project_token: capture.project_token,
+        world_capture: world_capture.closure,
+    });
+    request
+        .extensions_mut()
+        .insert(OfficialAxumOperationContext {
+            operation: operation.clone(),
+        });
+    let operation: Arc<dyn ActiveAxumOperation> = operation;
+    capture_request(
+        request,
+        next,
+        capture.classifier,
+        capture.operation_name,
+        context,
+        operation,
+    )
+    .await
+}
+
+async fn capture_request(
+    mut request: Request,
+    next: Next,
+    classifier: Arc<dyn AxumFailureClassifier>,
+    operation_name: String,
+    context: OperationContext,
+    operation: Arc<dyn ActiveAxumOperation>,
+) -> Response {
+    let guard = OperationGuard::new(operation.clone());
+    let input = InputCapture::new(operation, request_content_type(request.headers()));
     let original = std::mem::replace(request.body_mut(), Body::empty());
     *request.body_mut() = Body::new(CaptureBody {
         capture: input.clone(),
@@ -220,29 +355,152 @@ pub async fn capture_axum_request(
 
     let response = next.run(request).await;
     if !input.complete() {
-        capture.sdk.abandon_incomplete(operation_id);
         drop(guard);
         return response;
     }
-    capture_response(response, capture, context, guard)
+    capture_response(response, classifier, operation_name, context, guard)
 }
 
 struct OperationGuard {
     active: bool,
-    operation_id: OperationId,
-    sdk: Sdk,
+    operation: Arc<dyn ActiveAxumOperation>,
 }
 
 impl OperationGuard {
+    fn new(operation: Arc<dyn ActiveAxumOperation>) -> Self {
+        Self {
+            active: true,
+            operation,
+        }
+    }
+
     fn abandon(&mut self) {
         if self.active {
-            self.sdk.abandon_incomplete(self.operation_id);
+            self.operation.abandon();
             self.active = false;
         }
     }
 
     const fn complete(&mut self) {
         self.active = false;
+    }
+}
+
+trait ActiveAxumOperation: Send + Sync {
+    fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error>;
+    fn succeed(&self) -> Result<(), Error>;
+    fn fail(&self, failure: &FailurePayload) -> Result<(), Error>;
+    fn abandon(&self);
+}
+
+struct SdkAxumOperation {
+    finished: AtomicBool,
+    operation_id: OperationId,
+    sdk: Sdk,
+}
+
+impl SdkAxumOperation {
+    fn finish_once(&self) -> bool {
+        !self.finished.swap(true, Ordering::AcqRel)
+    }
+}
+
+impl ActiveAxumOperation for SdkAxumOperation {
+    fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error> {
+        if self.finished.load(Ordering::Acquire) {
+            return Err(incomplete_operation());
+        }
+        self.sdk.record_input(self.operation_id, input)
+    }
+
+    fn succeed(&self) -> Result<(), Error> {
+        if self.finish_once() {
+            self.sdk.succeed(self.operation_id);
+        }
+        Ok(())
+    }
+
+    fn fail(&self, failure: &FailurePayload) -> Result<(), Error> {
+        if !self.finish_once() {
+            return Err(incomplete_operation());
+        }
+        let result = self.sdk.fail(self.operation_id, failure);
+        if result.is_err() {
+            self.sdk.abandon_incomplete(self.operation_id);
+        }
+        result
+    }
+
+    fn abandon(&self) {
+        if self.finish_once() {
+            self.sdk.abandon_incomplete(self.operation_id);
+        }
+    }
+}
+
+struct OfficialAxumOperation {
+    operation: Mutex<Option<OfficialManagedRustOperation>>,
+    project_token: ProjectTokenProvider,
+    world_capture: Arc<dyn ManagedRustCaptureClosureProvider>,
+}
+
+impl OfficialAxumOperation {
+    fn operation_id(&self) -> Result<OperationId, Error> {
+        self.operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(OfficialManagedRustOperation::operation_id)
+            .ok_or_else(incomplete_operation)
+    }
+
+    fn record_dependency(&self, dependency: &DependencyCursorPayload) -> Result<(), Error> {
+        self.operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .ok_or_else(incomplete_operation)?
+            .record_dependency(dependency)
+    }
+
+    fn take(&self) -> Result<OfficialManagedRustOperation, Error> {
+        self.operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(incomplete_operation)
+    }
+}
+
+impl ActiveAxumOperation for OfficialAxumOperation {
+    fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error> {
+        self.operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .ok_or_else(incomplete_operation)?
+            .record_input(input)
+    }
+
+    fn succeed(&self) -> Result<(), Error> {
+        self.take()?.succeed();
+        Ok(())
+    }
+
+    fn fail(&self, failure: &FailurePayload) -> Result<(), Error> {
+        let project_token = self.project_token.clone();
+        let operation_id = self.operation_id()?;
+        let closure =
+            ManagedRustOperationClosure::capture(operation_id, self.world_capture.as_ref())?;
+        self.take()?
+            .fail_with_operation_closure(failure, closure, move || project_token())
+            .map(|_sink| ())
+    }
+
+    fn abandon(&self) {
+        if let Ok(operation) = self.take() {
+            operation.abandon_incomplete();
+        }
     }
 }
 
@@ -260,19 +518,17 @@ struct InputCaptureState {
     complete: bool,
     content_type: Option<String>,
     failed: bool,
-    operation_id: OperationId,
-    sdk: Sdk,
+    operation: Arc<dyn ActiveAxumOperation>,
 }
 
 impl InputCapture {
-    fn new(sdk: Sdk, operation_id: OperationId, content_type: Option<String>) -> Self {
+    fn new(operation: Arc<dyn ActiveAxumOperation>, content_type: Option<String>) -> Self {
         Self(Arc::new(Mutex::new(InputCaptureState {
             bytes: Vec::new(),
             complete: false,
             content_type,
             failed: false,
-            operation_id,
-            sdk,
+            operation,
         })))
     }
 
@@ -309,11 +565,7 @@ impl InputCapture {
             value: encode_base64url(&state.bytes),
             value_digest: Digest::of(&state.bytes),
         };
-        if state
-            .sdk
-            .record_input(state.operation_id, &payload)
-            .is_err()
-        {
+        if state.operation.record_input(&payload).is_err() {
             reject_input(&mut state);
             return;
         }
@@ -342,7 +594,7 @@ fn reject_input(state: &mut InputCaptureState) {
     if !state.failed {
         state.failed = true;
         state.bytes.clear();
-        state.sdk.abandon_incomplete(state.operation_id);
+        state.operation.abandon();
     }
 }
 
@@ -390,7 +642,8 @@ impl HttpBody for CaptureBody {
 
 fn capture_response(
     response: Response,
-    capture: AxumRequestCapture,
+    classifier: Arc<dyn AxumFailureClassifier>,
+    operation_name: String,
     context: OperationContext,
     mut guard: OperationGuard,
 ) -> Response {
@@ -401,11 +654,11 @@ fn capture_response(
     }
     let mut completion = ResponseCompletion {
         body: Vec::new(),
-        classifier: capture.classifier,
+        classifier,
         context,
         guard,
         headers: parts.headers.clone(),
-        operation_name: capture.operation_name,
+        operation_name,
         status: parts.status,
         terminal: false,
     };
@@ -478,12 +731,15 @@ impl ResponseCompletion {
         self.body.fill(0);
         self.body.clear();
         let Some(identity) = identity else {
-            self.guard.sdk.succeed(self.guard.operation_id);
-            self.guard.complete();
+            if self.guard.operation.succeed().is_ok() {
+                self.guard.complete();
+            } else {
+                self.guard.abandon();
+            }
             return;
         };
         let result = failure_payload(identity, &self.operation_name)
-            .and_then(|payload| self.guard.sdk.fail(self.guard.operation_id, &payload));
+            .and_then(|payload| self.guard.operation.fail(&payload));
         if result.is_ok() {
             self.guard.complete();
         } else {
@@ -562,6 +818,44 @@ fn request_content_type(headers: &HeaderMap) -> Option<String> {
         }
         None => Some(DEFAULT_CONTENT_TYPE.to_owned()),
     }
+}
+
+fn valid_operation_name(operation_name: String) -> Result<String, Error> {
+    if operation_name.is_empty() || operation_name.len() > 128 {
+        return Err(Error::schema_invalid());
+    }
+    Ok(operation_name)
+}
+
+fn operation_begin(
+    operation_name: &str,
+    causal_parent_id: Option<OperationId>,
+) -> OperationBeginPayload {
+    OperationBeginPayload {
+        adapter_id: ADAPTER_ID.to_owned(),
+        adapter_version: ADAPTER_VERSION.to_owned(),
+        causal_parent_ids: causal_parent_id.into_iter().collect(),
+        format: OperationBeginFormat::V1,
+        operation_kind: OperationKind::RequestResponse,
+        operation_name: operation_name.to_owned(),
+    }
+}
+
+fn managed_project_token_from_environment() -> Result<ManagedProjectToken, Error> {
+    let token = std::env::var(MANAGED_PROJECT_TOKEN_ENVIRONMENT).map_err(|_| {
+        Error::new(
+            ErrorCode::AuthenticationRequired,
+            "The managed project token is unavailable.",
+        )
+    })?;
+    ManagedProjectToken::new(token)
+}
+
+fn incomplete_operation() -> Error {
+    Error::new(
+        ErrorCode::IncompleteCandidate,
+        "The managed operation capture is incomplete.",
+    )
 }
 
 fn failure_payload(

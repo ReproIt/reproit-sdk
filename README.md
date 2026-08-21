@@ -1,16 +1,14 @@
 # Repro It SDKs
 
-Use an SDK when you want Repro It to capture a failed production operation.
-
-The SDK records one operation and the World that affected it. Managed Repro It verifies the
-capture before it shows a Repro to your team.
+Repro It SDKs capture failed production operations and the World that affected them. Managed Repro
+It verifies each capture before it shows a Repro to your team.
 
 ## Add capture to an application
 
 1. Install the [Repro It CLI](https://github.com/ReproIt/reproit-cli).
 2. Run `reproit init` in the application repository.
 3. Select the service and SDK.
-4. Install the release artifact shown by `reproit init`.
+4. Run the SDK package command shown by `reproit init`.
 5. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
 6. Wrap each top-level operation with the SDK operation API.
 7. Deploy the application and trigger the bug.

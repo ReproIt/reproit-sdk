@@ -1,10 +1,10 @@
 # Node.js SDK
 
-Use this SDK when a Node.js application must capture a Backend operation.
+The Node.js SDK captures Backend operations from a Node.js application.
 
 ## Install
 
-Use the package from the Repro It release directory that `reproit init` shows:
+Install the package from the Repro It release directory that `reproit init` shows:
 
 ```sh
 npm install <release-directory>/reproit-sdk-1.0.0.tgz
@@ -30,7 +30,7 @@ Import `@reproit/sdk/http` only for a Node.js HTTP request boundary.
 The token provider must return `new ManagedProjectToken(process.env.REPROIT_MANAGED_PROJECT_TOKEN)`.
 The wrapper returns the application result or throws the original application error.
 
-Use the HTTP adapter only at an HTTP request boundary. Use the base API for streams, delivered work,
+The HTTP adapter covers an HTTP request boundary. The base API covers streams, delivered work,
 other frameworks, and direct operation capture.
 
 ## Verify SDK source

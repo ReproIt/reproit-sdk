@@ -2,11 +2,18 @@
 
 Capture failed Backend operations from a Rust application.
 
-Install this crate from the release directory that `reproit init` shows. Use
-`OfficialManagedProject` during application setup. Use `OfficialManagedRustOperation` at each
-top-level operation boundary.
+```sh
+cargo add reproit-sdk-rust@1.0.0
+```
 
-The base crate supports request-response, ordered-stream, and delivered-work operations. Add
-`reproit-sdk-rust-axum` for an Axum request adapter.
+Run `reproit init`, create one `OfficialManagedProject` during application setup, and wrap each
+top-level operation. The base API supports request-response, ordered-stream, and delivered-work
+operations.
+
+Add `reproit-sdk-rust-axum` for Axum middleware:
+
+```sh
+cargo add reproit-sdk-rust-axum@1.0.0
+```
 
 Read the [Rust integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/rust.md).

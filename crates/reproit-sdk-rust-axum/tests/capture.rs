@@ -15,21 +15,127 @@ use axum::{
 };
 use http_body::Body as HttpBody;
 use reproit_core::{
-    canonical,
+    Error, canonical,
     crypto::decode_base64url_bytes,
-    model::{Candidate, EventKind, OperationBeginPayload, OperationInputPayload},
+    identity::OperationId,
+    model::{
+        Candidate, EventKind, FailureIdentity, OperationBeginPayload, OperationInputPayload,
+        TriggerCompletion, WorldCheckpoint, WorldCheckpointFormat,
+    },
 };
-use reproit_sdk_rust::{CandidateSink, Sdk};
+use reproit_sdk_rust::{CandidateSink, ManagedRustCaptureClosure, OfficialManagedProject, Sdk};
 use reproit_sdk_rust_axum::{
-    AxumRequestCapture, AxumRequestIdentity, AxumResponseObservation, OperationContext,
-    capture_axum_request,
+    AxumRequestCapture, AxumRequestIdentity, AxumResponseObservation, OfficialAxumRequestCapture,
+    OfficialAxumWorldCapture, OperationContext, capture_axum_request,
+    capture_official_axum_request,
 };
 use tower::ServiceExt as _;
 
 mod support;
 
+const MANAGED_PROJECT: &str = r#"
+format = 1
+organization_id = "org_01890f3e-7b1c-7cc0-8a1b-123456789abd"
+profile = "backend"
+profile_format = 1
+processing_mode = "managed"
+project_id = "prj_01890f3e-7b1c-7cc0-8a1b-123456789abe"
+repository_id = "source.example/acme/commerce"
+sdk = "rust"
+service_id = "svc_01890f3e-7b1c-7cc0-8a1b-123456789abf"
+service_path = "services/orders"
+
+[run]
+arguments = ["serve"]
+program = "orders"
+working_directory = "services/orders"
+
+[source]
+remote = "origin"
+"#;
+
 #[derive(Default)]
 struct Sink(Mutex<Vec<Candidate>>);
+
+#[allow(dead_code)]
+fn official_axum_middleware_compiles(
+    project: OfficialManagedProject,
+    world_id: reproit_core::identity::Digest,
+    capture_world: fn(OperationId) -> Result<ManagedRustCaptureClosure, Error>,
+    classify_failure: fn(
+        &OperationContext,
+        &AxumResponseObservation<'_>,
+    ) -> Option<FailureIdentity>,
+) -> Router {
+    let capture = OfficialAxumRequestCapture::new(
+        project,
+        "orders.increment",
+        move || Ok(OfficialAxumWorldCapture::new(world_id, capture_world)),
+        classify_failure,
+    )
+    .expect("the operation name must be valid");
+    Router::new()
+        .route("/orders", post(failing_handler))
+        .route_layer(middleware::from_fn_with_state(
+            capture,
+            capture_official_axum_request,
+        ))
+}
+
+#[tokio::test]
+async fn official_axum_success_uses_the_bound_entry_and_uploads_nothing() {
+    if include_str!("../../reproit-sdk-rust/src/official_managed.rs")
+        .contains("__REPROIT_OFFICIAL_MANAGED_HTTPS_ORIGIN_SENTINEL__")
+    {
+        return;
+    }
+    let project = OfficialManagedProject::from_build(
+        MANAGED_PROJECT,
+        "source.example/acme/commerce",
+        "0123456789abcdef0123456789abcdef01234567",
+    )
+    .expect("bound managed project");
+    let world = WorldCheckpoint {
+        created_at: "2026-01-01T00:00:00.000Z".parse().expect("fixed timestamp"),
+        format: WorldCheckpointFormat::V1,
+        points: Vec::new(),
+    };
+    let world_id = world.world_id().expect("World ID");
+    let capture = OfficialAxumRequestCapture::new(
+        project,
+        "orders.increment",
+        move || {
+            let world = world.clone();
+            Ok(OfficialAxumWorldCapture::new(
+                world_id,
+                move |_operation_id| {
+                    Ok(ManagedRustCaptureClosure {
+                        artifacts: Vec::new(),
+                        completion: TriggerCompletion::Return,
+                        world: world.clone(),
+                    })
+                },
+            ))
+        },
+        |_context: &OperationContext, _response: &AxumResponseObservation<'_>| None,
+    )
+    .expect("official Axum capture");
+    let app = Router::new()
+        .route("/orders", post(success_handler))
+        .route_layer(middleware::from_fn_with_state(
+            capture,
+            capture_official_axum_request,
+        ));
+    let response = app
+        .oneshot(
+            Request::post("/orders")
+                .body(Body::from(r#"{"amount":10}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+}
 
 impl CandidateSink for Sink {
     fn queued_bytes(&self) -> usize {

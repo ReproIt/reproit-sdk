@@ -1,10 +1,10 @@
 # Go SDK
 
-Use this SDK when a Go application must capture a Backend operation.
+The Go SDK captures Backend operations from a Go application.
 
 ## Install
 
-Use the module from the Repro It release directory that `reproit init` shows:
+Install the module from the Repro It release directory that `reproit init` shows:
 
 ```sh
 unzip <release-directory>/reproit.dev-sdk-go-v1.0.0.zip -d <sdk-directory>
@@ -32,7 +32,7 @@ Import the SDK as `reproit.dev/sdk-go/reproit`. The HTTP adapter uses standard `
 Create the token with `NewManagedProjectToken`. `RunOperation` returns the original application
 error.
 
-Use the HTTP adapter only at an HTTP request boundary. Use the base API for streams, delivered work,
+The HTTP adapter covers an HTTP request boundary. The base API covers streams, delivered work,
 other frameworks, and direct operation capture.
 
 ## Verify SDK source

@@ -1,10 +1,10 @@
 # Python SDK
 
-Use this SDK when a Python application must capture a Backend operation.
+The Python SDK captures Backend operations from a Python application.
 
 ## Install
 
-Use the wheel from the Repro It release directory that `reproit init` shows:
+Install the wheel from the Repro It release directory that `reproit init` shows:
 
 ```sh
 python -m pip install <release-directory>/reproit_sdk-1.0.0-py3-none-any.whl
@@ -30,7 +30,7 @@ The package supports Python 3.14. Import `reproit_sdk.asgi` only for an ASGI req
 The token provider must return `ManagedProjectToken(os.environ["REPROIT_MANAGED_PROJECT_TOKEN"])`.
 The wrapper returns the application result or raises the original application exception.
 
-Use the ASGI adapter only at an ASGI request boundary. Use the base API for streams, delivered work,
+The ASGI adapter covers an ASGI request boundary. The base API covers streams, delivered work,
 other frameworks, and direct operation capture.
 
 ## Verify SDK source

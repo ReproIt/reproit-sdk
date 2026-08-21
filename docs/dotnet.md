@@ -1,10 +1,10 @@
 # .NET SDK
 
-Use this SDK when a .NET application must capture a Backend operation.
+The .NET SDK captures Backend operations from a .NET application.
 
 ## Install
 
-Use the package source from the Repro It release directory that `reproit init` shows:
+Install the package from the Repro It release directory that `reproit init` shows:
 
 ```sh
 dotnet add package ReproIt.Sdk --version 1.0.0 --source <release-directory>
@@ -31,8 +31,8 @@ target .NET 10.
 The token provider must return `new ManagedProjectToken(token)`. `Operations.Run` returns the
 application result or throws the original application exception.
 
-Use the ASP.NET Core adapter only at an HTTP request boundary. Use the base API for streams,
-delivered work, other frameworks, and direct operation capture.
+The ASP.NET Core adapter covers an HTTP request boundary. The base API covers streams, delivered
+work, other frameworks, and direct operation capture.
 
 ## Verify SDK source
 
