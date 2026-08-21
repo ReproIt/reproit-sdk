@@ -1,101 +1,59 @@
 # Rust SDK
 
-The Rust SDK captures Backend operations from a Rust application.
+The Rust SDK captures Backend operations from any Rust framework or runtime.
 
 ## Install
-
-Add the base SDK:
 
 ```sh
 cargo add reproit-sdk-rust@1.0.0
 ```
 
-Add the Axum adapter for an Axum application:
+No framework package, Runtime, sidecar, or container socket is required.
 
-```sh
-cargo add reproit-sdk-rust-axum@1.0.0
-```
+## Start capture
 
-`reproit init` writes `.reproit/project.toml`. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the
-deployment secret store. Do not commit the token.
-
-## Add Axum middleware
-
-Create one `OfficialManagedProject` when the process starts. Then add the Repro It middleware at
-the application request boundary.
+Create one `ReproIt` value when the process starts. `reproit init` supplies the reviewed project
+file. The build supplies the repository identity and deployed Git revision.
 
 ```rust
-use axum::{Router, middleware, routing::post};
-use reproit_sdk_rust::{Error, OfficialManagedProject};
-use reproit_sdk_rust_axum::{
-    OfficialAxumRequestCapture,
-    capture_official_axum_request,
-};
+use reproit_sdk_rust::{Error, ReproIt};
 
-fn build_app(
-    project_toml: &str,
-    repository_id: &str,
-    source_revision: &str,
-) -> Result<Router, Error> {
-    let project = OfficialManagedProject::from_build(
-        project_toml,
-        repository_id,
-        source_revision,
-    )?;
-    let capture = OfficialAxumRequestCapture::new(
-        project,
-        "orders.request",
-        || capture_initial_world(),
-        |_context, response| classify_orders_failure(response),
-    )?;
-
-    Ok(Router::new()
-        .route("/orders", post(create_order))
-        .route_layer(middleware::from_fn_with_state(
-            capture,
-            capture_official_axum_request,
-        )))
-}
+let reproit = ReproIt::from_build(
+    include_str!("../.reproit/project.toml"),
+    BUILD_REPOSITORY_ID,
+    SOURCE_REVISION,
+    capture_world,
+)?;
 ```
 
-The build supplies the canonical repository identity and the deployed Git revision. The
-`capture_initial_world` function returns an `OfficialAxumWorldCapture`. Its completion callback
-receives the exact operation ID and returns the closed `ManagedRustCaptureClosure` after a Failure.
-The `classify_orders_failure` function returns a `FailureIdentity` only for a known incorrect
-outcome.
+`capture_world` returns a `ManagedWorldCapture`. It captures the initial World before the operation.
+Its completion callback closes the same World after a Failure.
 
-The World capture has two parts. Capture the initial checkpoint before the request runs. Complete
-the same capture after a Failure, when all dependency results are available.
+## Wrap an operation
+
+Call `run` inside the top-level framework handler. The same call works in Axum, Actix Web, Rocket,
+Warp, a stream consumer, a queue worker, or application code.
 
 ```rust
-use reproit_sdk_rust::{Error, ManagedRustCaptureClosure};
-use reproit_sdk_rust_axum::OfficialAxumWorldCapture;
-
-fn capture_initial_world() -> Result<OfficialAxumWorldCapture, Error> {
-    let world = application_world_capture()?;
-    let world_id = world.world_id()?;
-
-    Ok(OfficialAxumWorldCapture::new(
-        world_id,
-        move |operation_id| -> Result<ManagedRustCaptureClosure, Error> {
-            world.complete(operation_id)
+let result = reproit
+    .run(
+        "orders.create",
+        "application/json",
+        &request_body,
+        |capture| async move {
+            dependencies.run_with(capture, || create_order(request_body)).await
         },
-    ))
-}
+        classify_failure,
+    )
+    .await;
 ```
 
-Dependency adapters can read `OfficialAxumOperationContext` from the request extensions. They call
-`record_dependency` for each observed dependency result. A capture error must not change the HTTP
-response or application error.
+The SDK reads `REPROIT_MANAGED_PROJECT_TOKEN` only after a complete Failure. A successful or
+incomplete operation makes no Cloud request. A capture error does not change `result`.
 
-The middleware reads `REPROIT_MANAGED_PROJECT_TOKEN` only after it observes a Failure. A successful
-request does not create or upload a candidate.
-
-## Capture another operation type
-
-Use `OfficialManagedRustOperation` for ordered streams, delivered work, another framework, or a
-direct operation boundary. Record the Trigger input and dependency results. Call `succeed` for a
-successful operation. Call `fail_with_operation_closure` only after the World closure is complete.
+Use `run_stream` or `run_delivered_work` for those operation types. Use
+`OperationCapture::record_dependency` from a dependency adapter. Application handlers do not
+construct capture IDs, deployments, protocol records, endpoints, signers, or candidate sinks.
 
 ## Verify SDK source
 

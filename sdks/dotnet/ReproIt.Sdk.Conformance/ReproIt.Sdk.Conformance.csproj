@@ -7,8 +7,6 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <ProjectReference Include="../ReproIt.Sdk.AspNetCore/ReproIt.Sdk.AspNetCore.csproj" />
     <ProjectReference Include="../ReproIt.Sdk/ReproIt.Sdk.csproj" />
   </ItemGroup>
 </Project>

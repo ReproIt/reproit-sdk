@@ -1,42 +1,41 @@
 # Go SDK
 
-The Go SDK captures Backend operations from a Go application.
+The Go SDK captures Backend operations through `net/http` or application code.
 
 ## Install
 
-Install the module from the Repro It release directory that `reproit init` shows:
-
 ```sh
-unzip <release-directory>/reproit.dev-sdk-go-v1.0.0.zip -d <sdk-directory>
-go mod edit -require=reproit.dev/sdk-go@v1.0.0
-go mod edit -replace=reproit.dev/sdk-go=<sdk-directory>/reproit.dev/sdk-go@v1.0.0
+go get reproit.dev/sdk-go@v1.0.0
 ```
 
-Import the SDK as `reproit.dev/sdk-go/reproit`. The HTTP adapter uses standard `net/http` types.
+## Start capture
 
-## Configure
+```go
+capture, err := reproit.Start(project, repositoryID, sourceRevision, captureWorld)
+if err != nil {
+	return err
+}
+```
 
-1. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
-2. Load `.reproit/project.toml` into the project map during application setup.
-3. Get the repository identity and deployed Git revision from the build.
-4. Call `NewOfficialManagedProject` once.
+`reproit init` supplies `project`. The build supplies the repository identity and deployed Git
+revision. `captureWorld` returns one `ManagedWorldCapture` for each operation.
 
-## Capture one operation
+## Wrap an HTTP handler
 
-1. Start the project operation with the World digest.
-2. Create its candidate sink from the complete World closure.
-3. Create `SDK` with that sink.
-4. Build `CandidateStart` from the operation IDs, deployment, and World digest.
-5. Call `RunOperation` around the application operation.
+```go
+handler := capture.HTTP("orders.create", captureInput, classifyFailure, mux)
+http.ListenAndServe(":8080", handler)
+```
 
-Create the token with `NewManagedProjectToken`. `RunOperation` returns the original application
-error.
+`net/http` is the standard Go boundary. Routers that implement `http.Handler` use the same wrapper.
+Use `capture.Run` for another request-response boundary. Use `capture.RunStream` or
+`capture.RunDeliveredWork` for those operation types.
 
-The HTTP adapter covers an HTTP request boundary. The base API covers streams, delivered work,
-other frameworks, and direct operation capture.
+Dependency adapters call `OperationFromRequest` and then `RecordDependency`. The SDK reads
+`REPROIT_MANAGED_PROJECT_TOKEN` only after a complete Failure.
 
 ## Verify SDK source
 
 ```sh
-./tools/with-core.sh sh -c 'cd sdks/go && go test ./...'
+./tools/with-core.sh sh -c 'cd sdks/go && go test ./... && go vet ./...'
 ```

@@ -36,7 +36,7 @@ pack_set() {
   local build_path_map="$workspace=/source%2C$build_artifacts=/build"
   mkdir -- "$build_artifacts" "$build_cache"
   NUGET_PACKAGES="$build_cache" "$dotnet_command" restore \
-    "$script_dir/ReproIt.Sdk.AspNetCore/ReproIt.Sdk.AspNetCore.csproj" \
+    "$script_dir/ReproIt.Sdk/ReproIt.Sdk.csproj" \
     --force \
     --no-cache \
     --source "$empty_feed" \
@@ -45,14 +45,6 @@ pack_set() {
     "${msbuild_args[@]}"
   NUGET_PACKAGES="$build_cache" SOURCE_DATE_EPOCH=315532800 "$dotnet_command" pack \
     "$script_dir/ReproIt.Sdk/ReproIt.Sdk.csproj" \
-    --configuration Release \
-    --no-restore \
-    --artifacts-path "$build_artifacts" \
-    --output "$destination" \
-    "--property:PathMap=$build_path_map" \
-    "${msbuild_args[@]}"
-  NUGET_PACKAGES="$build_cache" SOURCE_DATE_EPOCH=315532800 "$dotnet_command" pack \
-    "$script_dir/ReproIt.Sdk.AspNetCore/ReproIt.Sdk.AspNetCore.csproj" \
     --configuration Release \
     --no-restore \
     --artifacts-path "$build_artifacts" \
@@ -68,7 +60,7 @@ pack_set() {
 pack_set "$package_a"
 pack_set "$package_b"
 
-for name in ReproIt.Sdk.1.0.0.nupkg ReproIt.Sdk.AspNetCore.1.0.0.nupkg; do
+for name in ReproIt.Sdk.1.0.0.nupkg; do
   if ! cmp --silent "$package_a/$name" "$package_b/$name"; then
     echo "The .NET package set is not deterministic." >&2
     exit 1
@@ -88,11 +80,6 @@ expected = {
         "README.md",
         f"lib/{package_framework}/ReproIt.Sdk.dll",
         f"lib/{package_framework}/ReproIt.Sdk.xml",
-    },
-    "ReproIt.Sdk.AspNetCore.1.0.0.nupkg": {
-        "README.md",
-        f"lib/{package_framework}/ReproIt.Sdk.AspNetCore.dll",
-        f"lib/{package_framework}/ReproIt.Sdk.AspNetCore.xml",
     },
 }
 for name, required in expected.items():

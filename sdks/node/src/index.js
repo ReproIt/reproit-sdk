@@ -50,6 +50,12 @@ export {
   OfficialManagedProject,
 } from "./official-managed.js";
 export { captureProcessorCapabilities } from "./processor-capture.js";
+export {
+  ManagedWorldCapture,
+  OperationCapture,
+  ReproIt,
+  operationFromRequest,
+} from "./integration.js";
 
 export const MAX_GLOBAL_BYTES = 1_048_576;
 export const MAX_OPERATION_BYTES = 262_144;

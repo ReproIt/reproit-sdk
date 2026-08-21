@@ -19,13 +19,14 @@ use reproit_core::{
 pub use reproit_core::{
     Error,
     model::{
-        DependencyCursorFormat, DependencyCursorPayload, FailurePayload, FailurePayloadFormat,
-        InputChannel, OperationBeginFormat, OperationBeginPayload, OperationInputFormat,
-        OperationInputPayload, OperationKind, TriggerCompletion, WorldCheckpoint,
-        WorldCheckpointFormat,
+        DependencyCursorFormat, DependencyCursorPayload, FailureIdentity, FailurePayload,
+        FailurePayloadFormat, InputChannel, OperationBeginFormat, OperationBeginPayload,
+        OperationInputFormat, OperationInputPayload, OperationKind, TriggerCompletion,
+        WorldCheckpoint, WorldCheckpointFormat,
     },
 };
 
+mod integration;
 mod managed;
 mod managed_deployment;
 mod managed_identity;
@@ -36,6 +37,7 @@ mod official_operation;
 mod processor_capture;
 mod subject;
 
+pub use integration::{ManagedWorldCapture, OperationCapture, ReproIt};
 pub use managed::{
     ManagedCandidateArtifact, ManagedCandidateGrantDelivery, ManagedCandidateIngressDelivery,
     ManagedRustCaptureClosure, ManagedRustCaptureClosureProvider, ManagedRustOperationClosure,

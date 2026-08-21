@@ -13,7 +13,7 @@ use reproit_core::{
 };
 use reproit_sdk_rust::{
     ManagedRustCaptureClosure, ManagedRustLocalRecorder, ManagedRustOperationClosure,
-    OfficialManagedProject, OfficialManagedRustOperation, Sdk,
+    OfficialManagedProject, OfficialManagedRustOperation, ReproIt, Sdk,
 };
 
 const PROJECT: &str = r#"
@@ -103,6 +103,26 @@ fn official_failure_stops_before_token_access_when_release_is_unbound() {
         Err(error) if error.code == ErrorCode::ConfigConflict
     ));
     assert!(!token_accessed.load(Ordering::SeqCst));
+}
+
+#[test]
+fn public_integration_stops_before_world_capture_when_release_is_unbound() {
+    if !include_str!("../src/official_managed.rs")
+        .contains("__REPROIT_OFFICIAL_MANAGED_HTTPS_ORIGIN_SENTINEL__")
+    {
+        return;
+    }
+    let world_accessed = Arc::new(AtomicBool::new(false));
+    let provider_accessed = world_accessed.clone();
+    let result = ReproIt::from_build(PROJECT, REPOSITORY_ID, SOURCE_REVISION, move || {
+        provider_accessed.store(true, Ordering::SeqCst);
+        panic!("the World provider must not run")
+    });
+    assert!(matches!(
+        result,
+        Err(error) if error.code == ErrorCode::ConfigConflict
+    ));
+    assert!(!world_accessed.load(Ordering::SeqCst));
 }
 
 #[test]

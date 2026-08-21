@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import managed_fixtures as fixtures
-from reproit_sdk import canonical_bytes, managed_subject_files
+from reproit_sdk import ReproIt, canonical_bytes, managed_subject_files
 from reproit_sdk import managed_protocol as protocol
 from reproit_sdk import official_managed as official
 from reproit_sdk.managed_candidate import (
@@ -1142,6 +1142,18 @@ class OfficialManagedReleaseBinding(unittest.TestCase):
         with self.assertRaises(protocol.ManagedError) as raised:
             official.OfficialManagedProject.from_build({}, "invalid", "invalid")
         self.assertEqual(raised.exception.code, "CONFIG_CONFLICT")
+
+    def test_public_integration_fails_before_world_capture_when_unbound(self):
+        world_accessed = False
+
+        def capture_world():
+            nonlocal world_accessed
+            world_accessed = True
+
+        with self.assertRaises(protocol.ManagedError) as raised:
+            ReproIt({}, "invalid", "invalid", capture_world)
+        self.assertEqual(raised.exception.code, "CONFIG_CONFLICT")
+        self.assertFalse(world_accessed)
 
     def test_workspace_binding_fails_closed_before_project_token_access(self):
         accessed = False

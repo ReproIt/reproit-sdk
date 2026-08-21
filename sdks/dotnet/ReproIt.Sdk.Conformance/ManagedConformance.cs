@@ -47,6 +47,19 @@ internal static class ManagedConformance
             () => new OfficialManagedProject(new JsonObject(), "invalid", "invalid"),
             "CONFIG_CONFLICT",
             "The workspace official project reached project or capture validation.");
+        int worldCalls = 0;
+        RequireManagedFailure(
+            () => new ReproItCapture(
+                new JsonObject(), "invalid", "invalid",
+                () =>
+                {
+                    worldCalls += 1;
+                    throw new InvalidOperationException("The World provider must not run.");
+                }),
+            "CONFIG_CONFLICT",
+            "The public integration accepted release sentinels.");
+        Check(worldCalls == 0,
+            "The unbound public integration called the World provider.");
         int tokenCalls = 0;
         JsonObject deployment = BoundDeployment(SharedSubject());
         deployment["runtime_endpoint"] = "unchanged";

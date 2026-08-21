@@ -13,7 +13,6 @@ import {
   runPreparedOperation,
   runStreamOperation,
 } from "../src/index.js";
-import { wrapHttpHandler } from "../src/http.js";
 import { MemorySink } from "./memory-sink.js";
 
 const positive = JSON.parse(
@@ -324,40 +323,6 @@ test("capture setup and cleanup failures do not change application behavior", as
     ),
     "application-result",
   );
-});
-
-test("HTTP boundary preserves the application exception", () => {
-  const { expected, sdk, sink, start } = fixture();
-  const original = new Error("customer failure");
-  const handler = wrapHttpHandler(
-    sdk,
-    () => ({
-      begin: value("operation_begin_payload"),
-      inputs: [value("operation_input_payload")],
-      start,
-    }),
-    () => value("failure_payload"),
-    () => {
-      throw original;
-    },
-  );
-  assert.throws(
-    () => handler({}, {}),
-    (error) => error === original,
-  );
-  assert.deepEqual(sink.candidates, [canonicalBytes(expected)]);
-});
-
-test("HTTP preparation failure does not change the handler result", async () => {
-  const handler = wrapHttpHandler(
-    {},
-    () => {
-      throw new CaptureError("The World token is unavailable.");
-    },
-    () => value("failure_payload"),
-    async () => "handler-result",
-  );
-  assert.equal(await handler({}, {}), "handler-result");
 });
 
 test("oversized failure deletes the operation", () => {

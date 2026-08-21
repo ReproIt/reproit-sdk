@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   ManagedError,
   OfficialManagedProject,
+  ReproIt,
   createOfficialManagedCandidateSink,
 } from "../src/index.js";
 import {
@@ -33,6 +34,19 @@ test("workspace official project fails before project or capture use", () => {
     (error) =>
       error instanceof ManagedError && error.code === "CONFIG_CONFLICT",
   );
+});
+
+test("public integration fails before World capture when unbound", () => {
+  let worldAccessed = false;
+  assert.throws(
+    () =>
+      new ReproIt(null, "invalid", "invalid", () => {
+        worldAccessed = true;
+      }),
+    (error) =>
+      error instanceof ManagedError && error.code === "CONFIG_CONFLICT",
+  );
+  assert.equal(worldAccessed, false);
 });
 
 test("official bindings have one immutable materialization site", () => {

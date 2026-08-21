@@ -1,37 +1,42 @@
 # Python SDK
 
-The Python SDK captures Backend operations from a Python application.
+The Python SDK captures Backend operations from ASGI, WSGI, or application code.
 
 ## Install
 
-Install the wheel from the Repro It release directory that `reproit init` shows:
-
 ```sh
-python -m pip install <release-directory>/reproit_sdk-1.0.0-py3-none-any.whl
+python -m pip install reproit-sdk==1.0.0
 ```
 
-The package supports Python 3.14. Import `reproit_sdk.asgi` only for an ASGI request boundary.
+## Start capture
 
-## Configure
+```python
+from reproit_sdk import ReproIt
 
-1. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
-2. Load `.reproit/project.toml` into a mapping during application setup.
-3. Get the repository identity and deployed Git revision from the build.
-4. Call `OfficialManagedProject.from_build` once.
+reproit = ReproIt(project, BUILD_REPOSITORY_ID, SOURCE_REVISION, capture_world)
+```
 
-## Capture one operation
+`reproit init` supplies `project`. The build supplies the repository identity and deployed Git
+revision. `capture_world` returns a `ManagedWorldCapture` for each operation.
 
-1. Start the project operation with the World digest.
-2. Create its candidate sink from the complete World closure.
-3. Create `Sdk` with that sink.
-4. Build `CandidateStart` from the operation IDs, deployment, and World digest.
-5. Call `run_operation` around the application operation.
+## Wrap an ASGI or WSGI application
 
-The token provider must return `ManagedProjectToken(os.environ["REPROIT_MANAGED_PROJECT_TOKEN"])`.
-The wrapper returns the application result or raises the original application exception.
+```python
+app = reproit.asgi(app, "orders.create", capture_input, classify_failure)
+```
 
-The ASGI adapter covers an ASGI request boundary. The base API covers streams, delivered work,
-other frameworks, and direct operation capture.
+For a WSGI application, use the same setup:
+
+```python
+app = reproit.wsgi(app, "orders.create", capture_input, classify_failure)
+```
+
+Use `reproit.run` or `reproit.run_async` for another operation boundary. Set `operation_kind` to
+`"stream"` or `"delivered-work"` for those operation types. Dependency adapters get
+`OperationCapture` from the request environment and call `record_dependency`.
+
+The SDK reads `REPROIT_MANAGED_PROJECT_TOKEN` only after a complete Failure. Capture errors do not
+change the application return value or exception.
 
 ## Verify SDK source
 

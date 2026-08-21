@@ -38,6 +38,60 @@ export interface RecallCounters {
 }
 
 export declare class CaptureError extends Error {}
+export declare class ManagedWorldCapture {
+  constructor(
+    worldId: string,
+    complete: (
+      operationId: string,
+    ) => ManagedCaptureClosure | Promise<ManagedCaptureClosure>,
+  );
+  readonly worldId: string;
+}
+export declare class OperationCapture {
+  readonly operationId: string | null;
+  recordDependency(dependency: { [key: string]: Json }): void;
+}
+export declare function operationFromRequest(
+  request: object,
+): OperationCapture | null;
+export declare class ReproIt {
+  constructor(
+    project: { [key: string]: Json },
+    buildRepositoryId: string,
+    sourceRevision: string,
+    worldCapture: () => ManagedWorldCapture,
+  );
+  run<Result>(
+    operationName: string,
+    contentType: string,
+    input: Uint8Array | string,
+    operation: (capture: OperationCapture) => Result,
+    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
+  ): Result;
+  runStream<Result>(
+    operationName: string,
+    contentType: string,
+    input: Uint8Array | string,
+    operation: (capture: OperationCapture) => Result,
+    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
+  ): Result;
+  runDeliveredWork<Result>(
+    operationName: string,
+    contentType: string,
+    input: Uint8Array | string,
+    operation: (capture: OperationCapture) => Result,
+    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
+  ): Result;
+  http<Request extends object, Response, Result>(
+    operationName: string,
+    captureInput: (request: Request) => {
+      contentType: string;
+      input: Uint8Array | string;
+    },
+    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
+    handler: (request: Request, response: Response) => Result,
+  ): (request: Request, response: Response) => Result;
+}
 export declare class Sdk {
   constructor(sink: CandidateSink);
   readonly activeOperations: number;

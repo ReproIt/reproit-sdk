@@ -2,11 +2,10 @@
 
 Capture failed Backend operations from a .NET application.
 
-Install `ReproIt.Sdk` from the release directory that `reproit init` shows. Use
-`OfficialManagedProject` during application setup. Use `Operations.Run` at each top-level operation
-boundary.
+```sh
+dotnet add package ReproIt.Sdk --version 1.0.0
+```
 
-Add `ReproIt.Sdk.AspNetCore` for an ASP.NET Core request adapter. Use the base package for streams,
-delivered work, other frameworks, and direct operation capture.
+Call `RunAsync` in ASP.NET Core middleware. Use `Run` or `RunAsync` in every other framework.
 
 Read the [.NET integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/dotnet.md).

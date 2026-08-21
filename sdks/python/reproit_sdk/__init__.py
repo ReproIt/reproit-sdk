@@ -966,6 +966,11 @@ from .official_managed import (  # noqa: E402
 from .official_managed import (  # noqa: E402
     official_managed_candidate_sink as official_managed_candidate_sink,
 )
+from .integration import (  # noqa: E402
+    ManagedWorldCapture as ManagedWorldCapture,
+)
+from .integration import OperationCapture as OperationCapture  # noqa: E402
+from .integration import ReproIt as ReproIt  # noqa: E402
 
 __all__ = [
     "CandidateSink",
@@ -979,8 +984,11 @@ __all__ = [
     "MAX_OPERATION_BYTES",
     "MAX_QUEUED_CANDIDATES",
     "ManagedProjectToken",
+    "ManagedWorldCapture",
+    "OperationCapture",
     "OfficialManagedOperation",
     "OfficialManagedProject",
+    "ReproIt",
     "Sdk",
     "canonical_bytes",
     "official_managed_candidate_sink",

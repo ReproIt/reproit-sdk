@@ -10,3 +10,4 @@ static OfficialManagedProject BindInstalledPackage(JsonObject project)
 }
 
 _ = (Func<JsonObject, OfficialManagedProject>)BindInstalledPackage;
+_ = typeof(ReproItCapture);

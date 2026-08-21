@@ -114,3 +114,14 @@ func TestOfficialManagedProjectFailsBeforeProjectOrCaptureUseWhenUnbound(t *test
 		t.Fatalf("unbound official project: %#v, %v", project, err)
 	}
 }
+
+func TestPublicIntegrationFailsBeforeWorldCaptureWhenUnbound(t *testing.T) {
+	worldAccessed := false
+	capture, err := Start(nil, "invalid", "invalid", func() (ManagedWorldCapture, error) {
+		worldAccessed = true
+		return ManagedWorldCapture{}, nil
+	})
+	if managedErrorCode(t, err) != "CONFIG_CONFLICT" || capture != nil || worldAccessed {
+		t.Fatalf("unbound public integration: %#v, %v, %t", capture, err, worldAccessed)
+	}
+}

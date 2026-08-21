@@ -1,5 +1,6 @@
 import {
   Sdk,
+  type ReproIt,
   type CandidateSink,
   type CandidateStart,
   type Json,
@@ -8,7 +9,6 @@ import {
   runPreparedOperation,
   runStreamOperation,
 } from "../src/index.js";
-import { wrapHttpHandler } from "../src/http.js";
 
 const sink: CandidateSink = {
   processingModes: new Set<"managed">(["managed"]),
@@ -40,11 +40,5 @@ runPreparedOperation(sdk, preparation, () => "result", () => payload);
 runStreamOperation(sdk, preparation, () => "result", () => payload);
 runDeliveredWork(sdk, preparation, () => "result", () => payload);
 
-const handler = wrapHttpHandler(
-  sdk,
-  () => ({ begin: payload, inputs: [payload], start }),
-  () => payload,
-  () => "result",
-);
-const result: string = handler({}, {});
-void result;
+let capture: ReproIt | undefined;
+void capture;

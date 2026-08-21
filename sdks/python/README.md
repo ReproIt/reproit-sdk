@@ -2,11 +2,10 @@
 
 Capture failed Backend operations from a Python application.
 
-Install the wheel from the release directory that `reproit init` shows. Use
-`OfficialManagedProject` during application setup. Use `run_operation` at each top-level operation
-boundary.
+```sh
+python -m pip install reproit-sdk==1.0.0
+```
 
-Import `reproit_sdk.asgi` for an ASGI request adapter. Use the base package for streams, delivered
-work, other frameworks, and direct operation capture.
+Wrap an ASGI or WSGI application with `ReproIt`. Use `run` for other operation types.
 
 Read the [Python integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/python.md).

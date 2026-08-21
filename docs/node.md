@@ -1,37 +1,42 @@
 # Node.js SDK
 
-The Node.js SDK captures Backend operations from a Node.js application.
+The Node.js SDK captures Backend operations from any request handler or application function.
 
 ## Install
 
-Install the package from the Repro It release directory that `reproit init` shows:
-
 ```sh
-npm install <release-directory>/reproit-sdk-1.0.0.tgz
+npm install @reproit/sdk@1.0.0
 ```
 
-Import `@reproit/sdk/http` only for a Node.js HTTP request boundary.
+## Start capture
 
-## Configure
+```javascript
+import { ReproIt } from "@reproit/sdk";
 
-1. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
-2. Load `.reproit/project.toml` into the project object during application setup.
-3. Get the repository identity and deployed Git revision from the build.
-4. Create `OfficialManagedProject` once.
+const reproit = new ReproIt(project, repositoryId, sourceRevision, captureWorld);
+```
 
-## Capture one operation
+`reproit init` supplies `project`. The build supplies the repository identity and deployed Git
+revision. `captureWorld` returns one `ManagedWorldCapture` for each operation.
 
-1. Start the project operation with the World digest.
-2. Create its candidate sink from the complete World closure.
-3. Create `Sdk` with that sink.
-4. Build the start object from the operation IDs, deployment, and World digest.
-5. Call `runOperation` around the application operation.
+## Wrap a request handler
 
-The token provider must return `new ManagedProjectToken(process.env.REPROIT_MANAGED_PROJECT_TOKEN)`.
-The wrapper returns the application result or throws the original application error.
+```javascript
+const handler = reproit.http(
+  "orders.create",
+  captureInput,
+  classifyFailure,
+  app,
+);
+```
 
-The HTTP adapter covers an HTTP request boundary. The base API covers streams, delivered work,
-other frameworks, and direct operation capture.
+The wrapper accepts a standard `(request, response)` handler. Express, Fastify, Koa adapters, and
+the Node.js HTTP server can delegate to this function. Use `reproit.run` for another
+request-response boundary. Use `reproit.runStream` or `reproit.runDeliveredWork` for those
+operation types.
+
+Dependency adapters call `operationFromRequest(request)` and then `recordDependency`. The SDK reads
+`REPROIT_MANAGED_PROJECT_TOKEN` only after a complete Failure.
 
 ## Verify SDK source
 

@@ -67,17 +67,16 @@ test("package is deterministic, bounded, and installable from a local file", asy
     const entry = requireFromFixture.resolve("@reproit/sdk");
     const installed = await import(pathToFileURL(entry).href);
     assert.equal(typeof installed.Sdk, "function");
+    assert.equal(typeof installed.ReproIt, "function");
     assert.equal("MemorySink" in installed, false);
     assert.equal("TlsCloudStagingSink" in installed, false);
-    const httpEntry = requireFromFixture.resolve("@reproit/sdk/http");
-    const installedHttp = await import(pathToFileURL(httpEntry).href);
-    exerciseInstalledArtifact(installed, installedHttp);
+    exerciseInstalledArtifact(installed);
   } finally {
     fs.rmSync(temporaryRoot, { force: true, recursive: true });
   }
 });
 
-function exerciseInstalledArtifact(installed, installedHttp) {
+function exerciseInstalledArtifact(installed) {
   const candidate = vector("candidate");
   const start = {
     captureId: candidate.capture_id,
@@ -85,22 +84,6 @@ function exerciseInstalledArtifact(installed, installedHttp) {
     operationId: candidate.operation_id,
     worldId: candidate.world_id,
   };
-  const successSink = new MemorySink();
-  const successSdk = new installed.Sdk(successSink);
-  const successHandler = installedHttp.wrapHttpHandler(
-    successSdk,
-    () => ({
-      begin: vector("operation_begin_payload"),
-      inputs: [vector("operation_input_payload")],
-      start,
-    }),
-    () => vector("failure_payload"),
-    () => "application-result",
-  );
-  assert.equal(successHandler({}, {}), "application-result");
-  assert.deepEqual(successSink.candidates, []);
-  assert.equal(successSdk.activeOperations, 0);
-
   const failureSink = new MemorySink();
   const failureSdk = new installed.Sdk(failureSink);
   const original = new Error("customer failure");

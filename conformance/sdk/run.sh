@@ -81,10 +81,7 @@ docker run --rm --platform "$native_oci_platform" --network none --read-only \
     cp -R /source/sdks/dotnet/. /work/
     dotnet pack /work/ReproIt.Sdk/ReproIt.Sdk.csproj \
       --configuration Release --output /tmp/packages >/dev/null
-    dotnet pack /work/ReproIt.Sdk.AspNetCore/ReproIt.Sdk.AspNetCore.csproj \
-      --configuration Release --output /tmp/packages >/dev/null
     test -f /tmp/packages/ReproIt.Sdk.1.0.0.nupkg
-    test -f /tmp/packages/ReproIt.Sdk.AspNetCore.1.0.0.nupkg
     cd /work/ReproIt.Sdk.Conformance
     dotnet run --configuration Release
   '

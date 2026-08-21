@@ -2,11 +2,10 @@
 
 Capture failed Backend operations from a Node.js application.
 
-Install the package from the release directory that `reproit init` shows. Use
-`OfficialManagedProject` during application setup. Use `runOperation` at each top-level operation
-boundary.
+```sh
+npm install @reproit/sdk@1.0.0
+```
 
-Import `@reproit/sdk/http` for a Node.js HTTP adapter. Use the base package for streams, delivered
-work, other frameworks, and direct operation capture.
+Call `reproit.http` for a standard request handler. Use `reproit.run` for other operation types.
 
 Read the [Node.js integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/node.md).

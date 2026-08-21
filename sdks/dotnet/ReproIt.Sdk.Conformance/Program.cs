@@ -3,9 +3,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
-using Microsoft.AspNetCore.Http;
 using ReproIt.Sdk;
-using ReproIt.Sdk.AspNetCore;
 using ReproIt.Sdk.Conformance;
 
 Require(typeof(Sdk).Assembly.GetType("ReproIt.Sdk.MemorySink") is null,
@@ -277,28 +275,6 @@ Require(!privateRuntime.TrySend(
     "The private Runtime transport accepted an oversized candidate.");
 Require(privateRuntime.QueuedBytes == 0,
     "A rejected candidate changed the private Runtime queue.");
-
-memory = new MemorySink();
-sdk = new Sdk(memory);
-original = new InvalidOperationException("customer HTTP failure");
-ReproItMiddleware middleware = new(
-    _ => Task.FromException(original),
-    sdk,
-    _ => new AspNetCapture(
-        start,
-        Value("operation_begin_payload"),
-        [Value("operation_input_payload")],
-        []),
-    _ => Value("failure_payload"));
-try
-{
-    await middleware.InvokeAsync(new DefaultHttpContext());
-    throw new InvalidOperationException("The HTTP exception did not escape.");
-}
-catch (InvalidOperationException observed) when (ReferenceEquals(observed, original))
-{
-}
-Require(memory.Candidates.Count == 1, "The ASP.NET Core failure did not reach the sink.");
 
 memory = new MemorySink();
 sdk = new Sdk(memory);

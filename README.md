@@ -8,23 +8,23 @@ It verifies each capture before it shows a Repro to your team.
 1. Install the [Repro It CLI](https://github.com/ReproIt/reproit-cli).
 2. Run `reproit init` in the application repository.
 3. Select the service and SDK.
-4. Run the SDK package command shown by `reproit init`.
+4. Install one SDK package.
 5. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
-6. Wrap each top-level operation with the SDK operation API.
+6. Add one framework wrapper or wrap a top-level operation.
 7. Deploy the application and trigger the bug.
 
 Choose the guide for your language:
 
-| Language | Base package | Optional adapter | Guide |
+| Language | Package | Framework boundary | Guide |
 | --- | --- | --- | --- |
-| Rust | `reproit-sdk-rust` | Axum | [Rust](docs/rust.md) |
-| Python | `reproit_sdk` | ASGI | [Python](docs/python.md) |
-| Go | `reproit.dev/sdk-go/reproit` | `net/http` | [Go](docs/go.md) |
-| Node.js | `@reproit/sdk` | Node.js HTTP | [Node.js](docs/node.md) |
+| Rust | `reproit-sdk-rust` | Universal operation | [Rust](docs/rust.md) |
+| Python | `reproit-sdk` | ASGI and WSGI | [Python](docs/python.md) |
+| Go | `reproit.dev/sdk-go` | `net/http` | [Go](docs/go.md) |
+| Node.js | `@reproit/sdk` | Standard request handler | [Node.js](docs/node.md) |
 | .NET | `ReproIt.Sdk` | ASP.NET Core | [.NET](docs/dotnet.md) |
 
-The base APIs support request-response, ordered-stream, and delivered-work operations. They work in
-a host process or an OCI container. Framework adapters call the same base APIs.
+Each package supports request-response, ordered-stream, and delivered-work operations. The same API
+works in a host process or an OCI container. Framework wrappers call the universal operation API.
 
 ## Record an operation
 

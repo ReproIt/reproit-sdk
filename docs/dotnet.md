@@ -1,38 +1,40 @@
 # .NET SDK
 
-The .NET SDK captures Backend operations from a .NET application.
+The .NET SDK captures Backend operations from ASP.NET Core or application code.
 
 ## Install
 
-Install the package from the Repro It release directory that `reproit init` shows:
-
 ```sh
-dotnet add package ReproIt.Sdk --version 1.0.0 --source <release-directory>
+dotnet add package ReproIt.Sdk --version 1.0.0
 ```
 
-Add `ReproIt.Sdk.AspNetCore` from the same source for an ASP.NET Core request boundary. The packages
-target .NET 10.
+No second ASP.NET Core package is required.
 
-## Configure
+## Start capture
 
-1. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
-2. Load `.reproit/project.toml` into a `JsonObject` during application setup.
-3. Get the repository identity and deployed Git revision from the build.
-4. Create `OfficialManagedProject` once.
+```csharp
+ReproItCapture capture = new(project, repositoryId, sourceRevision, captureWorld);
+```
 
-## Capture one operation
+`reproit init` supplies `project`. The build supplies the repository identity and deployed Git
+revision. `captureWorld` returns one `ManagedWorldCapture` for each operation.
 
-1. Start the project operation with the World digest.
-2. Create its candidate sink from the complete World closure.
-3. Create `Sdk` with that sink.
-4. Create `CandidateStart` from the operation IDs, deployment, and World digest.
-5. Call `Operations.Run` around the application operation.
+## Add ASP.NET Core middleware
 
-The token provider must return `new ManagedProjectToken(token)`. `Operations.Run` returns the
-application result or throws the original application exception.
+```csharp
+app.Use(async (context, next) => await capture.RunAsync(
+    "orders.create",
+    context.Request.ContentType ?? "application/octet-stream",
+    CaptureInput(context),
+    async _ => { await next(context); return true; },
+    ClassifyFailure));
+```
 
-The ASP.NET Core adapter covers an HTTP request boundary. The base API covers streams, delivered
-work, other frameworks, and direct operation capture.
+Use `RunStream` or `RunStreamAsync` for an ordered stream. Use `RunDeliveredWork` or
+`RunDeliveredWorkAsync` for delivered work. Every framework uses the same managed capture path.
+
+The SDK reads `REPROIT_MANAGED_PROJECT_TOKEN` only after a complete Failure. Capture errors do not
+change the application return value or exception.
 
 ## Verify SDK source
 
