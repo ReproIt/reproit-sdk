@@ -529,20 +529,21 @@ fn resolve_on_owned_runtime(host: &str, timeout: Duration) -> Result<Vec<std::ne
         .enable_all()
         .build()
         .map_err(|_| service_unavailable())?;
-    let mut builder = Resolver::builder_tokio().map_err(|_| service_unavailable())?;
-    let options = builder.options_mut();
-    options.attempts = 1;
-    options.cache_size = 0;
-    options.max_active_requests = 1;
-    options.num_concurrent_reqs = 1;
-    options.timeout = timeout;
-    let resolver = builder.build().map_err(|_| service_unavailable())?;
-    let lookup = runtime
-        .block_on(tokio::time::timeout(timeout, resolver.lookup_ip(host)))
-        .map_err(|_| service_unavailable())?
-        .map_err(|_| service_unavailable())?;
-    let addresses = collect_bounded_addresses(lookup.iter())?;
-    drop(resolver);
+    let addresses = runtime.block_on(async {
+        let mut builder = Resolver::builder_tokio().map_err(|_| service_unavailable())?;
+        let options = builder.options_mut();
+        options.attempts = 1;
+        options.cache_size = 0;
+        options.max_active_requests = 1;
+        options.num_concurrent_reqs = 1;
+        options.timeout = timeout;
+        let resolver = builder.build().map_err(|_| service_unavailable())?;
+        let lookup = tokio::time::timeout(timeout, resolver.lookup_ip(host))
+            .await
+            .map_err(|_| service_unavailable())?
+            .map_err(|_| service_unavailable())?;
+        collect_bounded_addresses(lookup.iter())
+    })?;
     drop(runtime);
     Ok(addresses)
 }
@@ -665,5 +666,12 @@ mod tests {
         assert!(
             collect_bounded_addresses(std::iter::repeat_n(address, MAX_DNS_ADDRESSES + 1)).is_err()
         );
+    }
+
+    #[test]
+    fn owned_runtime_dns_resolver_enters_tokio_context() {
+        let addresses = resolve_bounded("localhost", Duration::from_secs(5))
+            .expect("resolve localhost with the owned runtime");
+        assert!(addresses.iter().any(std::net::IpAddr::is_loopback));
     }
 }
