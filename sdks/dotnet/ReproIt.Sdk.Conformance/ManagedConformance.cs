@@ -29,12 +29,29 @@ internal static class ManagedConformance
         }
         CommitTimeout();
         OfficialManagedBindingsFailClosed();
+        FrameworkNeutralOperationPreservesApplicationError();
         PrepareAndSeal();
         TransportValidation();
         Console.WriteLine("dotnet_managed_vectors=PASS");
         Console.WriteLine("dotnet_managed_seal=PASS");
         Console.WriteLine("dotnet_managed_workload_key=PASS");
         Console.WriteLine("dotnet_managed_transport=PASS");
+    }
+
+    private static void FrameworkNeutralOperationPreservesApplicationError()
+    {
+        ReproItCapture capture = ReproItCapture.Init();
+        InvalidOperationException original = new("customer failure");
+        try
+        {
+            _ = capture.Operation<int>(
+                "todos.create", "input"u8.ToArray(), () => throw original);
+            throw new InvalidOperationException(
+                "The framework-neutral operation did not return the application error.");
+        }
+        catch (InvalidOperationException observed) when (ReferenceEquals(observed, original))
+        {
+        }
     }
 
     private static void OfficialManagedBindingsFailClosed()

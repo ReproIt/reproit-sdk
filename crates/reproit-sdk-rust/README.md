@@ -6,7 +6,7 @@ Capture failed Backend operations from a Rust application.
 cargo add reproit-sdk-rust@1.0.0
 ```
 
-Run `reproit init` and create one `ReproIt` value during application setup. Call `ReproIt::run`
-inside the top-level framework handler. The same call works with any Rust framework or runtime.
+Run `reproit init`. Then create `ReproIt::init()` once. Call `operation` at each top-level
+application boundary. The API does not depend on a web framework.
 
 Read the [Rust integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/rust.md).

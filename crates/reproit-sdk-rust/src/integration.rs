@@ -1,7 +1,12 @@
 use std::{
+    fs,
     future::Future,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     str::FromStr as _,
     sync::{Arc, Mutex, PoisonError},
+    thread,
+    time::{Duration, Instant},
 };
 
 use reproit_core::{
@@ -9,11 +14,13 @@ use reproit_core::{
     crypto::encode_base64url,
     identity::{Digest, ObjectId, OperationId},
     model::{
-        DependencyCursorPayload, FailureIdentity, FailurePayload, FailurePayloadFormat,
-        FailureReference, InputChannel, OperationBeginFormat, OperationBeginPayload,
-        OperationInputFormat, OperationInputPayload, OperationKind, Validate as _,
+        DependencyCursorPayload, ExceptionCategory, ExceptionFailureIdentity, FailureIdentity,
+        FailurePayload, FailurePayloadFormat, FailureReference, InputChannel, OperationBeginFormat,
+        OperationBeginPayload, OperationInputFormat, OperationInputPayload, OperationKind,
+        Validate as _,
     },
 };
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
@@ -27,6 +34,8 @@ const MANAGED_PROJECT_TOKEN_ENVIRONMENT: &str = "REPROIT_MANAGED_PROJECT_TOKEN";
 const MAX_CONTENT_TYPE_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 32 * 1_024;
 const MAX_OPERATION_NAME_BYTES: usize = 128;
+const MAX_PROJECT_CONFIG_BYTES: u64 = 65_536;
+const MAX_PROJECT_SEARCH_DEPTH: usize = 64;
 
 type ProjectTokenProvider =
     Arc<dyn Fn() -> Result<ManagedProjectToken, Error> + Send + Sync + 'static>;
@@ -54,12 +63,39 @@ impl ManagedWorldCapture {
 /// The Repro It capture entry for a Rust application.
 #[derive(Clone)]
 pub struct ReproIt {
-    project: OfficialManagedProject,
+    project: Option<OfficialManagedProject>,
     project_token: ProjectTokenProvider,
     world_capture: WorldCaptureProvider,
 }
 
 impl ReproIt {
+    /// Loads the reviewed project binding and prepares automatic capture.
+    #[must_use]
+    pub fn init() -> Self {
+        Self::try_init().unwrap_or_else(|_| Self::inactive())
+    }
+
+    /// Runs one framework-neutral operation and preserves its exact result.
+    pub async fn operation<T, E, O, F>(
+        &self,
+        operation_name: &str,
+        input: &[u8],
+        operation: O,
+    ) -> Result<T, E>
+    where
+        O: FnOnce() -> F,
+        F: Future<Output = Result<T, E>>,
+    {
+        self.run(
+            operation_name,
+            "application/octet-stream",
+            input,
+            |_| operation(),
+            |_| Some(automatic_failure_identity::<E>(operation_name)),
+        )
+        .await
+    }
+
     pub fn from_build<W>(
         project_toml: &str,
         build_repository_id: &str,
@@ -70,11 +106,11 @@ impl ReproIt {
         W: Fn() -> Result<ManagedWorldCapture, Error> + Send + Sync + 'static,
     {
         Ok(Self {
-            project: OfficialManagedProject::from_build(
+            project: Some(OfficialManagedProject::from_build(
                 project_toml,
                 build_repository_id,
                 source_revision,
-            )?,
+            )?),
             project_token: Arc::new(managed_project_token_from_environment),
             world_capture: Arc::new(world_capture),
         })
@@ -203,11 +239,12 @@ impl ReproIt {
         content_type: &str,
         input: &[u8],
     ) -> Option<ActiveOperation> {
+        let project = self.project.as_ref()?;
         let capture = validate_boundary(operation_name, content_type, input)
             .and_then(|()| (self.world_capture)())
             .and_then(|world| {
                 ActiveOperation::start(
-                    &self.project,
+                    project,
                     self.project_token.clone(),
                     world,
                     operation_kind,
@@ -218,6 +255,159 @@ impl ReproIt {
             });
         capture.ok()
     }
+
+    fn try_init() -> Result<Self, Error> {
+        let project_file = find_project_file(&std::env::current_dir().map_err(|_| init_error())?)?;
+        let metadata = fs::symlink_metadata(&project_file).map_err(|_| init_error())?;
+        if !metadata.file_type().is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > MAX_PROJECT_CONFIG_BYTES
+        {
+            return Err(init_error());
+        }
+        let project_toml = fs::read_to_string(&project_file).map_err(|_| init_error())?;
+        let repository_id = project_repository_id(&project_toml)?;
+        let project_root = project_file
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(init_error)?;
+        let source_revision = git_source_revision(project_root)?;
+        Self::from_build(
+            &project_toml,
+            &repository_id,
+            &source_revision,
+            automatic_world_capture,
+        )
+    }
+
+    fn inactive() -> Self {
+        Self {
+            project: None,
+            project_token: Arc::new(managed_project_token_from_environment),
+            world_capture: Arc::new(automatic_world_capture),
+        }
+    }
+}
+
+fn automatic_failure_identity<E>(operation_name: &str) -> FailureIdentity {
+    let rust_type = std::any::type_name::<E>();
+    let type_name = if rust_type.len() <= 256 {
+        rust_type.to_owned()
+    } else {
+        "RustError".to_owned()
+    };
+    FailureIdentity::Exception(ExceptionFailureIdentity {
+        category: ExceptionCategory::Exception,
+        cause_types: Vec::new(),
+        frames: Vec::new(),
+        operation_kind: OperationKind::RequestResponse,
+        operation_name: operation_name.to_owned(),
+        runtime_family: "rust".to_owned(),
+        schema: "reproit.failure.v1".to_owned(),
+        stable_code: Some(Digest::of(rust_type.as_bytes()).to_string()),
+        type_name,
+    })
+}
+
+fn find_project_file(start: &Path) -> Result<PathBuf, Error> {
+    start
+        .ancestors()
+        .take(MAX_PROJECT_SEARCH_DEPTH)
+        .find_map(|directory| {
+            let configuration_directory = directory.join(".reproit");
+            let directory_metadata = fs::symlink_metadata(&configuration_directory).ok()?;
+            if !directory_metadata.is_dir() || directory_metadata.file_type().is_symlink() {
+                return None;
+            }
+            let candidate = configuration_directory.join("project.toml");
+            let metadata = fs::symlink_metadata(&candidate).ok()?;
+            (metadata.is_file() && !metadata.file_type().is_symlink()).then_some(candidate)
+        })
+        .ok_or_else(init_error)
+}
+
+fn project_repository_id(project_toml: &str) -> Result<String, Error> {
+    let project: toml::Value = toml::from_str(project_toml).map_err(|_| init_error())?;
+    project
+        .get("repository_id")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 512)
+        .map(str::to_owned)
+        .ok_or_else(init_error)
+}
+
+fn git_source_revision(project_root: &Path) -> Result<String, Error> {
+    let mut child = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(project_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| init_error())?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if child.try_wait().map_err(|_| init_error())?.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(init_error());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().map_err(|_| init_error())?;
+    if !output.status.success() || output.stdout.len() > 65 {
+        return Err(init_error());
+    }
+    let revision = String::from_utf8(output.stdout).map_err(|_| init_error())?;
+    let revision = revision.trim();
+    if !matches!(revision.len(), 40 | 64)
+        || !revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(init_error());
+    }
+    Ok(revision.to_owned())
+}
+
+fn automatic_world_capture() -> Result<ManagedWorldCapture, Error> {
+    let world = crate::WorldCheckpoint {
+        created_at: now_timestamp()?,
+        format: crate::WorldCheckpointFormat::V1,
+        points: Vec::new(),
+    };
+    let world_id = world.world_id()?;
+    Ok(ManagedWorldCapture::new(world_id, move |_| {
+        Ok(crate::ManagedRustCaptureClosure {
+            artifacts: Vec::new(),
+            completion: crate::TriggerCompletion::Return,
+            world: world.clone(),
+        })
+    }))
+}
+
+fn now_timestamp() -> Result<reproit_core::identity::Timestamp, Error> {
+    let value = OffsetDateTime::now_utc();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        value.year(),
+        value.month() as u8,
+        value.day(),
+        value.hour(),
+        value.minute(),
+        value.second(),
+        value.millisecond(),
+    )
+    .parse()
+}
+
+fn init_error() -> Error {
+    Error::new(
+        ErrorCode::ConfigConflict,
+        "Repro It could not load the reviewed project configuration.",
+    )
 }
 
 #[derive(Clone)]

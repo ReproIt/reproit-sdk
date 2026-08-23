@@ -1,6 +1,6 @@
 # .NET SDK
 
-The .NET SDK captures Backend operations from ASP.NET Core or application code.
+Add Repro It to a .NET application.
 
 ## Install
 
@@ -8,33 +8,17 @@ The .NET SDK captures Backend operations from ASP.NET Core or application code.
 dotnet add package ReproIt.Sdk --version 1.0.0
 ```
 
-No second ASP.NET Core package is required.
-
-## Start capture
-
 ```csharp
-ReproItCapture capture = new(project, repositoryId, sourceRevision, captureWorld);
+using ReproIt.Sdk;
+
+ReproItCapture capture = ReproItCapture.Init();
+Todo todo = await capture.OperationAsync(
+    "todos.create", inputBytes, () => CreateTodo(input));
 ```
 
-`reproit init` supplies `project`. The build supplies the repository identity and deployed Git
-revision. `captureWorld` returns one `ManagedWorldCapture` for each operation.
-
-## Add ASP.NET Core middleware
-
-```csharp
-app.Use(async (context, next) => await capture.RunAsync(
-    "orders.create",
-    context.Request.ContentType ?? "application/octet-stream",
-    CaptureInput(context),
-    async _ => { await next(context); return true; },
-    ClassifyFailure));
-```
-
-Use `RunStream` or `RunStreamAsync` for an ordered stream. Use `RunDeliveredWork` or
-`RunDeliveredWorkAsync` for delivered work. Every framework uses the same managed capture path.
-
-The SDK reads `REPROIT_MANAGED_PROJECT_TOKEN` only after a complete Failure. Capture errors do not
-change the application return value or exception.
+Run `reproit init` before you deploy. Initialize the SDK once. Call `Operation` or `OperationAsync`
+at a top-level application boundary. The SDK records an exception as the Failure. It preserves the
+exact result. It does not reference a web framework.
 
 ## Verify SDK source
 

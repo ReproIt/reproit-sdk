@@ -48,7 +48,7 @@ pub fn fixture() -> SdkFixture {
     let input_bytes = br#"{"amount":10}"#;
     SdkFixture {
         begin: OperationBeginPayload {
-            adapter_id: "axum".to_owned(),
+            adapter_id: "rust-test".to_owned(),
             adapter_version: "0.8.9".to_owned(),
             causal_parent_ids: Vec::new(),
             format: OperationBeginFormat::V1,

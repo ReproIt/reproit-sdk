@@ -1,8 +1,16 @@
 import { Buffer } from "node:buffer";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 import { Sdk, canonicalBytes } from "./index.js";
 import { ManagedProjectToken } from "./managed-transport.js";
-import { digestBytes, encodeBase64url } from "./managed-protocol.js";
+import {
+  canonicalDigest,
+  digestBytes,
+  encodeBase64url,
+  newObjectId,
+} from "./managed-protocol.js";
 import { OfficialManagedProject } from "./official-managed.js";
 
 const MAX_CAPTURED_INPUT_BYTES = 32 * 1_024;
@@ -10,11 +18,9 @@ const MAX_CONTENT_TYPE_BYTES = 256;
 const MAX_DEPENDENCIES = 1_024;
 const MAX_EVENT_BYTES = 65_536;
 const MAX_OPERATION_NAME_BYTES = 128;
-const requestOperations = new WeakMap();
-
-export function operationFromRequest(request) {
-  return requestOperations.get(request) ?? null;
-}
+const MAX_PROJECT_BYTES = 65_536;
+const MAX_PROJECT_SEARCH_DEPTH = 64;
+const INTERNAL_INIT = Symbol("ReproIt.init");
 
 export class ManagedWorldCapture {
   constructor(worldId, complete) {
@@ -59,10 +65,14 @@ export class OperationCapture {
 }
 
 export class ReproIt {
-  #project;
+  #project = null;
   #worldCapture;
 
   constructor(project, buildRepositoryId, sourceRevision, worldCapture) {
+    if (project === INTERNAL_INIT) {
+      this.#worldCapture = automaticWorldCapture;
+      return;
+    }
     if (typeof worldCapture !== "function") {
       throw new TypeError("The World capture operation is unavailable.");
     }
@@ -72,6 +82,37 @@ export class ReproIt {
       sourceRevision,
     );
     this.#worldCapture = worldCapture;
+  }
+
+  static init() {
+    const capture = new ReproIt(INTERNAL_INIT);
+    try {
+      const projectFile = findProjectFile(process.cwd());
+      const project = parseProjectConfig(fs.readFileSync(projectFile));
+      const repositoryId = project.repository_id;
+      if (typeof repositoryId !== "string") {
+        return capture;
+      }
+      const sourceRevision = gitSourceRevision(path.dirname(path.dirname(projectFile)));
+      capture.#project = new OfficialManagedProject(
+        project,
+        repositoryId,
+        sourceRevision,
+      );
+    } catch {
+      // Initialization failure disables capture without changing the application.
+    }
+    return capture;
+  }
+
+  operation(operationName, input, operation) {
+    return this.run(
+      operationName,
+      "application/octet-stream",
+      input,
+      () => operation(),
+      (error) => automaticFailurePayload(operationName, error),
+    );
   }
 
   run(operationName, contentType, input, operation, classifyFailure) {
@@ -138,43 +179,13 @@ export class ReproIt {
     }
   }
 
-  http(operationName, captureInput, classifyFailure, handler) {
-    return (request, response) => {
-      let prepared;
-      try {
-        prepared = captureInput(request);
-      } catch {
-        return handler(request, response);
-      }
-      return this.run(
-        operationName,
-        prepared.contentType,
-        prepared.input,
-        (operation) => {
-          requestOperations.set(request, operation);
-          try {
-            const result = handler(request, response);
-            if (result && typeof result.finally === "function") {
-              return result.finally(() => requestOperations.delete(request));
-            }
-            requestOperations.delete(request);
-            return result;
-          } catch (error) {
-            requestOperations.delete(request);
-            throw error;
-          }
-        },
-        classifyFailure,
-      );
-    };
-  }
-
   #start(operationKind, operationName, contentType, input) {
     try {
       const bytes = Buffer.from(input);
       validateBoundary(operationKind, operationName, contentType, bytes);
       const world = this.#worldCapture();
       if (!(world instanceof ManagedWorldCapture)) return null;
+      if (this.#project === null) return null;
       const operation = this.#project.startOperation(world.worldId);
       return {
         contentType,
@@ -267,4 +278,114 @@ function operationInput(contentType, value) {
     value: encodeBase64url(value),
     value_digest: digestBytes(value),
   };
+}
+
+function automaticWorldCapture() {
+  const world = {
+    created_at: new Date().toISOString(),
+    format: "reproit.world-checkpoint.v1",
+    points: [],
+  };
+  return new ManagedWorldCapture(canonicalDigest(world), () => ({
+    artifacts: [],
+    completion: "return",
+    world: structuredClone(world),
+  }));
+}
+
+function automaticFailurePayload(operationName, error) {
+  const type = error?.constructor?.name || "Error";
+  const identity = {
+    category: "exception",
+    cause_types: [],
+    frames: [],
+    operation_kind: "request-response",
+    operation_name: operationName,
+    runtime_family: "node",
+    schema: "reproit.failure.v1",
+    stable_code: type,
+    type,
+  };
+  return {
+    failure: {
+      category: "exception",
+      identity: canonicalDigest(identity),
+      matcher: "exception-exact-v1",
+      object_id: newObjectId(),
+      schema: "reproit.failure.v1",
+    },
+    format: "reproit.failure-payload.v1",
+    identity,
+  };
+}
+
+function findProjectFile(start) {
+  let directory = path.resolve(start);
+  for (let depth = 0; depth < MAX_PROJECT_SEARCH_DEPTH; depth += 1) {
+    const candidate = path.join(directory, ".reproit", "project.toml");
+    try {
+      const directoryMetadata = fs.lstatSync(path.dirname(candidate));
+      const metadata = fs.lstatSync(candidate);
+      if (
+        directoryMetadata.isDirectory() &&
+        !directoryMetadata.isSymbolicLink() &&
+        metadata.isFile() &&
+        !metadata.isSymbolicLink() &&
+        metadata.size <= MAX_PROJECT_BYTES
+      ) {
+        return candidate;
+      }
+    } catch {
+      // Continue toward the repository root.
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  throw new Error("Repro It could not load the reviewed project configuration.");
+}
+
+function parseProjectConfig(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length > MAX_PROJECT_BYTES) {
+    throw new Error("The Repro It project configuration is invalid.");
+  }
+  const project = {};
+  for (const sourceLine of bytes.toString("utf8").split(/\r?\n/u)) {
+    const line = sourceLine.trim();
+    if (line.length === 0 || line.startsWith("#")) continue;
+    if (line.startsWith("[")) break;
+    const separator = line.indexOf("=");
+    if (separator <= 0) {
+      throw new Error("The Repro It project configuration is invalid.");
+    }
+    const key = line.slice(0, separator).trim();
+    const raw = line.slice(separator + 1).trim();
+    if (!/^[A-Za-z0-9_-]+$/u.test(key) || Object.hasOwn(project, key)) {
+      throw new Error("The Repro It project configuration is invalid.");
+    }
+    if (raw.startsWith('"')) {
+      const value = JSON.parse(raw);
+      if (typeof value !== "string") throw new TypeError("Invalid string.");
+      project[key] = value;
+      continue;
+    }
+    if (!/^(0|[1-9][0-9]*)$/u.test(raw)) {
+      throw new Error("The Repro It project configuration is invalid.");
+    }
+    project[key] = Number.parseInt(raw, 10);
+  }
+  return project;
+}
+
+function gitSourceRevision(projectRoot) {
+  const revision = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd: projectRoot,
+    encoding: "ascii",
+    maxBuffer: 65,
+    timeout: 2_000,
+  }).trim();
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(revision)) {
+    throw new Error("Repro It could not identify the deployed source revision.");
+  }
+  return revision;
 }

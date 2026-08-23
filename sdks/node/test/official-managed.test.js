@@ -49,6 +49,21 @@ test("public integration fails before World capture when unbound", () => {
   assert.equal(worldAccessed, false);
 });
 
+test("framework-neutral operation preserves the exact error", async () => {
+  const original = new Error("customer failure");
+  await assert.rejects(
+    () =>
+      ReproIt.init().operation(
+        "todos.create",
+        Buffer.from('{"title":"trigger-bug"}'),
+        async () => {
+          throw original;
+        },
+      ),
+    (observed) => observed === original,
+  );
+});
+
 test("official bindings have one immutable materialization site", () => {
   const source = fs.readFileSync(
     new URL("../src/official-managed.js", import.meta.url),

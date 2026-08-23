@@ -51,16 +51,19 @@ export declare class OperationCapture {
   readonly operationId: string | null;
   recordDependency(dependency: { [key: string]: Json }): void;
 }
-export declare function operationFromRequest(
-  request: object,
-): OperationCapture | null;
 export declare class ReproIt {
+  static init(): ReproIt;
   constructor(
     project: { [key: string]: Json },
     buildRepositoryId: string,
     sourceRevision: string,
     worldCapture: () => ManagedWorldCapture,
   );
+  operation<Result>(
+    operationName: string,
+    input: Uint8Array | string,
+    operation: () => Result,
+  ): Result;
   run<Result>(
     operationName: string,
     contentType: string,
@@ -82,15 +85,6 @@ export declare class ReproIt {
     operation: (capture: OperationCapture) => Result,
     classifyFailure: (error: unknown) => { [key: string]: Json } | null,
   ): Result;
-  http<Request extends object, Response, Result>(
-    operationName: string,
-    captureInput: (request: Request) => {
-      contentType: string;
-      input: Uint8Array | string;
-    },
-    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
-    handler: (request: Request, response: Response) => Result,
-  ): (request: Request, response: Response) => Result;
 }
 export declare class Sdk {
   constructor(sink: CandidateSink);

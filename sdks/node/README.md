@@ -6,6 +6,7 @@ Capture failed Backend operations from a Node.js application.
 npm install @reproit/sdk@1.0.0
 ```
 
-Call `reproit.http` for a standard request handler. Use `reproit.run` for other operation types.
+Run `reproit init`. Then create `ReproIt.init()` once. Call `operation` at each top-level
+application boundary. The API does not depend on a web framework.
 
 Read the [Node.js integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/node.md).

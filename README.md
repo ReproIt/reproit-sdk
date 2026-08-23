@@ -1,40 +1,25 @@
 # Repro It SDKs
 
-Repro It SDKs capture failed production operations and the World that affected them. Managed Repro
-It verifies each capture before it shows a Repro to your team.
+Add Repro It to a backend application in two steps. Run `reproit init`, then wrap each top-level
+application operation.
 
-## Add capture to an application
+The SDK loads the project file and the current Git revision. Your application supplies an operation
+name, its input bytes, and the function to run. It does not create schemas, IDs, endpoints, or
+Failure records.
 
-1. Install the [Repro It CLI](https://github.com/ReproIt/reproit-cli).
-2. Run `reproit init` in the application repository.
-3. Select the service and SDK.
-4. Install one SDK package.
-5. Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store.
-6. Add one framework wrapper or wrap a top-level operation.
-7. Deploy the application and trigger the bug.
+| Language | Package | Setup |
+| --- | --- | --- |
+| Rust | `reproit-sdk-rust` | [Rust](docs/rust.md) |
+| Python | `reproit-sdk` | [Python](docs/python.md) |
+| Go | `reproit.dev/sdk-go` | [Go](docs/go.md) |
+| Node.js | `@reproit/sdk` | [Node.js](docs/node.md) |
+| .NET | `ReproIt.Sdk` | [.NET](docs/dotnet.md) |
 
-Choose the guide for your language:
+Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store. Deploy the application through
+its normal release process. Capture failure never changes an application result or error.
 
-| Language | Package | Framework boundary | Guide |
-| --- | --- | --- | --- |
-| Rust | `reproit-sdk-rust` | Universal operation | [Rust](docs/rust.md) |
-| Python | `reproit-sdk` | ASGI and WSGI | [Python](docs/python.md) |
-| Go | `reproit.dev/sdk-go` | `net/http` | [Go](docs/go.md) |
-| Node.js | `@reproit/sdk` | Standard request handler | [Node.js](docs/node.md) |
-| .NET | `ReproIt.Sdk` | ASP.NET Core | [.NET](docs/dotnet.md) |
-
-Each package supports request-response, ordered-stream, and delivered-work operations. The same API
-works in a host process or an OCI container. Framework wrappers call the universal operation API.
-
-## Record an operation
-
-The World contains everything that the operation observed that can change its result.
-
-Record the input and each observed dependency result that can change the outcome. Mark a successful
-operation as successful. Submit a failed operation only after the World closure is complete.
-
-The SDK bounds records, bytes, active operations, and queued failures. A capture error keeps the
-original application result or exception.
+The five SDK cores have no framework dependency. A framework adapter can translate its boundary to
+the same operation API. An adapter cannot own capture rules or protocol data.
 
 ## Maintain the SDKs
 

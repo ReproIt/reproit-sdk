@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
+import subprocess
+import tomllib
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from . import CandidateStart, Sdk, canonical_bytes
@@ -19,6 +25,8 @@ MAX_CONTENT_TYPE_BYTES = 256
 MAX_DEPENDENCIES = 1_024
 MAX_EVENT_BYTES = 65_536
 MAX_OPERATION_NAME_BYTES = 128
+MAX_PROJECT_CONFIG_BYTES = 65_536
+MAX_PROJECT_SEARCH_DEPTH = 64
 
 
 @dataclass(frozen=True)
@@ -71,71 +79,65 @@ class ReproIt:
         )
         self._world_capture = world_capture
 
-    def asgi(
-        self,
-        application: Callable[..., Awaitable[None]],
-        operation_name: str,
-        capture_input: Callable[[Mapping[str, Any]], tuple[str, bytes]],
-        classify_failure: Callable[[BaseException], Mapping[str, Any] | None],
-    ) -> Callable[..., Awaitable[None]]:
-        """Wrap an ASGI application with the framework-neutral operation API."""
-
-        async def middleware(scope: Mapping[str, Any], receive: Any, send: Any) -> None:
-            if scope.get("type") != "http":
-                await application(scope, receive, send)
-                return
-            try:
-                content_type, input_bytes = capture_input(scope)
-            except Exception:
-                await application(scope, receive, send)
-                return
-
-            async def invoke(context: OperationCapture) -> None:
-                captured_scope = dict(scope)
-                extensions = dict(captured_scope.get("extensions", {}))
-                extensions["reproit.operation"] = context
-                captured_scope["extensions"] = extensions
-                await application(captured_scope, receive, send)
-
-            await self.run_async(
-                operation_name,
-                content_type,
-                input_bytes,
-                invoke,
-                classify_failure,
+    @classmethod
+    def init(cls) -> ReproIt:
+        """Load the reviewed project configuration without changing the application."""
+        instance = object.__new__(cls)
+        instance._project = None
+        instance._world_capture = _automatic_world_capture
+        try:
+            project_file = _find_project_file(Path.cwd())
+            if (
+                project_file.parent.is_symlink()
+                or project_file.is_symlink()
+                or project_file.stat().st_size > MAX_PROJECT_CONFIG_BYTES
+            ):
+                return instance
+            project = tomllib.loads(project_file.read_text(encoding="utf-8"))
+            repository_id = project.get("repository_id")
+            if not isinstance(repository_id, str):
+                return instance
+            revision = _git_source_revision(project_file.parent.parent)
+            instance._project = OfficialManagedProject.from_build(
+                project, repository_id, revision
             )
+        except Exception:
+            pass
+        return instance
 
-        return middleware
-
-    def wsgi(
+    def operation(
         self,
-        application: Callable[..., Any],
         operation_name: str,
-        capture_input: Callable[[Mapping[str, Any]], tuple[str, bytes]],
-        classify_failure: Callable[[BaseException], Mapping[str, Any] | None],
-    ) -> Callable[..., Any]:
-        """Wrap a WSGI application with the framework-neutral operation API."""
+        input_bytes: bytes,
+        operation: Callable[[], Any],
+    ) -> Any:
+        """Run one framework-neutral operation and preserve its exact result."""
+        return self.run(
+            operation_name,
+            "application/octet-stream",
+            input_bytes,
+            lambda _capture: operation(),
+            lambda error: _failure_payload(
+                "exception", operation_name, type(error).__name__
+            ),
+        )
 
-        def middleware(environ: Mapping[str, Any], start_response: Any) -> Any:
-            try:
-                content_type, input_bytes = capture_input(environ)
-            except Exception:
-                return application(environ, start_response)
-
-            def invoke(context: OperationCapture) -> Any:
-                captured_environ = dict(environ)
-                captured_environ["reproit.operation"] = context
-                return application(captured_environ, start_response)
-
-            return self.run(
-                operation_name,
-                content_type,
-                input_bytes,
-                invoke,
-                classify_failure,
-            )
-
-        return middleware
+    async def operation_async(
+        self,
+        operation_name: str,
+        input_bytes: bytes,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Run one asynchronous framework-neutral operation."""
+        return await self.run_async(
+            operation_name,
+            "application/octet-stream",
+            input_bytes,
+            lambda _capture: operation(),
+            lambda error: _failure_payload(
+                "exception", operation_name, type(error).__name__
+            ),
+        )
 
     def run(
         self,
@@ -184,6 +186,8 @@ class ReproIt:
         input_bytes: bytes,
     ) -> _ActiveOperation | None:
         try:
+            if self._project is None:
+                return None
             _validate_boundary(
                 operation_kind, operation_name, content_type, input_bytes
             )
@@ -300,3 +304,77 @@ def _operation_input(content_type: str, value: bytes) -> dict[str, object]:
 
 def _managed_project_token_from_environment() -> ManagedProjectToken:
     return ManagedProjectToken(os.environ["REPROIT_MANAGED_PROJECT_TOKEN"])
+
+
+def _find_project_file(start: Path) -> Path:
+    directory = start.resolve()
+    for _ in range(MAX_PROJECT_SEARCH_DEPTH):
+        candidate = directory / ".reproit" / "project.toml"
+        if candidate.exists():
+            return candidate
+        parent = directory.parent
+        if parent == directory:
+            break
+        directory = parent
+    raise ValueError("Repro It could not load the reviewed project configuration.")
+
+
+def _git_source_revision(project_root: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        timeout=2,
+    )
+    if result.stderr or len(result.stdout) > 65:
+        raise ValueError("Repro It could not identify the deployed source revision.")
+    revision = result.stdout.decode("ascii").strip()
+    if len(revision) not in (40, 64) or any(
+        character not in "0123456789abcdef" for character in revision
+    ):
+        raise ValueError("Repro It could not identify the deployed source revision.")
+    return revision
+
+
+def _automatic_world_capture() -> ManagedWorldCapture:
+    world: dict[str, object] = {
+        "created_at": datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        ),
+        "format": "reproit.world-checkpoint.v1",
+        "points": [],
+    }
+    world_id = "sha256:" + hashlib.sha256(canonical_bytes(world)).hexdigest()
+    return ManagedWorldCapture(
+        world_id,
+        lambda _operation_id: ManagedCaptureClosure([], "return", copy.deepcopy(world)),
+    )
+
+
+def _failure_payload(
+    category: str, operation_name: str, stable_code: str
+) -> dict[str, object]:
+    identity = {
+        "category": category,
+        "cause_types": [],
+        "frames": [],
+        "operation_kind": "request-response",
+        "operation_name": operation_name,
+        "runtime_family": "python",
+        "schema": "reproit.failure.v1",
+        "stable_code": stable_code,
+        "type": "HttpFailure" if category == "visible-error" else stable_code,
+    }
+    identity_digest = "sha256:" + hashlib.sha256(canonical_bytes(identity)).hexdigest()
+    return {
+        "failure": {
+            "category": category,
+            "identity": identity_digest,
+            "matcher": "exception-exact-v1",
+            "object_id": f"obj_{uuid.uuid7()}",
+            "schema": "reproit.failure.v1",
+        },
+        "format": "reproit.failure-payload.v1",
+        "identity": identity,
+    }

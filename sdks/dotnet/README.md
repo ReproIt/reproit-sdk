@@ -6,6 +6,7 @@ Capture failed Backend operations from a .NET application.
 dotnet add package ReproIt.Sdk --version 1.0.0
 ```
 
-Call `RunAsync` in ASP.NET Core middleware. Use `Run` or `RunAsync` in every other framework.
+Run `reproit init`. Then create `ReproItCapture.Init()` once. Call `Operation` or `OperationAsync`
+at each top-level application boundary. The API does not depend on a web framework.
 
 Read the [.NET integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/dotnet.md).

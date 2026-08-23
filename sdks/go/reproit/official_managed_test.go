@@ -2,6 +2,7 @@ package reproit
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -123,5 +124,18 @@ func TestPublicIntegrationFailsBeforeWorldCaptureWhenUnbound(t *testing.T) {
 	})
 	if managedErrorCode(t, err) != "CONFIG_CONFLICT" || capture != nil || worldAccessed {
 		t.Fatalf("unbound public integration: %#v, %v, %t", capture, err, worldAccessed)
+	}
+}
+
+func TestFrameworkNeutralOperationPreservesExactError(t *testing.T) {
+	original := errors.New("customer failure")
+	result, observed := Operation(
+		Init(),
+		"todos.create",
+		[]byte(`{"title":"trigger-bug"}`),
+		func() (string, error) { return "unchanged", original },
+	)
+	if result != "unchanged" || observed != original {
+		t.Fatalf("operation changed the application result: %q, %v", result, observed)
 	}
 }

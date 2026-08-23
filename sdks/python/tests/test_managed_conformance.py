@@ -1,4 +1,5 @@
 import copy
+import io
 import inspect
 import json
 import os
@@ -1135,6 +1136,20 @@ class ManagedTransportValidation(unittest.TestCase):
         response = _read_response(right)
         self.assertEqual(response.status, 204)
         self.assertEqual(response.body, b"")
+
+
+class FrameworkNeutralOperation(unittest.IsolatedAsyncioTestCase):
+    async def test_operation_preserves_the_exact_application_exception(self):
+        original = RuntimeError("customer failure")
+
+        async def fail():
+            raise original
+
+        with self.assertRaises(RuntimeError) as raised:
+            await ReproIt.init().operation_async(
+                "todos.create", b'{"title":"trigger-bug"}', fail
+            )
+        self.assertIs(raised.exception, original)
 
 
 class OfficialManagedReleaseBinding(unittest.TestCase):
