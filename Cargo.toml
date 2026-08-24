@@ -17,9 +17,9 @@ ed25519-dalek = "=3.0.0"
 getrandom = "=0.4.3"
 hickory-resolver = { version = "=0.26.1", default-features = false, features = ["system-config", "tokio"] }
 proptest = "=1.11.0"
-reproit-backend = { git = "https://github.com/ReproIt/reproit-core", rev = "76cccb924ee2717388c70487d7d09486664fe148", version = "=1.0.0" }
-reproit-cloud-api = { git = "https://github.com/ReproIt/reproit-core", rev = "76cccb924ee2717388c70487d7d09486664fe148", version = "=1.0.0" }
-reproit-core = { git = "https://github.com/ReproIt/reproit-core", rev = "76cccb924ee2717388c70487d7d09486664fe148", version = "=1.0.0" }
+reproit-backend = { git = "https://github.com/ReproIt/reproit-core", rev = "50b3d7ff68e22be0377709579f67655ac904f492", version = "=1.0.0" }
+reproit-cloud-api = { git = "https://github.com/ReproIt/reproit-core", rev = "50b3d7ff68e22be0377709579f67655ac904f492", version = "=1.0.0" }
+reproit-core = { git = "https://github.com/ReproIt/reproit-core", rev = "50b3d7ff68e22be0377709579f67655ac904f492", version = "=1.0.0" }
 rustls = { version = "=0.23.40", default-features = false, features = ["aws_lc_rs", "std"] }
 rustls-platform-verifier = "=0.7.0"
 serde = { version = "=1.0.229", features = ["derive"] }
