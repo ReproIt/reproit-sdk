@@ -174,6 +174,24 @@ fn scoped_future_installs_context_for_each_manual_poll() {
 }
 
 #[test]
+fn scoped_poll_installs_and_restores_the_operation_context() {
+    let _process = process_test();
+    let (context, shared, sdk, operation_id) = started_context(9);
+
+    let application_result = context.scope_poll(|| {
+        assert_eq!(
+            AutomaticOperationContext::current().unwrap().operation_id(),
+            operation_id
+        );
+        29_u8
+    });
+
+    assert_eq!(application_result, 29);
+    assert!(automatic_operation_stack_is_empty());
+    close_and_abandon(&shared, &sdk, operation_id);
+}
+
+#[test]
 fn dropped_session_releases_state_and_keeps_world_incomplete() {
     let _process = process_test();
     let (context, shared, sdk, operation_id) = started_context(6);
