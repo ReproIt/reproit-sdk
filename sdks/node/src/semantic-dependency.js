@@ -123,9 +123,7 @@ function replayDependency(session) {
     const responseRecord = readResponse(session);
     const outcome = session.finish(null);
     if (outcome === null) throw invalidReplay();
-    const response = responseFromRecord(responseRecord);
-    if (response.outcome !== outcome) throw invalidReplay();
-    return response;
+    return responseFromRecord(responseRecord, outcome);
   } catch (error) {
     session.abandon();
     if (error?.code === "ERR_REPROIT_SEMANTIC_DEPENDENCY") throw error;
@@ -160,7 +158,7 @@ function responseInput(response) {
   };
 }
 
-function responseFromRecord(record) {
+function responseFromRecord(record, validatedOutcome) {
   try {
     const value = JSON.parse(record.toString("utf8"));
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -170,7 +168,7 @@ function responseFromRecord(record) {
       errorCode: value.error_code,
       errorNumber: value.error_number,
       metadata: decodeMetadata(value.metadata),
-      outcome: value.outcome,
+      outcome: validatedOutcome,
       payload: value.payload === null ? null : decodeBase64url(value.payload),
       status: value.status,
       statusCode: value.status_code,

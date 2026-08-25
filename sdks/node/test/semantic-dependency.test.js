@@ -66,10 +66,16 @@ class DependencyBridge {
   #readBytes;
   #response;
 
-  constructor(action, responseBytes = Buffer.alloc(0), readBytes = 17) {
+  constructor(
+    action,
+    responseBytes = Buffer.alloc(0),
+    readBytes = 17,
+    validatedOutcome = "response",
+  ) {
     this.#action = action;
     this.#readBytes = readBytes;
     this.#response = responseBytes;
+    this.validatedOutcome = validatedOutcome;
   }
 
   operationBegin() {
@@ -96,7 +102,7 @@ class DependencyBridge {
   dependencyFinish(handle, dependencyResponseValue) {
     if (this.failFinish) throw new Error("private bridge failure");
     this.calls.push(["dependency-finish", handle, dependencyResponseValue]);
-    return dependencyResponseValue?.outcome ?? "response";
+    return dependencyResponseValue?.outcome ?? this.validatedOutcome;
   }
 
   operationSucceed() {}
@@ -145,6 +151,20 @@ test("replay reads chunks, finishes validation, then reconstructs", () => {
   assert.deepEqual(actual, expected);
   assert.equal(calls, 0);
   assert.deepEqual(bridge.calls.at(-1), ["dependency-finish", 4, null]);
+});
+
+test("replay uses the engine-validated outcome", () => {
+  const stored = response({ outcome: "error" });
+  const bridge = new DependencyBridge(
+    "replay",
+    responseRecord(stored),
+    17,
+    "response",
+  );
+
+  const actual = run(bridge, () => stored);
+
+  assert.equal(actual.outcome, "response");
 });
 
 test("capture failures preserve one exact result or exception", () => {

@@ -76,6 +76,7 @@ class DependencyBridge:
         response: bytes = b"",
         *,
         read_bytes: int = 17,
+        validated_outcome: str = "response",
     ) -> None:
         self.action = action
         self.calls: list[tuple[object, ...]] = []
@@ -85,6 +86,7 @@ class DependencyBridge:
         self.offset = 0
         self.read_bytes = read_bytes
         self.response = response
+        self.validated_outcome = validated_outcome
 
     def operation_begin(self, _engine: int, _begin: object) -> object:
         return type("Native", (), {"handle": 2, "operation_id": "op_dependency"})()
@@ -125,7 +127,7 @@ class DependencyBridge:
             raise RuntimeError("private bridge failure")
         self.calls.append(("dependency-finish", handle, response))
         if response is None:
-            return "response"
+            return self.validated_outcome
         return str(response["outcome"])
 
     def operation_succeed(self, *_arguments: object) -> None:
@@ -186,6 +188,18 @@ class SemanticDependencyTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         self.assertEqual(live_calls, 0)
         self.assertEqual(bridge.calls[-1], ("dependency-finish", 4, None))
+
+    def test_replay_uses_the_engine_validated_outcome(self) -> None:
+        stored = _response(outcome="error")
+        bridge = DependencyBridge(
+            "replay",
+            _response_record(stored),
+            validated_outcome="response",
+        )
+
+        actual = self._run(bridge, lambda: stored)
+
+        self.assertEqual(actual.outcome, "response")
 
     def test_capture_failures_preserve_one_exact_result_or_exception(self) -> None:
         for mode in ("conversion", "open", "finish"):

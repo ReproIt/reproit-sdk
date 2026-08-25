@@ -129,10 +129,7 @@ def _replay_dependency(session: object) -> _DependencyResponse:
         outcome = session._finish(None)
         if outcome is None:
             raise _invalid_replay()
-        response = _response_from_record(response_record)
-        if response.outcome != outcome:
-            raise _invalid_replay()
-        return response
+        return _response_from_record(response_record, outcome)
     except Exception as error:
         session._abandon()
         if isinstance(error, _SemanticDependencyError):
@@ -166,14 +163,14 @@ def _response_input(response: _DependencyResponse) -> dict[str, object]:
     }
 
 
-def _response_from_record(record: bytes) -> _DependencyResponse:
+def _response_from_record(record: bytes, validated_outcome: str) -> _DependencyResponse:
     try:
         value = json.loads(record)
         if not isinstance(value, dict):
             raise TypeError
         payload = value["payload"]
         return _DependencyResponse(
-            outcome=value["outcome"],
+            outcome=validated_outcome,
             payload=None if payload is None else _decode_base64url(payload),
             metadata=_decode_metadata(value["metadata"]),
             status=value["status"],
