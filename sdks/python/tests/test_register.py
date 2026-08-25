@@ -147,7 +147,9 @@ class RegisterLaunchTests(unittest.TestCase):
             ("--", "-c", "print('value')"),
             ("--", "-m"),
             ("--", "-m", "-invalid"),
+            ("--", "-m", "orders.café"),
             ("extra", "--", "application.py"),
+            ("--", "application.py\nsecond.py"),
             ("--", "application.py", *("value" for _ in range(127))),
             ("--", "application.py", "x" * 4_097),
         )

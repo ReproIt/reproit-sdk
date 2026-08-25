@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import runpy
 import sys
+import unicodedata
 from dataclasses import dataclass
 
 from .automatic_adapters import _acquire_automatic_adapters
@@ -56,7 +57,11 @@ def _parse_launch(arguments: list[str]) -> _Launch:
         if len(arguments) < 3 or not _valid_module_name(arguments[2]):
             raise ValueError(_USAGE_ERROR)
         return _Launch(tuple(arguments[3:]), arguments[2], None)
-    if not target or target.startswith("-"):
+    if (
+        not target
+        or target.startswith("-")
+        or any(unicodedata.category(character) == "Cc" for character in target)
+    ):
         raise ValueError(_USAGE_ERROR)
     return _Launch(tuple(arguments[2:]), None, target)
 
@@ -78,11 +83,20 @@ def _arguments_are_bounded(arguments: list[str]) -> bool:
 
 
 def _valid_module_name(value: str) -> bool:
-    return (
-        bool(value)
-        and not value.startswith("-")
-        and all(part.isidentifier() for part in value.split("."))
-    )
+    if not value or value.startswith("-"):
+        return False
+    for component in value.split("."):
+        if not component:
+            return False
+        first, *remaining = component
+        if not (first.isascii() and (first.isalpha() or first == "_")):
+            return False
+        if any(
+            not (character.isascii() and (character.isalnum() or character == "_"))
+            for character in remaining
+        ):
+            return False
+    return True
 
 
 def _acquire_process_lease() -> bool:
