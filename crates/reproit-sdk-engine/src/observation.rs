@@ -8,7 +8,7 @@ use reproit_sdk_rust::AutomaticManagedOperation;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{ObservationEntry, Registry, not_found};
+use super::{ObservationEntry, Registry, SemanticDependencySession, not_found};
 
 pub const MAX_OBSERVATION_SESSIONS: usize = 1_024;
 
@@ -61,8 +61,13 @@ impl Registry {
             .ok_or_else(not_found)?
             .operation
             .open_observation(observation_handle, class, causal_parent_id)?;
-        self.observations
-            .insert(observation_handle, ObservationEntry { operation_handle });
+        self.observations.insert(
+            observation_handle,
+            ObservationEntry {
+                operation_handle,
+                semantic_dependency: SemanticDependencySession::for_class(class),
+            },
+        );
         Ok(json!({
             "observation_handle": observation_handle,
             "session_position": session_position,
@@ -80,30 +85,64 @@ impl Registry {
             AutomaticManagedOperation::MAX_OBSERVATION_CHUNK_BYTES,
         )?;
         let operation_handle = self.operation_for_observation(observation_handle)?;
-        let operation = &mut self
-            .operations
-            .get_mut(&operation_handle)
+        let semantic_result = self
+            .observations
+            .get_mut(&observation_handle)
             .ok_or_else(not_found)?
-            .operation;
-        match stream {
-            ObservationStreamInput::Request => {
-                operation.write_observation_request(observation_handle, &chunk)?;
-            }
-            ObservationStreamInput::Response => {
-                operation.write_observation_response(observation_handle, &chunk)?;
-            }
+            .semantic_dependency
+            .as_mut()
+            .map_or(Ok(()), |session| session.write(stream, &chunk));
+        if let Err(error) = semantic_result {
+            self.invalidate_semantic_observation(observation_handle);
+            return Err(error);
+        }
+        let result = match stream {
+            ObservationStreamInput::Request => self
+                .operations
+                .get_mut(&operation_handle)
+                .ok_or_else(not_found)?
+                .operation
+                .write_observation_request(observation_handle, &chunk),
+            ObservationStreamInput::Response => self
+                .operations
+                .get_mut(&operation_handle)
+                .ok_or_else(not_found)?
+                .operation
+                .write_observation_response(observation_handle, &chunk),
+        };
+        if let Err(error) = result {
+            self.invalidate_semantic_observation(observation_handle);
+            return Err(error);
         }
         Ok(json!({}))
     }
 
     pub(super) fn dispatch_observation(&mut self, observation_handle: u64) -> Result<Value, Error> {
         let operation_handle = self.operation_for_observation(observation_handle)?;
+        let semantic_result = self
+            .observations
+            .get_mut(&observation_handle)
+            .ok_or_else(not_found)?
+            .semantic_dependency
+            .as_mut()
+            .map_or(Ok(()), SemanticDependencySession::dispatch);
+        if let Err(error) = semantic_result {
+            self.invalidate_semantic_observation(observation_handle);
+            return Err(error);
+        }
         let action = self
             .operations
             .get_mut(&operation_handle)
             .ok_or_else(not_found)?
             .operation
-            .dispatch_observation(observation_handle)?;
+            .dispatch_observation(observation_handle);
+        let action = match action {
+            Ok(action) => action,
+            Err(error) => {
+                self.invalidate_semantic_observation(observation_handle);
+                return Err(error);
+            }
+        };
         Ok(json!({ "action": action }))
     }
 
@@ -115,6 +154,19 @@ impl Registry {
             .ok_or_else(not_found)?
             .operation
             .read_observation_response(observation_handle)?;
+        let semantic_result = self
+            .observations
+            .get_mut(&observation_handle)
+            .ok_or_else(not_found)?
+            .semantic_dependency
+            .as_mut()
+            .map_or(Ok(()), |session| {
+                session.write(ObservationStreamInput::Response, &chunk)
+            });
+        if let Err(error) = semantic_result {
+            self.invalidate_semantic_observation(observation_handle);
+            return Err(error);
+        }
         encode_observation_read_result(&chunk, eof)
     }
 
@@ -124,12 +176,32 @@ impl Registry {
         outcome: DependencyOutcome,
         session_position: u64,
     ) -> Result<Value, Error> {
-        let operation_handle = self.take_observation(observation_handle)?;
-        self.operations
+        let entry = self
+            .observations
+            .get(&observation_handle)
+            .ok_or_else(not_found)?;
+        let semantic_result = entry
+            .semantic_dependency
+            .as_ref()
+            .map_or(Ok(()), |session| session.finish(outcome));
+        if let Err(error) = semantic_result {
+            self.invalidate_semantic_observation(observation_handle);
+            return Err(error);
+        }
+        let operation_handle = entry.operation_handle;
+        let result = self
+            .operations
             .get_mut(&operation_handle)
             .ok_or_else(not_found)?
             .operation
-            .finish_observation(observation_handle, outcome, session_position)?;
+            .finish_observation(observation_handle, outcome, session_position);
+        if let Err(error) = result {
+            self.invalidate_semantic_observation(observation_handle);
+            return Err(error);
+        }
+        self.observations
+            .remove(&observation_handle)
+            .ok_or_else(not_found)?;
         Ok(json!({}))
     }
 
@@ -153,11 +225,14 @@ impl Registry {
             .ok_or_else(not_found)
     }
 
-    fn take_observation(&mut self, observation_handle: u64) -> Result<u64, Error> {
-        self.observations
-            .remove(&observation_handle)
-            .map(|entry| entry.operation_handle)
-            .ok_or_else(not_found)
+    fn invalidate_semantic_observation(&mut self, observation_handle: u64) {
+        let Some(entry) = self.observations.remove(&observation_handle) else {
+            return;
+        };
+        let Some(operation) = self.operations.get_mut(&entry.operation_handle) else {
+            return;
+        };
+        let _ = operation.operation.abandon_observation(observation_handle);
     }
 }
 
@@ -235,6 +310,7 @@ mod tests {
             7,
             ObservationEntry {
                 operation_handle: 11,
+                semantic_dependency: None,
             },
         )]);
         let mut abandon_calls = 0;
@@ -257,6 +333,7 @@ mod tests {
             8,
             ObservationEntry {
                 operation_handle: 11,
+                semantic_dependency: None,
             },
         );
         super::super::remove_operation_observations(&mut observations, 11);

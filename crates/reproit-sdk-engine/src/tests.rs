@@ -201,6 +201,7 @@ fn one_over_global_observation_capacity_stops_before_operation_lookup() {
             u64::try_from(handle).unwrap(),
             ObservationEntry {
                 operation_handle: 1,
+                semantic_dependency: None,
             },
         );
     }
@@ -218,18 +219,21 @@ fn operation_cleanup_deletes_only_its_observation_sessions() {
             1,
             ObservationEntry {
                 operation_handle: 10,
+                semantic_dependency: None,
             },
         ),
         (
             2,
             ObservationEntry {
                 operation_handle: 10,
+                semantic_dependency: None,
             },
         ),
         (
             3,
             ObservationEntry {
                 operation_handle: 20,
+                semantic_dependency: None,
             },
         ),
     ]);

@@ -30,10 +30,12 @@ use serde_json::{Value, json};
 
 mod failure_delivery;
 mod observation;
+mod semantic_dependency;
 mod sentinel;
 
 use failure_delivery::{FailureTask, FailureWork, FailureWorker, MAX_FAILURE_TASKS};
 use observation::{ObservationAdapterInput, ObservationStreamInput};
+use semantic_dependency::SemanticDependencySession;
 
 #[cfg(test)]
 use failure_delivery::ReadySink;
@@ -215,6 +217,7 @@ struct SinkEntry {
 
 struct ObservationEntry {
     operation_handle: u64,
+    semantic_dependency: Option<SemanticDependencySession>,
 }
 
 struct Registry {
