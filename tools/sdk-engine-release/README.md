@@ -17,7 +17,7 @@ Use the approved internal transfer route to collect the four bundles. Do not
 put credentials or host connection details in this repository.
 
 To package a prebuilt Node loader, use `--node-loader` with a file named
-`reproit-sdk-engine-loader.node`. The tool does not build the loader.
+`reproit_sdk_engine_loader.node`. The tool does not build the loader.
 
 Each bundle contains `sdk-engine-artifacts.json`. The manifest contains only
 the target, ABI contract digest, artifact basenames, roles, sizes, and content

@@ -24,7 +24,7 @@ MAX_ARTIFACT_BYTES = 512 * 1_024 * 1_024
 MAX_ARTIFACTS = 2
 MAX_MANIFEST_BYTES = 4_096
 BUILD_TIMEOUT_SECONDS = 1_800
-NODE_LOADER_NAME = "reproit-sdk-engine-loader.node"
+NODE_LOADER_NAME = "reproit_sdk_engine_loader.node"
 
 
 class ReleaseError(Exception):

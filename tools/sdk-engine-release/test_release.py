@@ -30,7 +30,7 @@ class ReleaseBuilderTest(unittest.TestCase):
 
     def test_build_stages_one_verified_canonical_bundle(self) -> None:
         target = release.TARGETS["macos-arm64"]
-        loader = self.workspace / release.NODE_LOADER_NAME
+        loader = self.workspace / "reproit_sdk_engine_loader.node"
         loader.write_bytes(b"node-loader")
         calls = []
 
@@ -77,7 +77,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                     },
                     {
                         "digest": release.sha256_bytes(b"node-loader"),
-                        "file": release.NODE_LOADER_NAME,
+                        "file": "reproit_sdk_engine_loader.node",
                         "role": "node-loader",
                         "size": 11,
                     },
