@@ -1,5 +1,43 @@
 {
   "abi_version": 1,
+  "dependency_contract": {
+    "finish_fields": [
+      "dependency_handle",
+      "response"
+    ],
+    "finish_result_fields": [
+      "outcome"
+    ],
+    "open_fields": [
+      "causal_parent_id",
+      "operation_handle",
+      "request"
+    ],
+    "open_result_fields": [
+      "action",
+      "dependency_handle"
+    ],
+    "replay_read_operation": "observation-read",
+    "request_fields": [
+      "encoding",
+      "metadata",
+      "method",
+      "observation_class",
+      "operation",
+      "payload",
+      "protocol",
+      "target"
+    ],
+    "response_fields": [
+      "error_code",
+      "error_number",
+      "metadata",
+      "outcome",
+      "payload",
+      "status",
+      "status_code"
+    ]
+  },
   "error_behavior": {
     "json_error": {
       "error_code_source": "reproit-core-v1",
@@ -60,11 +98,14 @@
     "observation_sessions": 1024,
     "observation_sessions_per_operation": 64,
     "operations": 512,
+    "semantic_dependency_record_bytes": 65536,
     "sink_wait_ms": 1800000,
     "sinks": 16
   },
   "operations": [
     "contract",
+    "dependency-finish",
+    "dependency-open",
     "engine-close",
     "engine-open",
     "observation-abandon",

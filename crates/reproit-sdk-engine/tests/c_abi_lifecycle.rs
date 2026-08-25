@@ -88,18 +88,11 @@ fn c_abi_runs_the_complete_local_non_failure_lifecycle() {
         "operation_handle": operation_handle,
     })));
 
-    for class in [
-        "clock",
-        "database",
-        "environment",
-        "filesystem",
-        "outbound-http",
-        "queue",
-        "randomness",
-    ]
-    .into_iter()
-    {
+    for class in ["clock", "environment", "filesystem", "randomness"] {
         capture_observation(operation_handle, class);
+    }
+    for class in ["database", "outbound-http", "queue"] {
+        capture_dependency(operation_handle, class);
     }
     assert_ok(&call(json!({
         "format": CALL_FORMAT,
@@ -169,6 +162,50 @@ fn capture_observation(operation_handle: u64, class: &str) {
         "outcome": "response",
         "session_position": session_position,
     })));
+}
+
+fn capture_dependency(operation_handle: u64, class: &str) {
+    let (operation, method) = match class {
+        "database" => ("database-execute", None),
+        "outbound-http" => ("outbound-http-request", Some("POST")),
+        "queue" => ("queue-publish", None),
+        _ => panic!("unsupported dependency class"),
+    };
+    let open = call(json!({
+        "causal_parent_id": null,
+        "format": CALL_FORMAT,
+        "operation": "dependency-open",
+        "operation_handle": operation_handle,
+        "request": {
+            "encoding": "bytes",
+            "metadata": [],
+            "method": method,
+            "observation_class": class,
+            "operation": operation,
+            "payload": encode_base64url(format!("{class}-request").as_bytes()),
+            "protocol": "test-protocol",
+            "target": encode_base64url(format!("{class}-target").as_bytes()),
+        },
+    }));
+    assert_ok(&open);
+    assert_eq!(open["result"]["action"], "capture");
+    let dependency_handle = open["result"]["dependency_handle"].as_u64().unwrap();
+    let response = call(json!({
+        "dependency_handle": dependency_handle,
+        "format": CALL_FORMAT,
+        "operation": "dependency-finish",
+        "response": {
+            "error_code": null,
+            "error_number": null,
+            "metadata": [],
+            "outcome": "response",
+            "payload": encode_base64url(format!("{class}-response").as_bytes()),
+            "status": null,
+            "status_code": (class == "outbound-http").then_some(200),
+        },
+    }));
+    assert_ok(&response);
+    assert_eq!(response["result"]["outcome"], "response");
 }
 
 fn observation_adapters() -> Vec<Value> {

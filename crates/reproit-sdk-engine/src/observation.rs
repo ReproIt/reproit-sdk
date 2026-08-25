@@ -2,7 +2,7 @@ use reproit_core::{
     Error, ErrorCode,
     crypto::{decode_base64url_bytes, encode_base64url},
     identity::{Digest, OperationId},
-    model::{AutomaticObservationClass, DependencyOutcome},
+    model::{AutomaticObservationClass, DependencyOutcome, SemanticDependencyResponse},
 };
 use reproit_sdk_rust::AutomaticManagedOperation;
 use serde::Deserialize;
@@ -84,6 +84,19 @@ impl Registry {
             chunk,
             AutomaticManagedOperation::MAX_OBSERVATION_CHUNK_BYTES,
         )?;
+        self.write_observation_bytes(observation_handle, stream, &chunk)
+    }
+
+    pub(super) fn write_observation_bytes(
+        &mut self,
+        observation_handle: u64,
+        stream: ObservationStreamInput,
+        chunk: &[u8],
+    ) -> Result<Value, Error> {
+        if chunk.is_empty() || chunk.len() > AutomaticManagedOperation::MAX_OBSERVATION_CHUNK_BYTES
+        {
+            return Err(quota_error());
+        }
         let operation_handle = self.operation_for_observation(observation_handle)?;
         let semantic_result = self
             .observations
@@ -91,7 +104,7 @@ impl Registry {
             .ok_or_else(not_found)?
             .semantic_dependency
             .as_mut()
-            .map_or(Ok(()), |session| session.write(stream, &chunk));
+            .map_or(Ok(()), |session| session.write(stream, chunk));
         if let Err(error) = semantic_result {
             self.invalidate_semantic_observation(observation_handle);
             return Err(error);
@@ -102,13 +115,13 @@ impl Registry {
                 .get_mut(&operation_handle)
                 .ok_or_else(not_found)?
                 .operation
-                .write_observation_request(observation_handle, &chunk),
+                .write_observation_request(observation_handle, chunk),
             ObservationStreamInput::Response => self
                 .operations
                 .get_mut(&operation_handle)
                 .ok_or_else(not_found)?
                 .operation
-                .write_observation_response(observation_handle, &chunk),
+                .write_observation_response(observation_handle, chunk),
         };
         if let Err(error) = result {
             self.invalidate_semantic_observation(observation_handle);
@@ -176,18 +189,32 @@ impl Registry {
         outcome: DependencyOutcome,
         session_position: u64,
     ) -> Result<Value, Error> {
+        self.finish_observation_inner(observation_handle, outcome, session_position)?;
+        Ok(json!({}))
+    }
+
+    pub(super) fn finish_observation_inner(
+        &mut self,
+        observation_handle: u64,
+        outcome: DependencyOutcome,
+        session_position: u64,
+    ) -> Result<Option<SemanticDependencyResponse>, Error> {
         let entry = self
             .observations
-            .get(&observation_handle)
+            .get_mut(&observation_handle)
             .ok_or_else(not_found)?;
-        let semantic_result = entry
+        let semantic_response = entry
             .semantic_dependency
-            .as_ref()
-            .map_or(Ok(()), |session| session.finish(outcome));
-        if let Err(error) = semantic_result {
-            self.invalidate_semantic_observation(observation_handle);
-            return Err(error);
-        }
+            .as_mut()
+            .map(|session| session.finish(outcome))
+            .transpose();
+        let semantic_response = match semantic_response {
+            Ok(response) => response,
+            Err(error) => {
+                self.invalidate_semantic_observation(observation_handle);
+                return Err(error);
+            }
+        };
         let operation_handle = entry.operation_handle;
         let result = self
             .operations
@@ -202,7 +229,7 @@ impl Registry {
         self.observations
             .remove(&observation_handle)
             .ok_or_else(not_found)?;
-        Ok(json!({}))
+        Ok(semantic_response)
     }
 
     pub(super) fn abandon_observation(&mut self, observation_handle: u64) -> Result<Value, Error> {
@@ -225,7 +252,7 @@ impl Registry {
             .ok_or_else(not_found)
     }
 
-    fn invalidate_semantic_observation(&mut self, observation_handle: u64) {
+    pub(super) fn invalidate_semantic_observation(&mut self, observation_handle: u64) {
         let Some(entry) = self.observations.remove(&observation_handle) else {
             return;
         };

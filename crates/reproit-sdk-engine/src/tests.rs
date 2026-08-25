@@ -11,8 +11,10 @@ use std::{
     thread,
 };
 
-const OPERATIONS: [&str; 17] = [
+const OPERATIONS: [&str; 19] = [
     "contract",
+    "dependency-finish",
+    "dependency-open",
     "engine-close",
     "engine-open",
     "observation-abandon",
@@ -57,6 +59,7 @@ fn abi_contract_matches_engine_constants() {
     );
     assert_contract_limits(&contract);
     assert_eq!(contract["operations"], json!(OPERATIONS));
+    assert_dependency_contract(&contract);
     assert_observation_contract(&contract);
     assert_native_failure_contract(&contract);
     assert_eq!(
@@ -109,8 +112,44 @@ fn assert_contract_limits(contract: &Value) {
         AutomaticManagedOperation::MAX_OBSERVATION_SESSIONS
     );
     assert_eq!(contract["limits"]["operations"], MAX_OPERATIONS);
+    assert_eq!(
+        contract["limits"]["semantic_dependency_record_bytes"],
+        reproit_core::model::MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES
+    );
     assert_eq!(contract["limits"]["sink_wait_ms"], MAX_SINK_WAIT_MS);
     assert_eq!(contract["limits"]["sinks"], MAX_SINKS);
+}
+
+fn assert_dependency_contract(contract: &Value) {
+    assert_eq!(
+        contract["dependency_contract"],
+        json!({
+            "finish_fields": ["dependency_handle", "response"],
+            "finish_result_fields": ["outcome"],
+            "open_fields": ["causal_parent_id", "operation_handle", "request"],
+            "open_result_fields": ["action", "dependency_handle"],
+            "replay_read_operation": "observation-read",
+            "request_fields": [
+                "encoding",
+                "metadata",
+                "method",
+                "observation_class",
+                "operation",
+                "payload",
+                "protocol",
+                "target",
+            ],
+            "response_fields": [
+                "error_code",
+                "error_number",
+                "metadata",
+                "outcome",
+                "payload",
+                "status",
+                "status_code",
+            ],
+        })
+    );
 }
 
 fn assert_observation_contract(contract: &Value) {
@@ -421,6 +460,40 @@ fn unknown_input_fails_without_echoing_input() {
     let value: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(value["error_code"], "SCHEMA_INVALID");
     assert_eq!(value["ok"], false);
+}
+
+#[test]
+fn dependency_error_does_not_echo_application_data() {
+    let application_data = b"private-application-data";
+    let encoded = encode_base64url(application_data);
+    let response = execute(
+        json!({
+            "causal_parent_id": null,
+            "format": CALL_FORMAT,
+            "operation": "dependency-open",
+            "operation_handle": u64::MAX,
+            "request": {
+                "encoding": "bytes",
+                "metadata": [],
+                "method": null,
+                "observation_class": "database",
+                "operation": "database-execute",
+                "payload": encoded,
+                "protocol": "test-protocol",
+                "target": encode_base64url(b"test-target"),
+            },
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let text = String::from_utf8(response).unwrap();
+    assert!(!text.contains(&encoded));
+    assert!(!text.contains("private-application-data"));
+    let value: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["error_code"], "NOT_FOUND");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["result"], json!({}));
+    assert!(text.len() <= MAX_ERROR_RESPONSE_BYTES);
 }
 
 #[test]

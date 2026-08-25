@@ -35,7 +35,9 @@ mod sentinel;
 
 use failure_delivery::{FailureTask, FailureWork, FailureWorker, MAX_FAILURE_TASKS};
 use observation::{ObservationAdapterInput, ObservationStreamInput};
-use semantic_dependency::SemanticDependencySession;
+use semantic_dependency::{
+    SemanticDependencyRequestInput, SemanticDependencyResponseInput, SemanticDependencySession,
+};
 
 #[cfg(test)]
 use failure_delivery::ReadySink;
@@ -65,6 +67,18 @@ static FAILURE_WORKER: OnceLock<FailureWorker> = OnceLock::new();
 enum EngineCall {
     Contract {
         format: String,
+    },
+    DependencyFinish {
+        dependency_handle: u64,
+        format: String,
+        #[serde(default)]
+        response: Option<SemanticDependencyResponseInput>,
+    },
+    DependencyOpen {
+        causal_parent_id: Option<OperationId>,
+        format: String,
+        operation_handle: u64,
+        request: SemanticDependencyRequestInput,
     },
     EngineOpen {
         build_repository_id: String,
@@ -158,6 +172,8 @@ impl EngineCall {
     fn format(&self) -> &str {
         match self {
             Self::Contract { format }
+            | Self::DependencyFinish { format, .. }
+            | Self::DependencyOpen { format, .. }
             | Self::EngineOpen { format, .. }
             | Self::EngineClose { format, .. }
             | Self::ObservationAbandon { format, .. }
@@ -292,6 +308,17 @@ impl Registry {
                     .record_input(&input)?;
                 Ok(json!({}))
             }
+            EngineCall::DependencyOpen {
+                causal_parent_id,
+                operation_handle,
+                request,
+                ..
+            } => self.open_dependency(operation_handle, causal_parent_id, request),
+            EngineCall::DependencyFinish {
+                dependency_handle,
+                response,
+                ..
+            } => self.finish_dependency(dependency_handle, response),
             observation_call @ (EngineCall::ObservationOpen { .. }
             | EngineCall::ObservationWrite { .. }
             | EngineCall::ObservationDispatch { .. }

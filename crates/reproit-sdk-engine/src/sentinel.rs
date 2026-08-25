@@ -274,6 +274,15 @@ pub(crate) fn observation_finished(observation_handle: u64) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn observation_is_active(observation_handle: u64) -> bool {
+    controller()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .active_observations
+        .contains_key(&observation_handle)
+}
+
 fn controller() -> &'static Mutex<Controller> {
     SENTINEL.get_or_init(|| Mutex::new(Controller::new()))
 }
