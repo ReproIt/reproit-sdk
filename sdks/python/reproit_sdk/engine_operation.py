@@ -149,7 +149,7 @@ class ManagedEngineProject:
             if self._automatic_adapters:
                 from .automatic_adapters import _release_automatic_adapters
 
-                self._release_automatic_adapters()
+                _release_automatic_adapters()
 
     def _begin(self, begin: Mapping[str, Any]) -> OperationContext:
         with self._lock:
