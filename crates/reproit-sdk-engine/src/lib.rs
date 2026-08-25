@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 
 mod failure_delivery;
 mod observation;
+mod sentinel;
 
 use failure_delivery::{FailureTask, FailureWork, FailureWorker, MAX_FAILURE_TASKS};
 use observation::{ObservationAdapterInput, ObservationStreamInput};
@@ -330,7 +331,15 @@ impl Registry {
                 class,
                 operation_handle,
                 ..
-            } => self.open_observation(operation_handle, class, causal_parent_id),
+            } => {
+                let result = self.open_observation(operation_handle, class, causal_parent_id)?;
+                let observation_handle = result
+                    .get("observation_handle")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(Error::schema_invalid)?;
+                sentinel::observation_opened(observation_handle, operation_handle, class);
+                Ok(result)
+            }
             EngineCall::ObservationWrite {
                 chunk,
                 observation_handle,
@@ -339,7 +348,11 @@ impl Registry {
             } => self.write_observation(observation_handle, stream, &chunk),
             EngineCall::ObservationDispatch {
                 observation_handle, ..
-            } => self.dispatch_observation(observation_handle),
+            } => {
+                let result = self.dispatch_observation(observation_handle)?;
+                sentinel::observation_dispatched(observation_handle);
+                Ok(result)
+            }
             EngineCall::ObservationRead {
                 observation_handle, ..
             } => self.read_observation(observation_handle),
@@ -348,16 +361,23 @@ impl Registry {
                 outcome,
                 session_position,
                 ..
-            } => self.finish_observation(observation_handle, outcome, session_position),
+            } => {
+                sentinel::observation_finished(observation_handle);
+                self.finish_observation(observation_handle, outcome, session_position)
+            }
             EngineCall::ObservationAbandon {
                 observation_handle, ..
-            } => self.abandon_observation(observation_handle),
+            } => {
+                sentinel::observation_finished(observation_handle);
+                self.abandon_observation(observation_handle)
+            }
             _ => Err(Error::schema_invalid()),
         }
     }
 
     fn succeed_operation(&mut self, operation_handle: u64) -> Result<Value, Error> {
         remove_operation_observations(&mut self.observations, operation_handle);
+        sentinel::operation_removed(operation_handle);
         self.operations
             .remove(&operation_handle)
             .ok_or_else(not_found)?
@@ -368,6 +388,7 @@ impl Registry {
 
     fn abandon_operation(&mut self, operation_handle: u64) -> Result<Value, Error> {
         remove_operation_observations(&mut self.observations, operation_handle);
+        sentinel::operation_removed(operation_handle);
         self.operations
             .remove(&operation_handle)
             .ok_or_else(not_found)?
@@ -407,6 +428,7 @@ impl Registry {
         }
         let handle = self.allocate_handle()?;
         self.engines.insert(handle, engine);
+        sentinel::engine_opened();
         Ok(json!({ "engine_handle": handle }))
     }
 
@@ -421,11 +443,13 @@ impl Registry {
             .collect::<Vec<_>>();
         for operation_handle in operation_handles {
             remove_operation_observations(&mut self.observations, operation_handle);
+            sentinel::operation_removed(operation_handle);
         }
         remove_engine_entries(&mut self.operations, engine_handle, |entry| {
             entry.engine_handle
         });
         remove_engine_sinks(&mut self.sinks, engine_handle);
+        sentinel::engine_closed();
         Ok(json!({}))
     }
 
@@ -451,6 +475,7 @@ impl Registry {
                 operation,
             },
         );
+        sentinel::operation_started(handle);
         Ok(json!({
             "operation_handle": handle,
             "operation_id": operation_id,
@@ -481,6 +506,7 @@ impl Registry {
         operation_handle: u64,
         completion: TriggerCompletion,
     ) -> Result<Value, Error> {
+        let _coverage = sentinel::operation_finished(operation_handle);
         self.operations
             .get_mut(&operation_handle)
             .ok_or_else(not_found)?
@@ -555,6 +581,7 @@ fn enqueue_failure(
             |entry| entry.operation.abandon_incomplete(),
         );
         remove_operation_observations(&mut registry.observations, operation_handle);
+        sentinel::operation_removed(operation_handle);
         let entry = entry?;
         let (entry, project_token) = validate_failure_token(entry, project_token, |entry| {
             entry.operation.abandon_incomplete();
@@ -719,6 +746,7 @@ pub unsafe extern "C" fn reproit_sdk_engine_call(
 fn execute(input: &[u8]) -> Vec<u8> {
     let response = match serde_json::from_slice::<EngineCall>(input) {
         Ok(call) => {
+            let _engine_call_guard = sentinel::engine_call_scope();
             let registry = REGISTRY.get_or_init(|| Mutex::new(Registry::new()));
             match dispatch_call(registry, call) {
                 Ok(result) => EngineResponse {

@@ -22,6 +22,8 @@
     "src/observation-adapters.js",
     "src/process-resources.js",
     "src/public.js",
+    "src/runtime-observation-adapters.js",
+    "src/semantic-observation.js",
     "src/subject-protocol.js",
     "native"
   ],
@@ -30,6 +32,6 @@
   },
   "license": "Apache-2.0",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   }
 }

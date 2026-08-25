@@ -25,27 +25,50 @@ class _ObservationAdapterRegistration:
 
 
 _LOCK = threading.Lock()
-_INSTALLED: dict[NativeObservationClass, _ObservationAdapterRegistration] = {}
+_ACTIVE: dict[NativeObservationClass, _ObservationAdapterRegistration] = {}
 
 
-def _install_observation_adapter(
-    registration: _ObservationAdapterRegistration,
+def _activate_observation_adapters(
+    registrations: tuple[_ObservationAdapterRegistration, ...],
 ) -> None:
-    """Install one real package-owned adapter before an engine opens."""
-    if not isinstance(registration, _ObservationAdapterRegistration):
+    """Publish one complete set of active package-owned adapters."""
+    if not registrations or not all(
+        isinstance(value, _ObservationAdapterRegistration)
+        for value in registrations
+    ):
         raise TypeError("The observation adapter registration is invalid.")
+    classes = [value.observation_class for value in registrations]
+    if len(classes) != len(set(classes)):
+        raise ValueError("The observation adapter class is duplicated.")
+    if len(registrations) > MAX_OBSERVATION_ADAPTERS:
+        raise ValueError("The observation adapter limit was reached.")
     with _LOCK:
-        if registration.observation_class in _INSTALLED:
-            raise ValueError("The observation adapter is already installed.")
-        if len(_INSTALLED) >= MAX_OBSERVATION_ADAPTERS:
-            raise ValueError("The observation adapter limit was reached.")
-        _INSTALLED[registration.observation_class] = registration
+        if _ACTIVE:
+            raise ValueError("Observation adapters are already active.")
+        _ACTIVE.update(
+            (value.observation_class, value) for value in registrations
+        )
+
+
+def _deactivate_observation_adapters(
+    registrations: tuple[_ObservationAdapterRegistration, ...],
+) -> None:
+    """Remove only the active package-owned adapter set."""
+    with _LOCK:
+        if any(
+            _ACTIVE.get(value.observation_class) != value
+            for value in registrations
+        ):
+            _ACTIVE.clear()
+            return
+        for value in registrations:
+            _ACTIVE.pop(value.observation_class, None)
 
 
 def _installed_observation_adapters() -> list[dict[str, str]]:
     """Return a stable copy of the package-owned installed adapters."""
     with _LOCK:
         return [
-            _INSTALLED[observation_class].engine_input()
-            for observation_class in sorted(_INSTALLED)
+            _ACTIVE[observation_class].engine_input()
+            for observation_class in sorted(_ACTIVE)
         ]

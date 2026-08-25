@@ -6,6 +6,7 @@ import {
   NATIVE_ENGINE_MAX_SINK_WAITERS,
   loadNativeEngine,
 } from "./native-engine.js";
+import { acquireRuntimeObservationAdapters } from "./runtime-observation-adapters.js";
 
 const POLL_MILLISECONDS = 50;
 const OPEN_OBSERVATION = Symbol("open-observation");
@@ -19,15 +20,23 @@ export class ManagedEngineProject {
   #closed = false;
   #engineHandle;
   #projectTokenProvider;
+  #releaseRuntimeAdapters;
   #sinkHandles = new Set();
 
-  constructor(constructor, bridge, engineHandle, projectTokenProvider) {
+  constructor(
+    constructor,
+    bridge,
+    engineHandle,
+    projectTokenProvider,
+    releaseRuntimeAdapters = () => {},
+  ) {
     if (constructor !== PROJECT_CONSTRUCTOR) {
       throw new TypeError("Use ManagedEngineProject.open().");
     }
     this.#bridge = bridge;
     this.#engineHandle = engineHandle;
     this.#projectTokenProvider = projectTokenProvider;
+    this.#releaseRuntimeAdapters = releaseRuntimeAdapters;
   }
 
   static open(options) {
@@ -35,7 +44,11 @@ export class ManagedEngineProject {
     bridge.contract();
     const subject = packageRunningNodeSubject(options.entryScript);
     let engineHandle;
+    let releaseRuntimeAdapters = () => {};
+    let opened = false;
+    let subjectDisposed = false;
     try {
+      releaseRuntimeAdapters = acquireRuntimeObservationAdapters();
       engineHandle = bridge.engineOpen({
         buildRepositoryId: options.buildRepositoryId,
         projectToml: options.projectToml,
@@ -47,14 +60,30 @@ export class ManagedEngineProject {
           size: value.size,
         })),
       });
+      opened = true;
     } finally {
-      subject.dispose();
+      try {
+        subject.dispose();
+        subjectDisposed = true;
+      } finally {
+        if (!opened || !subjectDisposed) {
+          if (opened) {
+            try {
+              bridge.engineClose(engineHandle);
+            } catch {
+              // Cleanup must not replace the subject disposal error.
+            }
+          }
+          releaseRuntimeAdapters();
+        }
+      }
     }
     return new ManagedEngineProject(
       PROJECT_CONSTRUCTOR,
       bridge,
       engineHandle,
       options.projectTokenProvider,
+      releaseRuntimeAdapters,
     );
   }
 
@@ -62,7 +91,11 @@ export class ManagedEngineProject {
     if (this.#closed) return;
     this.#closed = true;
     this.#sinkHandles.clear();
-    this.#bridge.engineClose(this.#engineHandle);
+    try {
+      this.#bridge.engineClose(this.#engineHandle);
+    } finally {
+      this.#releaseRuntimeAdapters();
+    }
   }
 
   begin(begin) {

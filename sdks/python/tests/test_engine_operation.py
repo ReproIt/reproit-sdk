@@ -88,6 +88,7 @@ def fixture_project(bridge):
         bridge,
         NativeEngineHandle(1),
         lambda: "fixture-project-token",
+        False,
     )
 
 

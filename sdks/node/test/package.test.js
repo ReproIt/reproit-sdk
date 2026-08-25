@@ -31,6 +31,8 @@ test("package is deterministic, bounded, and installable from a local file", asy
     assert.ok(entries.includes("package/src/process-resources.js"));
     assert.ok(entries.includes("package/src/native-engine.js"));
     assert.ok(entries.includes("package/src/observation-adapters.js"));
+    assert.ok(entries.includes("package/src/runtime-observation-adapters.js"));
+    assert.ok(entries.includes("package/src/semantic-observation.js"));
     assert.ok(entries.includes("package/native/reproit-sdk-engine-loader.c"));
     assert.equal(entries.includes("package/src/index.js"), false);
     assert.equal(entries.includes("package/src/managed-candidate.js"), false);

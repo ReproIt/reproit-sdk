@@ -6,7 +6,10 @@ use reproit_core::{
     model::{
         AutomaticObservationClass, Candidate, DependencyOutcome, DependencyTranscript, Deployment,
         DeploymentFormat, OperationBeginFormat, OperationBeginPayload, OperationKind,
-        ProcessingMode, Subject, SubjectFormat, TriggerCompletion,
+        ProcessingMode, SemanticObservationOperation, SemanticObservationOutcome,
+        SemanticObservationRequest, SemanticObservationRequestFormat, SemanticObservationResponse,
+        SemanticObservationResponseFormat, Subject, SubjectFormat, TriggerCompletion,
+        semantic_observation_value,
     },
 };
 
@@ -75,7 +78,7 @@ fn immutable_state_keeps_only_response_and_keys_it_by_request_digest() {
     let _process = process_test();
     let (sdk, operation_id, _) = started_sdk();
     let mut coordinator = coordinator_with_coverage(sdk, operation_id);
-    capture(
+    let (request, response) = capture(
         &mut coordinator,
         1,
         AutomaticObservationClass::Filesystem,
@@ -87,13 +90,13 @@ fn immutable_state_keeps_only_response_and_keys_it_by_request_digest() {
 
     let capture = coordinator.close(TriggerCompletion::Return).unwrap();
     assert_eq!(capture.closure.artifacts.len(), 1);
-    let request_digest = Digest::of(b"config/settings.json");
+    let request_digest = Digest::of(&request);
     let artifact = &capture.closure.artifacts[0];
     assert!(artifact.uri.contains(&request_digest.to_string()));
     assert_eq!(capture.closure.world.points[0].artifacts.len(), 1);
     assert_eq!(
         capture.closure.world.points[0].artifacts[0].digest,
-        Digest::of(b"enabled=true")
+        Digest::of(&response)
     );
 }
 
@@ -264,6 +267,80 @@ fn caller_session_position_must_match_canonical_order() {
 }
 
 #[test]
+fn semantic_record_class_and_request_binding_fail_closed() {
+    let _process = process_test();
+    let (sdk, operation_id, _) = started_sdk();
+    let mut wrong_class = coordinator_with_coverage(sdk.clone(), operation_id);
+    let (random_request, _) = semantic_records(
+        AutomaticObservationClass::Randomness,
+        b"unused",
+        b"12345678",
+    );
+    wrong_class
+        .open_observation(1, AutomaticObservationClass::Filesystem, None)
+        .unwrap();
+    wrong_class
+        .write_observation_request(1, &random_request)
+        .unwrap();
+    assert_eq!(
+        wrong_class.dispatch_observation(1).unwrap_err().code,
+        ErrorCode::IncompleteCandidate
+    );
+
+    let mut wrong_binding = coordinator_with_coverage(sdk.clone(), operation_id);
+    let (request, response) = semantic_records(
+        AutomaticObservationClass::Filesystem,
+        b"/data/input",
+        b"fixture",
+    );
+    let mut response: SemanticObservationResponse = canonical::parse_strict(&response).unwrap();
+    response.request_digest = Digest::of(b"another request");
+    let response = canonical::canonical_bytes(&response).unwrap();
+    wrong_binding
+        .open_observation(2, AutomaticObservationClass::Filesystem, None)
+        .unwrap();
+    wrong_binding
+        .write_observation_request(2, &request)
+        .unwrap();
+    wrong_binding.dispatch_observation(2).unwrap();
+    wrong_binding
+        .write_observation_response(2, &response)
+        .unwrap();
+    assert_eq!(
+        wrong_binding
+            .finish_observation(2, DependencyOutcome::Response, 0)
+            .unwrap_err()
+            .code,
+        ErrorCode::IncompleteCandidate
+    );
+
+    let mut malformed_response = coordinator_with_coverage(sdk, operation_id);
+    let (request, _) = semantic_records(
+        AutomaticObservationClass::Filesystem,
+        b"/data/input",
+        b"fixture",
+    );
+    malformed_response
+        .open_observation(3, AutomaticObservationClass::Filesystem, None)
+        .unwrap();
+    malformed_response
+        .write_observation_request(3, &request)
+        .unwrap();
+    malformed_response.dispatch_observation(3).unwrap();
+    malformed_response
+        .write_observation_response(3, b"{}")
+        .unwrap();
+    assert_eq!(
+        malformed_response
+            .finish_observation(3, DependencyOutcome::Response, 0)
+            .unwrap_err()
+            .code,
+        ErrorCode::IncompleteCandidate
+    );
+    assert_world_not_closed(malformed_response);
+}
+
+#[test]
 fn replay_reads_are_bounded_advance_offset_and_reject_capture_state() {
     let _process = process_test();
     let (sdk, operation_id, _) = started_sdk();
@@ -313,12 +390,13 @@ fn capture(
     request: &[u8],
     response: &[u8],
     session_position: u64,
-) {
+) -> (Vec<u8>, Vec<u8>) {
+    let (request, response) = semantic_records(class, request, response);
     coordinator
         .open_observation(session_id, class, causal_parent_id)
         .unwrap();
     coordinator
-        .write_observation_request(session_id, request)
+        .write_observation_request(session_id, &request)
         .unwrap();
     assert_eq!(
         coordinator
@@ -328,11 +406,59 @@ fn capture(
         "capture"
     );
     coordinator
-        .write_observation_response(session_id, response)
+        .write_observation_response(session_id, &response)
         .unwrap();
     coordinator
         .finish_observation(session_id, DependencyOutcome::Response, session_position)
         .unwrap();
+    (request, response)
+}
+
+fn semantic_records(
+    class: AutomaticObservationClass,
+    request: &[u8],
+    response: &[u8],
+) -> (Vec<u8>, Vec<u8>) {
+    let operation = match class {
+        AutomaticObservationClass::Clock => SemanticObservationOperation::ClockWallTime,
+        AutomaticObservationClass::Environment => SemanticObservationOperation::EnvironmentRead,
+        AutomaticObservationClass::Filesystem => SemanticObservationOperation::FilesystemRead,
+        AutomaticObservationClass::Randomness => SemanticObservationOperation::RandomBytes,
+        _ => return (request.to_vec(), response.to_vec()),
+    };
+    let target = matches!(
+        operation,
+        SemanticObservationOperation::EnvironmentRead
+            | SemanticObservationOperation::FilesystemRead
+    )
+    .then(|| encode_base64url(request));
+    let length = matches!(
+        operation,
+        SemanticObservationOperation::FilesystemRead | SemanticObservationOperation::RandomBytes
+    )
+    .then(|| u64::try_from(response.len()).unwrap());
+    let offset = (operation == SemanticObservationOperation::FilesystemRead).then_some(0);
+    let request = SemanticObservationRequest {
+        format: SemanticObservationRequestFormat::V1,
+        length,
+        offset,
+        operation,
+        target,
+    };
+    let request_bytes = canonical::canonical_bytes(&request).unwrap();
+    let response = SemanticObservationResponse {
+        error_code: None,
+        error_number: None,
+        format: SemanticObservationResponseFormat::V1,
+        operation,
+        outcome: SemanticObservationOutcome::Response,
+        request_digest: Digest::of(&request_bytes),
+        value: Some(semantic_observation_value(response).unwrap()),
+    };
+    (
+        request_bytes,
+        canonical::canonical_bytes(&response).unwrap(),
+    )
 }
 
 fn coordinator_with_coverage(sdk: Sdk, operation_id: OperationId) -> AutomaticWorldCoordinator {

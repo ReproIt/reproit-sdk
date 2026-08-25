@@ -50,6 +50,7 @@ class ManagedEngineProject:
         bridge: NativeEngineBridge,
         engine_handle: NativeEngineHandle,
         project_token_provider: Callable[[], str],
+        automatic_adapters: bool,
     ) -> None:
         if constructor is not _PROJECT_CONSTRUCTOR:
             raise TypeError("Use ManagedEngineProject.open().")
@@ -58,6 +59,7 @@ class ManagedEngineProject:
         self._project_token_provider = project_token_provider
         self._lock = threading.Lock()
         self._sink_handles: set[int] = set()
+        self._automatic_adapters = automatic_adapters
         self._closed = False
 
     @classmethod
@@ -96,31 +98,42 @@ class ManagedEngineProject:
         bridge: NativeEngineBridge,
     ) -> ManagedEngineProject:
         """Open a project through the package-owned bridge seam."""
+        from .automatic_adapters import _acquire_automatic_adapters
+
         selected_bridge = bridge
-        selected_bridge.contract()
-        subject = package_running_python_subject(entry_script, application_root)
+        automatic_adapters = _acquire_automatic_adapters()
         try:
-            engine_handle = selected_bridge.engine_open(
-                build_repository_id=build_repository_id,
-                project_toml=project_toml,
-                source_revision=source_revision,
-                subject_manifest=subject.manifest,
-                subject_objects=[
-                    {
-                        "digest": value.digest,
-                        "path": value.path,
-                        "size": value.size,
-                    }
-                    for value in subject.objects
-                ],
-            )
-        finally:
-            subject.close()
+            selected_bridge.contract()
+            subject = package_running_python_subject(entry_script, application_root)
+            try:
+                engine_handle = selected_bridge.engine_open(
+                    build_repository_id=build_repository_id,
+                    project_toml=project_toml,
+                    source_revision=source_revision,
+                    subject_manifest=subject.manifest,
+                    subject_objects=[
+                        {
+                            "digest": value.digest,
+                            "path": value.path,
+                            "size": value.size,
+                        }
+                        for value in subject.objects
+                    ],
+                )
+            finally:
+                subject.close()
+        except BaseException:
+            if automatic_adapters:
+                from .automatic_adapters import _release_automatic_adapters
+
+                _release_automatic_adapters()
+            raise
         return cls(
             _PROJECT_CONSTRUCTOR,
             selected_bridge,
             engine_handle,
             project_token_provider,
+            automatic_adapters,
         )
 
     def close(self) -> None:
@@ -130,7 +143,13 @@ class ManagedEngineProject:
                 return
             self._closed = True
             self._sink_handles.clear()
-        self._bridge.engine_close(self._engine_handle)
+        try:
+            self._bridge.engine_close(self._engine_handle)
+        finally:
+            if self._automatic_adapters:
+                from .automatic_adapters import _release_automatic_adapters
+
+                self._release_automatic_adapters()
 
     def _begin(self, begin: Mapping[str, Any]) -> OperationContext:
         with self._lock:

@@ -27,6 +27,17 @@ export function installObservationAdapter(registration) {
   INSTALLED.set(registration.class, Object.freeze({ ...registration }));
 }
 
+// Remove one package-owned adapter after its runtime hooks are restored.
+export function removeObservationAdapter(registration) {
+  const installed = INSTALLED.get(registration.class);
+  if (
+    installed !== undefined &&
+    REGISTRATION_KEYS.every((key) => installed[key] === registration[key])
+  ) {
+    INSTALLED.delete(registration.class);
+  }
+}
+
 // Return a stable copy of the package-owned installed adapters.
 export function installedObservationAdapters() {
   return [...INSTALLED]

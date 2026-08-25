@@ -18,8 +18,10 @@ use reproit_core::{
         ClosurePolicyFormat, ClosureReceipt, ClosureRule, DependencyOutcome,
         DependencyTranscriptInteraction, LogicalObjectRole, NativeObservationFenceReceipt,
         NativeObservationFenceReceiptFormat, ProviderResourceClaim, RecoverablePoint,
-        RecoverablePointFormat, SemanticAdapterOwnership, TriggerCompletion, Validate as _,
-        WorldCheckpoint, WorldCheckpointFormat, WorldClosure, WorldClosureFormat,
+        RecoverablePointFormat, SemanticAdapterOwnership, SemanticObservationOperation,
+        SemanticObservationOutcome, SemanticObservationRequest, SemanticObservationResponse,
+        TriggerCompletion, Validate as _, WorldCheckpoint, WorldCheckpointFormat, WorldClosure,
+        WorldClosureFormat, validate_semantic_observation_pair,
     },
 };
 use tempfile::TempDir;
@@ -45,6 +47,7 @@ const MAX_AMBIENT_ENVIRONMENT_BYTES: usize = 512 * 1_024;
 const MAX_AMBIENT_ENVIRONMENT_VALUES: usize = 4_096;
 const MAX_RECOVERABLE_SECONDS: i64 = 1_800;
 const MAX_SESSION_POSITION: u64 = 9_007_199_254_740_991;
+const MAX_SEMANTIC_RECORD_BYTES: u64 = 64 * 1_024;
 
 pub(crate) const MAX_AUTOMATIC_OBSERVATION_CHUNK_BYTES: usize = 32 * 1_024;
 pub(crate) const MAX_AUTOMATIC_OBSERVATION_RESPONSE_READ_BYTES: usize = 8 * 1_024;
@@ -163,6 +166,7 @@ struct ObservationSession {
     response_bytes: u64,
     response_path: PathBuf,
     session_position: u64,
+    semantic_contract: bool,
     state: AutomaticObservationSessionState,
 }
 
@@ -242,6 +246,16 @@ impl AutomaticWorldCoordinator {
         class: AutomaticObservationClass,
         causal_parent_id: Option<OperationId>,
     ) -> Result<u64, Error> {
+        self.open_observation_inner(session_id, class, causal_parent_id, true)
+    }
+
+    fn open_observation_inner(
+        &mut self,
+        session_id: u64,
+        class: AutomaticObservationClass,
+        causal_parent_id: Option<OperationId>,
+        semantic_contract: bool,
+    ) -> Result<u64, Error> {
         if !self.registrations.contains_key(&class) {
             self.incomplete_session = true;
             return Err(world_not_closed());
@@ -278,6 +292,7 @@ impl AutomaticWorldCoordinator {
                 response_bytes: 0,
                 response_path,
                 session_position,
+                semantic_contract: semantic_contract && has_semantic_contract(class),
                 state: AutomaticObservationSessionState::Request,
             },
         );
@@ -349,8 +364,27 @@ impl AutomaticWorldCoordinator {
         &mut self,
         session_id: u64,
     ) -> Result<AutomaticObservationAction, Error> {
+        let semantic_request = {
+            let session = self.sessions.get(&session_id).ok_or_else(not_found)?;
+            if session.semantic_contract {
+                Some(read_semantic_record::<SemanticObservationRequest>(
+                    &session.request_path,
+                    session.request_bytes,
+                )?)
+            } else {
+                None
+            }
+        };
         let session = self.sessions.get_mut(&session_id).ok_or_else(not_found)?;
         if session.state != AutomaticObservationSessionState::Request || session.request_bytes == 0
+        {
+            session.state = AutomaticObservationSessionState::Overflowed;
+            self.incomplete_session = true;
+            return Err(invalid_transition());
+        }
+        if semantic_request
+            .as_ref()
+            .is_some_and(|request| observation_class(request.operation) != session.class)
         {
             session.state = AutomaticObservationSessionState::Overflowed;
             self.incomplete_session = true;
@@ -401,6 +435,34 @@ impl AutomaticWorldCoordinator {
         if session_position != session.session_position {
             self.incomplete_session = true;
             return Err(invalid_transition());
+        }
+        if session.semantic_contract {
+            let request = match read_semantic_record::<SemanticObservationRequest>(
+                &session.request_path,
+                session.request_bytes,
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.incomplete_session = true;
+                    return Err(error);
+                }
+            };
+            let response = match read_semantic_record::<SemanticObservationResponse>(
+                &session.response_path,
+                session.response_bytes,
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    self.incomplete_session = true;
+                    return Err(error);
+                }
+            };
+            if validate_semantic_observation_pair(&request, &response).is_err()
+                || dependency_outcome(response.outcome) != outcome
+            {
+                self.incomplete_session = true;
+                return Err(invalid_transition());
+            }
         }
         if let Err(error) = self.commit_session(&session, outcome, session_position) {
             self.incomplete_session = true;
@@ -574,7 +636,7 @@ impl AutomaticWorldCoordinator {
             .next_internal_session
             .checked_sub(1)
             .ok_or_else(capture_limit)?;
-        let session_position = self.open_observation(session_id, class, None)?;
+        let session_position = self.open_observation_inner(session_id, class, None, false)?;
         self.write_observation(session_id, AutomaticObservationStream::Request, request)?;
         self.dispatch_observation(session_id)?;
         self.write_observation(session_id, AutomaticObservationStream::Response, response)?;
@@ -713,6 +775,57 @@ fn append_chunk(path: &Path, chunk: &[u8]) -> Result<(), Error> {
         .map_err(local_storage_error)?;
     file.write_all(chunk).map_err(local_storage_error)?;
     file.flush().map_err(local_storage_error)
+}
+
+fn has_semantic_contract(class: AutomaticObservationClass) -> bool {
+    matches!(
+        class,
+        AutomaticObservationClass::Clock
+            | AutomaticObservationClass::Environment
+            | AutomaticObservationClass::Filesystem
+            | AutomaticObservationClass::Randomness
+    )
+}
+
+fn observation_class(operation: SemanticObservationOperation) -> AutomaticObservationClass {
+    match operation {
+        SemanticObservationOperation::ClockWallTime => AutomaticObservationClass::Clock,
+        SemanticObservationOperation::EnvironmentRead => AutomaticObservationClass::Environment,
+        SemanticObservationOperation::FilesystemRead => AutomaticObservationClass::Filesystem,
+        SemanticObservationOperation::RandomBytes => AutomaticObservationClass::Randomness,
+    }
+}
+
+fn dependency_outcome(outcome: SemanticObservationOutcome) -> DependencyOutcome {
+    match outcome {
+        SemanticObservationOutcome::Error => DependencyOutcome::Error,
+        SemanticObservationOutcome::Response => DependencyOutcome::Response,
+    }
+}
+
+fn read_semantic_record<T>(path: &Path, declared_bytes: u64) -> Result<T, Error>
+where
+    T: for<'de> serde::Deserialize<'de> + serde::Serialize + reproit_core::model::Validate,
+{
+    if declared_bytes == 0 || declared_bytes > MAX_SEMANTIC_RECORD_BYTES {
+        return Err(invalid_transition());
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(declared_bytes).unwrap_or_default());
+    File::open(path)
+        .map_err(local_storage_error)?
+        .take(MAX_SEMANTIC_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(local_storage_error)?;
+    if u64::try_from(bytes.len()).ok() != Some(declared_bytes) {
+        return Err(invalid_transition());
+    }
+    let record: T = canonical::parse_strict(&bytes).map_err(|_| invalid_transition())?;
+    record.validate().map_err(|_| invalid_transition())?;
+    let canonical = canonical::canonical_bytes(&record).map_err(|_| invalid_transition())?;
+    if canonical != bytes {
+        return Err(invalid_transition());
+    }
+    Ok(record)
 }
 
 fn adapter_ownership(

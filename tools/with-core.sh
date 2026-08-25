@@ -50,6 +50,7 @@ fi
 export REPROIT_PROTOCOL_VECTORS="$core_root/specs/v1/protocol-vectors.json"
 export REPROIT_CLOUD_API_VECTORS="$core_root/specs/v1/cloud-api-vectors.json"
 export REPROIT_PROCESSOR_CAPTURE="$core_root/specs/v1/processor-capture.json"
+export REPROIT_CORE_ROOT="$core_root"
 
 cd "$repository_root"
 exec "$@"
