@@ -16,6 +16,7 @@ use sentinel_linux::{Event, EventKind, Runtime};
 
 #[cfg(target_os = "linux")]
 fn main() {
+    semantic_dependencies_own_their_transitive_kernel_effects();
     clean_syscall_trace_produces_bounded_evidence();
     finished_operation_releases_its_sentinel_state();
     detects_unowned_randomness_without_reading_arguments();
@@ -24,6 +25,27 @@ fn main() {
     tracer_loss_preserves_application_results();
     clean_shutdown_preserves_application_results_and_reaps_the_child();
     println!("sentinel native checks passed");
+}
+
+#[cfg(target_os = "linux")]
+fn semantic_dependencies_own_their_transitive_kernel_effects() {
+    use reproit_core::model::AutomaticObservationClass;
+
+    for class in [
+        AutomaticObservationClass::Database,
+        AutomaticObservationClass::OutboundHttp,
+        AutomaticObservationClass::Queue,
+    ] {
+        assert!(EventKind::Filesystem.is_owned_by(class));
+        assert!(EventKind::Network.is_owned_by(class));
+        assert!(EventKind::Clock.is_owned_by(class));
+        assert!(EventKind::Randomness.is_owned_by(class));
+    }
+    assert!(EventKind::Filesystem.is_owned_by(AutomaticObservationClass::Filesystem));
+    assert!(EventKind::Clock.is_owned_by(AutomaticObservationClass::Clock));
+    assert!(EventKind::Randomness.is_owned_by(AutomaticObservationClass::Randomness));
+    assert!(!EventKind::Network.is_owned_by(AutomaticObservationClass::Filesystem));
+    assert!(!EventKind::Process.is_owned_by(AutomaticObservationClass::Database));
 }
 
 #[cfg(target_os = "linux")]

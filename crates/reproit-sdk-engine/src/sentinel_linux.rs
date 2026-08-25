@@ -53,15 +53,37 @@ pub(super) enum EventKind {
 impl EventKind {
     pub(super) const fn is_owned_by(self, class: AutomaticObservationClass) -> bool {
         match self {
-            Self::Filesystem => matches!(class, AutomaticObservationClass::Filesystem),
+            // A semantic dependency owns its transitive kernel effects. For example,
+            // SQLite reads files, and a TLS client can read trust roots, read the clock,
+            // and request random bytes. The dependency transcript owns those effects as
+            // one application-visible observation.
+            Self::Filesystem => matches!(
+                class,
+                AutomaticObservationClass::Database
+                    | AutomaticObservationClass::Filesystem
+                    | AutomaticObservationClass::OutboundHttp
+                    | AutomaticObservationClass::Queue
+            ),
             Self::Network => matches!(
                 class,
                 AutomaticObservationClass::Database
                     | AutomaticObservationClass::OutboundHttp
                     | AutomaticObservationClass::Queue
             ),
-            Self::Clock => matches!(class, AutomaticObservationClass::Clock),
-            Self::Randomness => matches!(class, AutomaticObservationClass::Randomness),
+            Self::Clock => matches!(
+                class,
+                AutomaticObservationClass::Clock
+                    | AutomaticObservationClass::Database
+                    | AutomaticObservationClass::OutboundHttp
+                    | AutomaticObservationClass::Queue
+            ),
+            Self::Randomness => matches!(
+                class,
+                AutomaticObservationClass::Database
+                    | AutomaticObservationClass::OutboundHttp
+                    | AutomaticObservationClass::Queue
+                    | AutomaticObservationClass::Randomness
+            ),
             Self::Process | Self::Exit => false,
         }
     }
