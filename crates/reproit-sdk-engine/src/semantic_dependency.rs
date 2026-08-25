@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_error_response_uses_the_request_identity() {
+    fn compact_error_response_preserves_bounded_payload_and_request_identity() {
         let request_bytes = SemanticDependencySession::canonical_request(request_input(
             AutomaticObservationClass::Database,
         ))
@@ -631,7 +631,7 @@ mod tests {
             error_number: Some(2),
             metadata: Vec::new(),
             outcome: SemanticObservationOutcome::Error,
-            payload: None,
+            payload: Some(encode_base64url(br#"{"kind":"missing-row"}"#)),
             status: None,
             status_code: None,
         };
@@ -645,6 +645,10 @@ mod tests {
         assert_eq!(
             response.error_code,
             Some(SemanticObservationErrorCode::NotFound)
+        );
+        assert_eq!(
+            response.payload,
+            Some(encode_base64url(br#"{"kind":"missing-row"}"#))
         );
     }
 
