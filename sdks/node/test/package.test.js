@@ -126,7 +126,9 @@ import {
 
 const startupDate = Date;
 assert.deepEqual(runtimeObservationAdapterStateForTest(), {
-  classes: ["clock", "database", "environment", "filesystem", "randomness"],
+  classes: [
+    "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
+  ],
   leases: 1,
 });
 const registerModule = await import("@reproit/sdk/register");

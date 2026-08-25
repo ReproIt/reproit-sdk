@@ -49,6 +49,46 @@ export function runDependency(request, capture) {
   return capture();
 }
 
+// Start one event-driven dependency without changing the shared engine contract.
+export function startDependency(request) {
+  const context = currentOperationContext();
+  if (context === null) return null;
+  let session;
+  try {
+    session = openDependency(context, requestInput(request));
+  } catch {
+    context.abandon();
+    return null;
+  }
+  if (session === null) return null;
+  if (session.action === "replay") {
+    return Object.freeze({ action: "replay", response: replayDependency(session) });
+  }
+  if (session.action !== "capture") {
+    session.abandon();
+    return null;
+  }
+  let finished = false;
+  return Object.freeze({
+    action: "capture",
+    abandon() {
+      if (finished) return;
+      finished = true;
+      session.abandon();
+    },
+    finish(response) {
+      if (finished) return null;
+      finished = true;
+      try {
+        return session.finish(responseInput(response));
+      } catch {
+        session.abandon();
+        return null;
+      }
+    },
+  });
+}
+
 function captureDependency(session, capture) {
   let captured;
   try {

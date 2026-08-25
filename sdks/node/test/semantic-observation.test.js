@@ -139,12 +139,16 @@ test("the first project lease installs one adapter group and the last restores i
   const releaseSecond = acquireRuntimeObservationAdapters();
   try {
     assert.deepEqual(runtimeObservationAdapterStateForTest(), {
-      classes: ["clock", "database", "environment", "filesystem", "randomness"],
+      classes: [
+        "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
+      ],
       leases: 2,
     });
     assert.deepEqual(
       installedObservationAdapters().map((value) => value.class),
-      ["clock", "database", "environment", "filesystem", "randomness"],
+      [
+        "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
+      ],
     );
     assert.notEqual(Date, original.date);
     assert.notEqual(cryptoModule.randomBytes, original.randomBytes);

@@ -17,6 +17,7 @@
   "files": [
     "src/encoding.js",
     "src/engine-operation.js",
+    "src/http-adapter.js",
     "src/index.d.ts",
     "src/managed-json.js",
     "src/managed-subject-files.js",

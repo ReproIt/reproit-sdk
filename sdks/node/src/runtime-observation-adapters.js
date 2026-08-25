@@ -19,6 +19,7 @@ import {
   startSemanticObservation,
 } from "./semantic-observation.js";
 import { installSqliteAdapter } from "./sqlite-adapter.js";
+import { installHttpAdapter } from "./http-adapter.js";
 
 const require = createRequire(import.meta.url);
 const cryptoModule = require("node:crypto");
@@ -28,7 +29,9 @@ const originalCreateHash = cryptoModule.createHash;
 const implementationDigest = runtimeImplementationDigest();
 const MAX_VALUE_BYTES = 32 * 1_024;
 const UNSUPPORTED_EVIDENCE = Buffer.from("node-runtime-unsupported-v1", "utf8");
-const CLASSES = ["clock", "database", "environment", "filesystem", "randomness"];
+const CLASSES = [
+  "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
+];
 const installedClasses = [];
 let leaseCount = 0;
 
@@ -57,6 +60,7 @@ function installRuntimeObservationAdapters() {
     database: installSqliteAdapter,
     environment: installEnvironmentAdapter,
     filesystem: installFilesystemAdapter,
+    "outbound-http": installHttpAdapter,
     randomness: installRandomnessAdapter,
   };
   for (const observationClass of CLASSES) {
@@ -116,6 +120,7 @@ function runtimeImplementationDigest() {
     fileURLToPath(import.meta.url),
     fileURLToPath(new URL("./semantic-observation.js", import.meta.url)),
     fileURLToPath(new URL("./semantic-dependency.js", import.meta.url)),
+    fileURLToPath(new URL("./http-adapter.js", import.meta.url)),
     fileURLToPath(new URL("./sqlite-adapter.js", import.meta.url)),
   ];
   const hash = originalCreateHash("sha256");
