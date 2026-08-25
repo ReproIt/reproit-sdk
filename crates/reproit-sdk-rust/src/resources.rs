@@ -58,6 +58,44 @@ impl ProcessResources {
             .checked_add(self.candidate_bytes)?
             .checked_add(added_bytes)
     }
+
+    fn reserve_capture_bytes(&mut self, reserved_bytes: &mut u64, bytes: u64) -> bool {
+        let Some(next) = self.capture_bytes.checked_add(bytes) else {
+            return false;
+        };
+        if next > MAX_PROCESS_CAPTURE_BYTES {
+            return false;
+        }
+        self.capture_bytes = next;
+        *reserved_bytes += bytes;
+        true
+    }
+
+    fn reserve_candidate_handoff(&mut self, capture_id: CaptureId, bytes: usize) -> bool {
+        if self.candidates.contains_key(&capture_id)
+            || self.candidates.len() >= MAX_QUEUED_CANDIDATES
+            || self
+                .bytes_with(bytes)
+                .is_none_or(|total| total > MAX_GLOBAL_BYTES)
+        {
+            return false;
+        }
+        self.candidate_bytes += bytes;
+        self.candidates.insert(
+            capture_id,
+            CandidateEntry {
+                bytes,
+                state: CandidateState::Handoff,
+            },
+        );
+        true
+    }
+
+    fn release_candidate(&mut self, capture_id: CaptureId) {
+        if let Some(entry) = self.candidates.remove(&capture_id) {
+            self.candidate_bytes = self.candidate_bytes.saturating_sub(entry.bytes);
+        }
+    }
 }
 
 pub(crate) struct LogicalByteReservation {
@@ -71,15 +109,7 @@ impl LogicalByteReservation {
 
     pub(crate) fn reserve(&mut self, bytes: u64) -> bool {
         let mut resources = lock_resources();
-        let Some(next) = resources.capture_bytes.checked_add(bytes) else {
-            return false;
-        };
-        if next > MAX_PROCESS_CAPTURE_BYTES {
-            return false;
-        }
-        resources.capture_bytes = next;
-        self.bytes += bytes;
-        true
+        resources.reserve_capture_bytes(&mut self.bytes, bytes)
     }
 
     pub(crate) const fn bytes(&self) -> u64 {
@@ -140,24 +170,7 @@ pub(crate) fn release_operation(operation_id: OperationId) {
 }
 
 pub(crate) fn reserve_candidate_handoff(capture_id: CaptureId, bytes: usize) -> bool {
-    let mut resources = lock_resources();
-    if resources.candidates.contains_key(&capture_id)
-        || resources.candidates.len() >= MAX_QUEUED_CANDIDATES
-        || resources
-            .bytes_with(bytes)
-            .is_none_or(|total| total > MAX_GLOBAL_BYTES)
-    {
-        return false;
-    }
-    resources.candidate_bytes += bytes;
-    resources.candidates.insert(
-        capture_id,
-        CandidateEntry {
-            bytes,
-            state: CandidateState::Handoff,
-        },
-    );
-    true
+    lock_resources().reserve_candidate_handoff(capture_id, bytes)
 }
 
 pub(crate) fn claim_candidate(capture_id: CaptureId, bytes: usize) -> bool {
@@ -195,10 +208,7 @@ pub(crate) fn candidate_is_retained(capture_id: CaptureId) -> bool {
 }
 
 pub(crate) fn release_candidate(capture_id: CaptureId) {
-    let mut resources = lock_resources();
-    if let Some(entry) = resources.candidates.remove(&capture_id) {
-        resources.candidate_bytes = resources.candidate_bytes.saturating_sub(entry.bytes);
-    }
+    lock_resources().release_candidate(capture_id);
 }
 
 pub(crate) fn admit_storm(identity: Digest) -> StormDecision {
@@ -298,6 +308,7 @@ mod tests {
 
     #[test]
     fn candidate_queue_and_logical_bytes_are_process_wide() {
+        let mut resources = ProcessResources::new();
         let captures = (0..MAX_QUEUED_CANDIDATES)
             .map(|index| {
                 format!("cap_01890f3e-7b1c-7cc0-8a1b-{index:012x}")
@@ -306,19 +317,19 @@ mod tests {
             })
             .collect::<Vec<CaptureId>>();
         for capture_id in &captures {
-            assert!(reserve_candidate_handoff(*capture_id, 1));
+            assert!(resources.reserve_candidate_handoff(*capture_id, 1));
         }
         let extra = "cap_01890f3e-7b1c-7cc0-8a1b-000000000100".parse().unwrap();
-        assert!(!reserve_candidate_handoff(extra, 1));
+        assert!(!resources.reserve_candidate_handoff(extra, 1));
         for capture_id in captures {
-            release_candidate(capture_id);
+            resources.release_candidate(capture_id);
         }
 
-        let mut reservation = LogicalByteReservation::new();
-        assert!(reservation.reserve(MAX_PROCESS_CAPTURE_BYTES));
-        let mut extra = LogicalByteReservation::new();
-        assert!(!extra.reserve(1));
-        drop(reservation);
-        assert!(extra.reserve(1));
+        let mut reserved_bytes = 0;
+        assert!(resources.reserve_capture_bytes(&mut reserved_bytes, MAX_PROCESS_CAPTURE_BYTES));
+        let mut extra_bytes = 0;
+        assert!(!resources.reserve_capture_bytes(&mut extra_bytes, 1));
+        resources.capture_bytes -= reserved_bytes;
+        assert!(resources.reserve_capture_bytes(&mut extra_bytes, 1));
     }
 }
