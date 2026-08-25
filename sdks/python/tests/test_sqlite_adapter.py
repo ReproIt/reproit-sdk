@@ -286,6 +286,118 @@ class SqliteAdapterTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_base_sqlite_error_capture_preserves_identity_and_replays_exactly(
+        self,
+    ) -> None:
+        with _adapters():
+            connection = sqlite3.connect(":memory:")
+            capture = SqliteBridge("capture")
+            try:
+                with self.assertRaises(sqlite3.OperationalError) as raised:
+                    _run(capture, lambda: connection.execute("SELECT * FROM missing"))
+                live_error = raised.exception
+            finally:
+                connection.close()
+
+        self.assertIs(type(live_error), sqlite3.OperationalError)
+        self.assertEqual(capture.responses[0]["outcome"], "error")
+        self.assertEqual(capture.responses[0]["error_code"], "other")
+        self.assertEqual(
+            capture.responses[0]["error_number"],
+            live_error.sqlite_errorcode,
+        )
+
+        replay_error = _replay_connection_error(self, capture.responses[0])
+        self.assertIs(type(replay_error), type(live_error))
+        self.assertEqual(replay_error.args, live_error.args)
+        self.assertEqual(vars(replay_error), vars(live_error))
+
+    def test_each_exact_base_sqlite_error_class_replays_without_live_sqlite(
+        self,
+    ) -> None:
+        for index, error_class in enumerate(
+            sqlite_adapter._SQLITE_ERROR_CLASSES.values(),
+            start=1,
+        ):
+            with self.subTest(error_class=error_class.__name__):
+                live_error = error_class("message", index, b"detail", None)
+                capture = _capture_connection_error(self, live_error)
+                replay_error = _replay_connection_error(self, capture.responses[0])
+                self.assertIs(type(replay_error), error_class)
+                self.assertEqual(replay_error.args, live_error.args)
+                self.assertEqual(vars(replay_error), {})
+
+    def test_unsupported_sqlite_error_shapes_remain_unowned_and_exact(self) -> None:
+        class CustomOperationalError(sqlite3.OperationalError):
+            pass
+
+        subclass = CustomOperationalError("subclass")
+        custom_state = sqlite3.OperationalError("custom state")
+        custom_state.application_value = 7
+        custom_cause = sqlite3.OperationalError("custom cause")
+        custom_cause.__cause__ = ValueError("cause")
+        unsupported_arg = sqlite3.OperationalError(object())
+        too_many_args = sqlite3.OperationalError(
+            *range(sqlite_adapter._MAX_ERROR_ARGS + 1)
+        )
+        oversized = sqlite3.OperationalError(
+            "x" * (sqlite_adapter._MAX_PAYLOAD_BYTES + 1)
+        )
+        oversized_name = sqlite3.OperationalError("oversized name")
+        oversized_name.sqlite_errorcode = 1
+        oversized_name.sqlite_errorname = "X" * (
+            sqlite_adapter._MAX_ERROR_NAME_BYTES + 1
+        )
+
+        for live_error in (
+            subclass,
+            custom_state,
+            custom_cause,
+            unsupported_arg,
+            too_many_args,
+            oversized,
+            oversized_name,
+        ):
+            with self.subTest(shape=live_error.args[:1]):
+                capture = _capture_connection_error(self, live_error)
+                self.assertEqual(capture.responses, [])
+                self.assertEqual(
+                    [item[0] for item in capture.unowned],
+                    ["database"],
+                )
+                self.assertEqual(capture.abandoned, 1)
+
+    def test_corrupt_sqlite_error_records_stop_without_live_sqlite(self) -> None:
+        live_error = sqlite3.OperationalError("database unavailable")
+        capture = _capture_connection_error(self, live_error)
+        original = capture.responses[0]
+
+        noncanonical = dict(original)
+        noncanonical["payload"] = _base64url(b" " + _response_payload(original))
+        unknown_class = dict(original)
+        payload = json.loads(_response_payload(original))
+        payload[2] = "UnknownError"
+        unknown_class["payload"] = _base64url(_canonical_json(payload))
+        wrong_number = dict(original)
+        wrong_number["error_number"] = 1
+        oversized_payload = dict(original)
+        oversized_payload["payload"] = _base64url(
+            b"x" * (sqlite_adapter._MAX_PAYLOAD_BYTES + 1)
+        )
+
+        for name, response in (
+            ("noncanonical", noncanonical),
+            ("unknown-class", unknown_class),
+            ("wrong-number", wrong_number),
+            ("oversized-payload", oversized_payload),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "recorded SQLite dependency",
+                ):
+                    _replay_connection_error(self, response)
+
     def test_unsupported_and_over_limit_calls_are_unowned(self) -> None:
         with _adapters():
             open_bridge = SqliteBridge("capture")
@@ -461,6 +573,84 @@ def _response_record(response: dict[str, object] | None) -> bytes:
     if response is None:
         return b"null"
     return json.dumps(response, separators=(",", ":")).encode("utf-8")
+
+
+def _capture_connection_error(
+    test_case: unittest.TestCase,
+    live_error: BaseException,
+) -> SqliteBridge:
+    class FailingConnection:
+        @staticmethod
+        def cursor(*_arguments: object, **_keywords: object) -> object:
+            raise live_error
+
+    with _adapters():
+        connection = sqlite3.connect(":memory:")
+        bridge = SqliteBridge("capture")
+        try:
+            with mock.patch.object(
+                sqlite_adapter,
+                "_ORIGINAL_CONNECTION",
+                FailingConnection,
+            ):
+                with test_case.assertRaises(type(live_error)) as raised:
+                    _run(bridge, lambda: connection.execute("SELECT 1"))
+                test_case.assertIs(raised.exception, live_error)
+        finally:
+            connection.close()
+    return bridge
+
+
+def _replay_connection_error(
+    test_case: unittest.TestCase,
+    response: dict[str, object],
+) -> BaseException:
+    class NoLiveConnection:
+        @staticmethod
+        def cursor(*_arguments: object, **_keywords: object) -> object:
+            raise AssertionError("Replay called live SQLite.")
+
+    with _adapters():
+        connection = sqlite3.connect(":memory:")
+        bridge = SqliteBridge("replay", [response])
+        try:
+            with mock.patch.object(
+                sqlite_adapter,
+                "_ORIGINAL_CONNECTION",
+                NoLiveConnection,
+            ):
+                try:
+                    _run(bridge, lambda: connection.execute("SELECT 1"))
+                except BaseException as error:
+                    if type(error) not in sqlite_adapter._SQLITE_ERROR_CLASSES.values():
+                        raise
+                    return error
+                test_case.fail("Replay did not raise the recorded SQLite error.")
+        finally:
+            connection.close()
+    raise AssertionError("The SQLite replay result is unavailable.")
+
+
+def _response_payload(response: dict[str, object]) -> bytes:
+    value = response["payload"]
+    assert isinstance(value, str)
+    return base64.b64decode(
+        value + "=" * (-len(value) % 4),
+        altchars=b"-_",
+        validate=True,
+    )
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8", "strict")
 
 
 def _request_payload(request: dict[str, object]) -> object:

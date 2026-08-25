@@ -25,6 +25,8 @@ _MAX_PAYLOAD_BYTES = 16 * 1_024
 _MAX_BINDINGS = 256
 _MAX_DATABASES = 65_536
 _MAX_CURSORS_PER_DATABASE = 65_536
+_MAX_ERROR_ARGS = 8
+_MAX_ERROR_NAME_BYTES = 128
 _MAX_FIELDS = 256
 _MAX_ROWS = 256
 _MIN_INTEGER = -(1 << 63)
@@ -53,6 +55,21 @@ _ORIGINAL_CONNECTION = sqlite3.Connection
 _ORIGINAL_DBAPI2_CONNECTION = sqlite_dbapi2.Connection
 _ORIGINAL_NATIVE_CONNECTION = sqlite_native.Connection
 _ORIGINAL_CURSOR = sqlite3.Cursor
+_SQLITE_ERROR_CLASSES = {
+    error_class.__name__: error_class
+    for error_class in (
+        sqlite3.Warning,
+        sqlite3.Error,
+        sqlite3.InterfaceError,
+        sqlite3.DatabaseError,
+        sqlite3.DataError,
+        sqlite3.OperationalError,
+        sqlite3.IntegrityError,
+        sqlite3.InternalError,
+        sqlite3.ProgrammingError,
+        sqlite3.NotSupportedError,
+    )
+}
 _INSTALLED = False
 _NEXT_DATABASE_ID = 1
 _UNSUPPORTED_PROCESS_BOUNDARY = False
@@ -342,7 +359,11 @@ def _execute_dependency(
             live_result = live()
         except BaseException as error:
             live_error = error
-            raise
+            try:
+                return _encode_sqlite_error(error)
+            except Exception:
+                _mark_unowned()
+                raise error
         return _DependencyResponse(
             outcome="response",
             payload=encode(live_result),
@@ -351,9 +372,13 @@ def _execute_dependency(
     try:
         translated = _run_dependency(request, capture)
         if live_called:
+            if live_error is not None:
+                raise live_error
             return live_result
         if not isinstance(translated, _DependencyResponse):
             raise _invalid_replay()
+        if translated.outcome == "error":
+            raise _decode_sqlite_error(translated)
         if translated.outcome != "response" or translated.payload is None:
             raise _invalid_replay()
         return decode(_decode_payload(translated.payload))
@@ -363,6 +388,123 @@ def _execute_dependency(
         if live_called:
             return live_result
         raise
+
+
+def _encode_sqlite_error(error: BaseException) -> _DependencyResponse:
+    error_class = type(error)
+    if error_class not in _SQLITE_ERROR_CLASSES.values():
+        raise _adapter_value()
+    if (
+        error.__cause__ is not None
+        or error.__context__ is not None
+        or error.__suppress_context__
+    ):
+        raise _adapter_value()
+    if not isinstance(error.args, tuple) or len(error.args) > _MAX_ERROR_ARGS:
+        raise _adapter_limit()
+    budget = [_MAX_PAYLOAD_BYTES]
+    encoded_args = [_encode_error_arg(value, budget) for value in error.args]
+    state = vars(error)
+    error_number = None
+    encoded_state: list[object] = ["none"]
+    if state:
+        if set(state) != {"sqlite_errorcode", "sqlite_errorname"}:
+            raise _adapter_value()
+        error_number = state["sqlite_errorcode"]
+        error_name = state["sqlite_errorname"]
+        if not _valid_sqlite_error_state(error_number, error_name):
+            raise _adapter_value()
+        encoded_name = _bounded_string(error_name, budget)
+        if not encoded_name or len(encoded_name.encode("utf-8")) > _MAX_ERROR_NAME_BYTES:
+            raise _adapter_value()
+        encoded_state = ["sqlite", error_number, encoded_name]
+    payload = _encode_payload(
+        [_FORMAT, "error", error_class.__name__, encoded_args, encoded_state]
+    )
+    return _DependencyResponse(
+        outcome="error",
+        payload=payload,
+        error_code="other",
+        error_number=error_number,
+    )
+
+
+def _decode_sqlite_error(response: _DependencyResponse) -> BaseException:
+    if (
+        response.payload is None
+        or response.error_code != "other"
+        or response.metadata
+        or response.status is not None
+        or response.status_code is not None
+    ):
+        raise _invalid_replay()
+    payload = _decode_payload(response.payload)
+    _require_payload(payload, "error", 5)
+    class_name, encoded_args, encoded_state = payload[2:]
+    error_class = _SQLITE_ERROR_CLASSES.get(class_name)
+    if error_class is None:
+        raise _invalid_replay()
+    if not isinstance(encoded_args, list) or len(encoded_args) > _MAX_ERROR_ARGS:
+        raise _invalid_replay()
+    arguments = tuple(_decode_error_arg(value) for value in encoded_args)
+    error_number, error_name = _decode_error_state(encoded_state)
+    if response.error_number != error_number:
+        raise _invalid_replay()
+    error = error_class(*arguments)
+    if error_number is not None:
+        error.sqlite_errorcode = error_number
+        error.sqlite_errorname = error_name
+    expected_state = (
+        {}
+        if error_number is None
+        else {
+            "sqlite_errorcode": error_number,
+            "sqlite_errorname": error_name,
+        }
+    )
+    if error.args != arguments or vars(error) != expected_state:
+        raise _invalid_replay()
+    return error
+
+
+def _encode_error_arg(value: object, budget: list[int]) -> list[object]:
+    if type(value) not in (type(None), int, float, str, bytes):
+        raise _adapter_value()
+    return _encode_value(value, budget)
+
+
+def _decode_error_arg(value: object) -> object:
+    decoded = _decode_value(value)
+    if type(decoded) not in (type(None), int, float, str, bytes):
+        raise _invalid_replay()
+    return decoded
+
+
+def _decode_error_state(value: object) -> tuple[int | None, str | None]:
+    if value == ["none"]:
+        return None, None
+    if not isinstance(value, list) or len(value) != 3 or value[0] != "sqlite":
+        raise _invalid_replay()
+    error_number, error_name = value[1:]
+    if not _valid_sqlite_error_state(error_number, error_name):
+        raise _invalid_replay()
+    try:
+        encoded_name = error_name.encode("utf-8", "strict")
+    except UnicodeError as error:
+        raise _invalid_replay() from error
+    if not encoded_name or len(encoded_name) > _MAX_ERROR_NAME_BYTES:
+        raise _invalid_replay()
+    return error_number, error_name
+
+
+def _valid_sqlite_error_state(error_number: object, error_name: object) -> bool:
+    return (
+        type(error_number) is int
+        and 0 <= error_number <= (1 << 32) - 1
+        and type(error_name) is str
+        and error_name.startswith("SQLITE_")
+        and getattr(sqlite3, error_name, None) == error_number
+    )
 
 
 def _decode_cursor(
