@@ -61,6 +61,10 @@ fn abi_contract_matches_engine_constants() {
     assert_eq!(contract["operations"], json!(OPERATIONS));
     assert_dependency_contract(&contract);
     assert_observation_contract(&contract);
+    assert_eq!(
+        contract["required_observation_classes"],
+        serde_json::to_value(AutomaticObservationClass::ALL).unwrap()
+    );
     assert_native_failure_contract(&contract);
     assert_eq!(
         contract["symbols"]["abi_version"],

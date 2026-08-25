@@ -34,7 +34,7 @@ MAX_SINK_WAIT_MS = 1_800_000
 MAX_SINK_WAITERS = 16
 MAX_ARTIFACT_MANIFEST_BYTES = 16_384
 ABI_CONTRACT_DIGEST = (
-    "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3"
+    "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9"
 )
 ARTIFACT_MANIFEST_FORMAT = "reproit.sdk-engine-artifacts.v1"
 ARTIFACT_MANIFEST_NAME = "sdk-engine-artifacts.json"
@@ -77,6 +77,15 @@ NativeObservationOutcome = Literal["error", "response"]
 NativeObservationStream = Literal["request", "response"]
 
 _OBSERVATION_ACTIONS = ("capture", "replay")
+_REQUIRED_OBSERVATION_CLASSES = (
+    "clock",
+    "database",
+    "environment",
+    "filesystem",
+    "outbound-http",
+    "queue",
+    "randomness",
+)
 _DEPENDENCY_CONTRACT = {
     "finish_fields": ["dependency_handle", "response"],
     "finish_result_fields": ["outcome"],
@@ -661,6 +670,7 @@ def _valid_contract(value: object) -> bool:
         "operations",
         "observation_actions",
         "observation_contract",
+        "required_observation_classes",
         "request",
         "response",
         "symbols",
@@ -712,6 +722,8 @@ def _valid_contract(value: object) -> bool:
         and operations == [operation.value for operation in _EngineOperation]
         and value.get("observation_actions") == list(_OBSERVATION_ACTIONS)
         and value.get("observation_contract") == _OBSERVATION_CONTRACT
+        and value.get("required_observation_classes")
+        == list(_REQUIRED_OBSERVATION_CLASSES)
         and value.get("request")
         == {"format": CALL_FORMAT, "maximum_bytes": MAX_CALL_BYTES}
         and value.get("response")

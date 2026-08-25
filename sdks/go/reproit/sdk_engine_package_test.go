@@ -79,8 +79,9 @@ func TestGoSDKEngineConstantsMatchCanonicalABI(t *testing.T) {
 			Name     string `json:"name"`
 			Platform string `json:"platform"`
 		} `json:"libraries"`
-		Operations []string `json:"operations"`
-		Limits     struct {
+		Operations                 []string `json:"operations"`
+		RequiredObservationClasses []string `json:"required_observation_classes"`
+		Limits                     struct {
 			EvidenceBytes int `json:"evidence_bytes"`
 			Sinks         int `json:"sinks"`
 			SinkWaitMS    int `json:"sink_wait_ms"`
@@ -131,6 +132,10 @@ func TestGoSDKEngineConstantsMatchCanonicalABI(t *testing.T) {
 		abi.Symbols.ABIVersion != sdkEngineABIVersionSymbol ||
 		abi.Symbols.Call != sdkEngineCallSymbol ||
 		!reflect.DeepEqual(abi.Operations, sdkEngineOperationNames) ||
+		!reflect.DeepEqual(abi.RequiredObservationClasses, []string{
+			"clock", "database", "environment", "filesystem", "outbound-http", "queue",
+			"randomness",
+		}) ||
 		!reflect.DeepEqual(libraries, wantLibraries) {
 		t.Fatal("The Go SDK engine bridge differs from the canonical ABI contract.")
 	}

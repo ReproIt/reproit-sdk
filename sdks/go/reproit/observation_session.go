@@ -62,12 +62,8 @@ func (registry *observationAdapterRegistry) remove(adapter installedObservationA
 func (registry *observationAdapterRegistry) snapshot() []sdkEngineObservationAdapter {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
-	classes := []automaticObservationClass{
-		observationClock, observationDatabase, observationEnvironment, observationFilesystem,
-		observationOutboundHTTP, observationQueue, observationRandomness,
-	}
 	result := make([]sdkEngineObservationAdapter, 0, len(registry.adapters))
-	for _, class := range classes {
+	for _, class := range sdkEngineRequiredObservationClasses {
 		adapter, exists := registry.adapters[class]
 		if !exists {
 			continue

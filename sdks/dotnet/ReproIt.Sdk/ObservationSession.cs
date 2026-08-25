@@ -56,8 +56,13 @@ internal static class InstalledObservationAdapters
         lock (RegistryLock)
         {
             JsonArray result = [];
-            foreach (InstalledObservationAdapter adapter in Registry.Values)
+            foreach (AutomaticObservationClass observationClass in
+                SdkEngineBridge.RequiredObservationClasses)
             {
+                if (!Registry.TryGetValue(observationClass, out InstalledObservationAdapter? adapter))
+                {
+                    continue;
+                }
                 result.Add(new JsonObject
                 {
                     ["adapter_id"] = adapter.AdapterId,

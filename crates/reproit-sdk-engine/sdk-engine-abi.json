@@ -158,6 +158,15 @@
       "stream"
     ]
   },
+  "required_observation_classes": [
+    "clock",
+    "database",
+    "environment",
+    "filesystem",
+    "outbound-http",
+    "queue",
+    "randomness"
+  ],
   "request": {
     "format": "reproit.sdk-engine-call.v1",
     "maximum_bytes": 1048576

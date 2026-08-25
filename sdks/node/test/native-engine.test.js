@@ -140,6 +140,16 @@ test("contract rejects changed observation rules", () => {
     ...structuredClone(ABI_CONTRACT),
     observation_actions: ["capture", "unknown"],
   });
+  const missingClass = structuredClone(ABI_CONTRACT);
+  missingClass.required_observation_classes =
+    missingClass.required_observation_classes.filter((value) => value !== "queue");
+  invalidContracts.push(missingClass);
+  const reorderedClasses = structuredClone(ABI_CONTRACT);
+  reorderedClasses.required_observation_classes.reverse();
+  invalidContracts.push(reorderedClasses);
+  const addedClass = structuredClone(ABI_CONTRACT);
+  addedClass.required_observation_classes.push("extra");
+  invalidContracts.push(addedClass);
   const wrongFields = structuredClone(ABI_CONTRACT);
   wrongFields.observation_contract.read_result_fields = ["chunk"];
   invalidContracts.push(wrongFields);

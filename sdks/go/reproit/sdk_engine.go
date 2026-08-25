@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	sdkEngineABIContractDigest                  = "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3"
+	sdkEngineABIContractDigest                  = "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9"
 	sdkEngineABIVersion                         = uint32(1)
 	sdkEngineMaxEvidenceBytes                   = 785_408
 	sdkEngineMaxObservationAdapters             = 7
@@ -33,6 +33,16 @@ var (
 	errSDKEngineCall        = errors.New("The Repro It SDK engine rejected the operation.")
 	errSDKEngineResponse    = errors.New("The Repro It SDK engine returned an invalid response.")
 )
+
+var sdkEngineRequiredObservationClasses = [...]automaticObservationClass{
+	observationClock,
+	observationDatabase,
+	observationEnvironment,
+	observationFilesystem,
+	observationOutboundHTTP,
+	observationQueue,
+	observationRandomness,
+}
 
 type nativeSDKEngine interface {
 	abiVersion() uint32
@@ -84,6 +94,10 @@ func expectedSDKEngineContract() map[string]any {
 	operations := make([]any, len(sdkEngineOperationNames))
 	for index, operation := range sdkEngineOperationNames {
 		operations[index] = operation
+	}
+	requiredObservationClasses := make([]any, len(sdkEngineRequiredObservationClasses))
+	for index, observationClass := range sdkEngineRequiredObservationClasses {
+		requiredObservationClasses[index] = string(observationClass)
 	}
 	return map[string]any{
 		"abi_version": int64(sdkEngineABIVersion),
@@ -161,6 +175,7 @@ func expectedSDKEngineContract() map[string]any {
 		"request": map[string]any{
 			"format": sdkEngineCallFormat, "maximum_bytes": sdkEngineMaxCallBytes,
 		},
+		"required_observation_classes": requiredObservationClasses,
 		"response": map[string]any{
 			"format": engineResponseFormat, "output_capacity_bytes": sdkEngineOutputCapacity,
 		},

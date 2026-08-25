@@ -62,6 +62,9 @@ def test_native_bridge_constants_match_the_canonical_abi() -> None:
         abi["operations"]
     )
     assert list(native_engine._OBSERVATION_ACTIONS) == abi["observation_actions"]
+    assert list(native_engine._REQUIRED_OBSERVATION_CLASSES) == (
+        abi["required_observation_classes"]
+    )
     assert native_engine._OBSERVATION_CONTRACT == abi["observation_contract"]
     assert native_engine._DEPENDENCY_CONTRACT == abi["dependency_contract"]
     assert native_engine.ABI_CONTRACT_DIGEST == (

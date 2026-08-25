@@ -22,6 +22,7 @@ import {
   NATIVE_ENGINE_OPERATIONS,
   NATIVE_ENGINE_OBSERVATION_ACTIONS,
   NATIVE_ENGINE_OBSERVATION_CONTRACT,
+  NATIVE_ENGINE_REQUIRED_OBSERVATION_CLASSES,
   NATIVE_ENGINE_RESPONSE_CAPACITY,
   NATIVE_ENGINE_RESPONSE_FORMAT,
   NATIVE_ENGINE_SYMBOLS,
@@ -90,6 +91,10 @@ test("native bridge constants match the canonical ABI", () => {
   assert.deepEqual(
     NATIVE_ENGINE_OBSERVATION_CONTRACT,
     abi.observation_contract,
+  );
+  assert.deepEqual(
+    NATIVE_ENGINE_REQUIRED_OBSERVATION_CLASSES,
+    abi.required_observation_classes,
   );
   assert.deepEqual(NATIVE_ENGINE_DEPENDENCY_CONTRACT, abi.dependency_contract);
   assert.equal(

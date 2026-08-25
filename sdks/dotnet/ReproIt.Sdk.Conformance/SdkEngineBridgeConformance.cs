@@ -11,6 +11,7 @@ internal static class SdkEngineBridgeConformance
     internal static void Run()
     {
         AcceptsVersionOneAndTheContract();
+        RejectsChangedRequiredObservationClasses();
         RealEngineContractWhenSupplied();
         RejectsMissingLibraryWithoutDetails();
         RejectsMalformedResponse();
@@ -68,6 +69,41 @@ internal static class SdkEngineBridgeConformance
             error.Message == "The Repro It SDK engine is unavailable." &&
             !error.Message.Contains("private", StringComparison.Ordinal),
             "The .NET SDK engine bridge exposed a loader detail.");
+    }
+
+    private static void RejectsChangedRequiredObservationClasses()
+    {
+        foreach (string change in new[] { "missing", "reordered", "added", "removed" })
+        {
+            JsonObject contract = (JsonObject)SdkEngineBridge.ExpectedContract().DeepClone();
+            JsonArray classes = contract["required_observation_classes"]!.AsArray();
+            switch (change)
+            {
+                case "missing":
+                    contract.Remove("required_observation_classes");
+                    break;
+                case "reordered":
+                    JsonNode first = classes[0]!.DeepClone();
+                    classes[0] = classes[1]!.DeepClone();
+                    classes[1] = first;
+                    break;
+                case "added":
+                    classes.Add("extra");
+                    break;
+                case "removed":
+                    classes.RemoveAt(classes.Count - 1);
+                    break;
+            }
+            _ = ExpectError(() => ContractErrorResponse(contract));
+        }
+    }
+
+    private static void ContractErrorResponse(JsonObject contract)
+    {
+        FakeNative native = new(SdkEngineBridge.AbiVersion, (_, output) =>
+            Write(output, Success(contract.ToJsonString())));
+        using SdkEngineBridge bridge = SdkEngineBridge.Open(() => native);
+        _ = bridge.Contract();
     }
 
     private static void RejectsMalformedResponse()
@@ -376,6 +412,10 @@ internal static class SdkEngineBridgeConformance
             .EnumerateArray()
             .Select(value => value.GetString()!)
             .ToArray();
+        string[] requiredObservationClasses = abi.GetProperty("required_observation_classes")
+            .EnumerateArray()
+            .Select(value => value.GetString()!)
+            .ToArray();
         Require(
             abi.GetProperty("abi_version").GetUInt32() == SdkEngineBridge.AbiVersion &&
             abi.GetProperty("limits").GetProperty("evidence_bytes").GetInt32() ==
@@ -396,6 +436,9 @@ internal static class SdkEngineBridgeConformance
                 SdkEngineBridge.AbiVersionSymbol &&
             abi.GetProperty("symbols").GetProperty("call").GetString() ==
                 SdkEngineBridge.CallSymbol &&
+            requiredObservationClasses.SequenceEqual(
+                SdkEngineBridge.RequiredObservationClasses.Select(
+                    AutomaticOperation.ObservationClass)) &&
             operations.SequenceEqual(SdkEngineOperations.OperationNames) &&
             libraries.OrderBy(entry => entry.Key).SequenceEqual(
                 expectedLibraries.OrderBy(entry => entry.Key)),

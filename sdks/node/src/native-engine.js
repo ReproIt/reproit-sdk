@@ -29,7 +29,7 @@ export const NATIVE_ENGINE_MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES = 65_536;
 export const NATIVE_ENGINE_MAX_SINK_WAIT_MS = 1_800_000;
 export const NATIVE_ENGINE_MAX_SINK_WAITERS = 16;
 export const NATIVE_ENGINE_ABI_CONTRACT_DIGEST =
-  "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3";
+  "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9";
 export const NATIVE_ENGINE_LIBRARIES = Object.freeze({
   "linux-arm64": "libreproit_sdk_engine.so",
   "linux-x86_64": "libreproit_sdk_engine.so",
@@ -67,6 +67,15 @@ export const NATIVE_ENGINE_OPERATIONS = Object.freeze(
 export const NATIVE_ENGINE_OBSERVATION_ACTIONS = Object.freeze([
   "capture",
   "replay",
+]);
+export const NATIVE_ENGINE_REQUIRED_OBSERVATION_CLASSES = Object.freeze([
+  "clock",
+  "database",
+  "environment",
+  "filesystem",
+  "outbound-http",
+  "queue",
+  "randomness",
 ]);
 export const NATIVE_ENGINE_DEPENDENCY_CONTRACT = Object.freeze({
   finish_fields: ["dependency_handle", "response"],
@@ -534,6 +543,7 @@ function validContract(value) {
       "operations",
       "observation_actions",
       "observation_contract",
+      "required_observation_classes",
       "request",
       "response",
       "symbols",
@@ -565,6 +575,10 @@ function validContract(value) {
     value.operations.every((operation) => typeof operation === "string") &&
     sameArray(value.operations, NATIVE_ENGINE_OPERATIONS) &&
     sameArray(value.observation_actions, NATIVE_ENGINE_OBSERVATION_ACTIONS) &&
+    sameArray(
+      value.required_observation_classes,
+      NATIVE_ENGINE_REQUIRED_OBSERVATION_CLASSES,
+    ) &&
     sameRecordOfArrays(
       value.observation_contract,
       NATIVE_ENGINE_OBSERVATION_CONTRACT,

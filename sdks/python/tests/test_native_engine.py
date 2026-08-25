@@ -160,6 +160,15 @@ class NativeEngineBridgeTests(unittest.TestCase):
         wrong_action = copy.deepcopy(ABI_CONTRACT)
         wrong_action["observation_actions"] = ["capture", "unknown"]
         invalid_contracts.append(wrong_action)
+        missing_class = copy.deepcopy(ABI_CONTRACT)
+        missing_class["required_observation_classes"].remove("queue")
+        invalid_contracts.append(missing_class)
+        reordered_classes = copy.deepcopy(ABI_CONTRACT)
+        reordered_classes["required_observation_classes"].reverse()
+        invalid_contracts.append(reordered_classes)
+        added_class = copy.deepcopy(ABI_CONTRACT)
+        added_class["required_observation_classes"].append("extra")
+        invalid_contracts.append(added_class)
         wrong_fields = copy.deepcopy(ABI_CONTRACT)
         wrong_fields["observation_contract"]["read_result_fields"] = ["chunk"]
         invalid_contracts.append(wrong_fields)

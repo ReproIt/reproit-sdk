@@ -19,7 +19,7 @@ internal interface INativeSdkEngine
 internal sealed class SdkEngineBridge : IDisposable
 {
     internal const string AbiContractDigest =
-        "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3";
+        "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9";
     internal const uint AbiVersion = 1;
     internal const int MaxEvidenceBytes = 785_408;
     internal const int MaxObservationAdapters = 7;
@@ -39,6 +39,17 @@ internal sealed class SdkEngineBridge : IDisposable
     internal const string CallSymbol = "reproit_sdk_engine_call";
 
     private const string ResponseFormat = "reproit.sdk-engine-response.v1";
+    internal static IReadOnlyList<AutomaticObservationClass> RequiredObservationClasses { get; } =
+        Array.AsReadOnly(new[]
+        {
+            AutomaticObservationClass.Clock,
+            AutomaticObservationClass.Database,
+            AutomaticObservationClass.Environment,
+            AutomaticObservationClass.Filesystem,
+            AutomaticObservationClass.OutboundHttp,
+            AutomaticObservationClass.Queue,
+            AutomaticObservationClass.Randomness,
+        });
     private bool closed;
     private readonly INativeSdkEngine native;
     private readonly object stateLock = new();
@@ -89,6 +100,11 @@ internal sealed class SdkEngineBridge : IDisposable
         foreach (string operation in SdkEngineOperations.OperationNames)
         {
             operations.Add(operation);
+        }
+        JsonArray requiredObservationClasses = [];
+        foreach (AutomaticObservationClass observationClass in RequiredObservationClasses)
+        {
+            requiredObservationClasses.Add(AutomaticOperation.ObservationClass(observationClass));
         }
         return new JsonObject
         {
@@ -169,6 +185,7 @@ internal sealed class SdkEngineBridge : IDisposable
                 ["format"] = CallFormat,
                 ["maximum_bytes"] = MaxCallBytes,
             },
+            ["required_observation_classes"] = requiredObservationClasses,
             ["response"] = new JsonObject
             {
                 ["format"] = ResponseFormat,

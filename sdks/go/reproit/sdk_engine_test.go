@@ -50,6 +50,27 @@ func TestSDKEngineABIVersionAndContract(t *testing.T) {
 	}
 }
 
+func TestSDKEngineContractRejectsChangedRequiredObservationClasses(t *testing.T) {
+	for _, change := range []func([]any) []any{
+		func(_ []any) []any { return nil },
+		func(values []any) []any { return append([]any{values[1], values[0]}, values[2:]...) },
+		func(values []any) []any { return append(append([]any{}, values...), "extra") },
+		func(values []any) []any { return append([]any{}, values[:len(values)-1]...) },
+	} {
+		contract := expectedSDKEngineContract()
+		values := contract["required_observation_classes"].([]any)
+		if changed := change(values); changed == nil {
+			delete(contract, "required_observation_classes")
+		} else {
+			contract["required_observation_classes"] = changed
+		}
+		response, _ := json.Marshal(contract)
+		if err := contractError(t, []byte(sdkEngineSuccess(string(response))), -1); err == nil {
+			t.Fatal("The SDK engine bridge accepted changed required observation classes.")
+		}
+	}
+}
+
 func TestRealSDKEngineContract(t *testing.T) {
 	libraryPath := os.Getenv("REPROIT_TEST_SDK_ENGINE_LIBRARY")
 	if libraryPath == "" {

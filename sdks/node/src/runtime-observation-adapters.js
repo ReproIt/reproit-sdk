@@ -29,9 +29,6 @@ const originalCreateHash = cryptoModule.createHash;
 const implementationDigest = runtimeImplementationDigest();
 const MAX_VALUE_BYTES = 32 * 1_024;
 const UNSUPPORTED_EVIDENCE = Buffer.from("node-runtime-unsupported-v1", "utf8");
-const CLASSES = [
-  "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
-];
 const installedClasses = [];
 let leaseCount = 0;
 
@@ -63,7 +60,7 @@ function installRuntimeObservationAdapters() {
     "outbound-http": installHttpAdapter,
     randomness: installRandomnessAdapter,
   };
-  for (const observationClass of CLASSES) {
+  for (const observationClass of Object.keys(installers)) {
     let registration;
     let restore;
     try {
