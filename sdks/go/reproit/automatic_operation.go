@@ -78,6 +78,7 @@ type AutomaticInputChunk struct {
 
 // AutomaticProject owns one shared native capture engine.
 type AutomaticProject struct {
+	automaticHTTP *automaticHTTPAdapterLease
 	bridge        *sdkEngineBridge
 	closed        bool
 	closedSignal  chan struct{}
@@ -131,7 +132,18 @@ func OpenAutomaticProject(options AutomaticProjectOptions) (*AutomaticProject, e
 		return nil, ErrAutomaticCapture
 	}
 	defer subject.Close()
-	return openAutomaticProjectWith(options, bridge, subject)
+	httpLease := acquireAutomaticHTTPAdapter()
+	if httpLease == nil {
+		bridge.close()
+		return nil, ErrAutomaticCapture
+	}
+	project, err := openAutomaticProjectWith(options, bridge, subject)
+	if err != nil {
+		httpLease.release()
+		return nil, err
+	}
+	project.automaticHTTP = httpLease
+	return project, nil
 }
 
 func openAutomaticProjectWith(
@@ -506,12 +518,16 @@ func (project *AutomaticProject) pollSink(handle sdkEngineSinkHandle) {
 // Close deletes active shared-engine state. Close is safe to call more than once.
 func (project *AutomaticProject) Close() {
 	project.mu.Lock()
-	defer project.mu.Unlock()
 	if project.closed {
+		project.mu.Unlock()
 		return
 	}
 	project.closed = true
 	close(project.closedSignal)
 	_ = project.bridge.closeEngine(project.handle)
 	project.bridge.close()
+	httpLease := project.automaticHTTP
+	project.automaticHTTP = nil
+	project.mu.Unlock()
+	httpLease.release()
 }

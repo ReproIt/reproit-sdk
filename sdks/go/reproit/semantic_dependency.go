@@ -89,6 +89,9 @@ func translateSemanticDependency(
 			)
 			finished = finishErr == nil && outcome == string(response.Outcome)
 		}
+		if !finished {
+			_ = operation.markUnowned(request.ObservationClass, causalParentID, nil)
+		}
 		return response, liveErr
 	}
 	record, err := readSDKEngineDependencyResponse(operation.project.bridge, started.Handle)

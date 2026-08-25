@@ -51,6 +51,14 @@ func (registry *observationAdapterRegistry) install(adapter installedObservation
 	return nil
 }
 
+func (registry *observationAdapterRegistry) remove(adapter installedObservationAdapter) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if installed, exists := registry.adapters[adapter.class]; exists && installed == adapter {
+		delete(registry.adapters, adapter.class)
+	}
+}
+
 func (registry *observationAdapterRegistry) snapshot() []sdkEngineObservationAdapter {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
