@@ -7,6 +7,7 @@ internal readonly record struct SdkEngineHandle(ulong Value);
 internal readonly record struct SdkEngineOperationHandle(ulong Value);
 internal readonly record struct SdkEngineSinkHandle(ulong Value);
 internal readonly record struct SdkEngineObservationHandle(ulong Value);
+internal readonly record struct SdkEngineDependencyHandle(ulong Value);
 
 internal sealed record SdkEngineSubjectObject(string Digest, string Path, ulong Size);
 internal sealed record SdkEngineObservationAdapter(
@@ -30,10 +31,15 @@ internal readonly record struct SdkEngineObservationStart(
     SdkEngineObservationHandle Handle,
     ulong SessionPosition);
 internal readonly record struct SdkEngineObservationChunk(byte[] Chunk, bool Eof);
+internal readonly record struct SdkEngineDependencyStart(
+    SdkEngineDependencyHandle Handle,
+    string Action);
 
 internal static class SdkEngineOperations
 {
     internal const string ContractOperation = "contract";
+    internal const string FinishDependencyOperation = "dependency-finish";
+    internal const string OpenDependencyOperation = "dependency-open";
     internal const string CloseEngineOperation = "engine-close";
     internal const string OpenEngineOperation = "engine-open";
     internal const string AbandonObservationOperation = "observation-abandon";
@@ -54,6 +60,8 @@ internal static class SdkEngineOperations
     internal static readonly string[] OperationNames =
     [
         ContractOperation,
+        FinishDependencyOperation,
+        OpenDependencyOperation,
         CloseEngineOperation,
         OpenEngineOperation,
         AbandonObservationOperation,
@@ -145,6 +153,56 @@ internal static class SdkEngineOperations
             ["operation"] = InputOperation,
             ["operation_handle"] = handle.Value,
         }));
+
+    internal static SdkEngineDependencyStart OpenDependency(
+        this SdkEngineBridge bridge,
+        SdkEngineOperationHandle handle,
+        string? causalParentId,
+        JsonObject request)
+    {
+        JsonElement result = bridge.Call(new JsonObject
+        {
+            ["causal_parent_id"] = causalParentId,
+            ["format"] = SdkEngineBridge.CallFormat,
+            ["operation"] = OpenDependencyOperation,
+            ["operation_handle"] = handle.Value,
+            ["request"] = request.DeepClone(),
+        });
+        ulong dependencyHandle = PositiveHandle(result, "dependency_handle", "action");
+        JsonElement actionValue = result.GetProperty("action");
+        string? action = actionValue.ValueKind == JsonValueKind.String
+            ? actionValue.GetString()
+            : null;
+        if (action is not ("capture" or "replay"))
+        {
+            throw ResponseError();
+        }
+        return new SdkEngineDependencyStart(
+            new SdkEngineDependencyHandle(dependencyHandle), action);
+    }
+
+    internal static string FinishDependency(
+        this SdkEngineBridge bridge,
+        SdkEngineDependencyHandle handle,
+        JsonObject? response)
+    {
+        JsonElement result = bridge.Call(new JsonObject
+        {
+            ["dependency_handle"] = handle.Value,
+            ["format"] = SdkEngineBridge.CallFormat,
+            ["operation"] = FinishDependencyOperation,
+            ["response"] = response?.DeepClone(),
+        });
+        if (!ExactProperties(result, "outcome"))
+        {
+            throw ResponseError();
+        }
+        JsonElement outcomeValue = result.GetProperty("outcome");
+        string? outcome = outcomeValue.ValueKind == JsonValueKind.String
+            ? outcomeValue.GetString()
+            : null;
+        return outcome is "error" or "response" ? outcome : throw ResponseError();
+    }
 
     internal static SdkEngineObservationStart OpenObservation(
         this SdkEngineBridge bridge,

@@ -16,5 +16,6 @@ PublicSurfaceConformance.Run();
 
 if (Environment.GetEnvironmentVariable("REPROIT_PROTOCOL_VECTORS") is not null)
 {
+    SemanticDependencyConformance.Run();
     ProcessorCaptureConformance.Run();
 }

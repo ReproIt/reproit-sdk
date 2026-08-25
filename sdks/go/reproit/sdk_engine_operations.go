@@ -8,6 +8,8 @@ import (
 
 const (
 	sdkEngineOperationContract    = "contract"
+	sdkEngineDependencyFinish     = "dependency-finish"
+	sdkEngineDependencyOpen       = "dependency-open"
 	sdkEngineOperationCloseEngine = "engine-close"
 	sdkEngineOperationOpenEngine  = "engine-open"
 	sdkEngineObservationAbandon   = "observation-abandon"
@@ -28,6 +30,8 @@ const (
 
 var sdkEngineOperationNames = []string{
 	sdkEngineOperationContract,
+	sdkEngineDependencyFinish,
+	sdkEngineDependencyOpen,
 	sdkEngineOperationCloseEngine,
 	sdkEngineOperationOpenEngine,
 	sdkEngineObservationAbandon,
@@ -50,6 +54,7 @@ type sdkEngineHandle uint64
 type sdkEngineOperationHandle uint64
 type sdkEngineSinkHandle uint64
 type sdkEngineObservationHandle uint64
+type sdkEngineDependencyHandle uint64
 
 type sdkEngineObservationAdapter struct {
 	AdapterID            string `json:"adapter_id"`
@@ -87,6 +92,11 @@ type sdkEngineObservationStart struct {
 type sdkEngineObservationChunk struct {
 	Chunk []byte
 	EOF   bool
+}
+
+type sdkEngineDependencyStart struct {
+	Action string
+	Handle sdkEngineDependencyHandle
 }
 
 func (bridge *sdkEngineBridge) openEngine(options sdkEngineOpenOptions) (sdkEngineHandle, error) {
@@ -161,6 +171,52 @@ func (bridge *sdkEngineBridge) recordInput(
 		Operation       string                   `json:"operation"`
 		OperationHandle sdkEngineOperationHandle `json:"operation_handle"`
 	}{sdkEngineCallFormat, input, sdkEngineOperationInput, handle})
+}
+
+func (bridge *sdkEngineBridge) openDependency(
+	handle sdkEngineOperationHandle,
+	causalParentID *string,
+	request sdkEngineDependencyRequest,
+) (sdkEngineDependencyStart, error) {
+	result, err := bridge.call(struct {
+		CausalParentID  *string                    `json:"causal_parent_id"`
+		Format          string                     `json:"format"`
+		Operation       string                     `json:"operation"`
+		OperationHandle sdkEngineOperationHandle   `json:"operation_handle"`
+		Request         sdkEngineDependencyRequest `json:"request"`
+	}{causalParentID, sdkEngineCallFormat, sdkEngineDependencyOpen, handle, request})
+	if err != nil {
+		return sdkEngineDependencyStart{}, err
+	}
+	dependencyHandle, handleOK := positiveHandle(result, "dependency_handle", "action")
+	action, actionOK := result["action"].(string)
+	if !handleOK || !actionOK || (action != "capture" && action != "replay") {
+		return sdkEngineDependencyStart{}, errSDKEngineResponse
+	}
+	return sdkEngineDependencyStart{
+		Action: action, Handle: sdkEngineDependencyHandle(dependencyHandle),
+	}, nil
+}
+
+func (bridge *sdkEngineBridge) finishDependency(
+	handle sdkEngineDependencyHandle,
+	response *sdkEngineDependencyResponse,
+) (string, error) {
+	result, err := bridge.call(struct {
+		DependencyHandle sdkEngineDependencyHandle    `json:"dependency_handle"`
+		Format           string                       `json:"format"`
+		Operation        string                       `json:"operation"`
+		Response         *sdkEngineDependencyResponse `json:"response"`
+	}{handle, sdkEngineCallFormat, sdkEngineDependencyFinish, response})
+	if err != nil {
+		return "", err
+	}
+	outcome, ok := result["outcome"].(string)
+	if !hasExactKeys(result, "outcome") || !ok ||
+		(outcome != "error" && outcome != "response") {
+		return "", errSDKEngineResponse
+	}
+	return outcome, nil
 }
 
 func (bridge *sdkEngineBridge) openObservation(

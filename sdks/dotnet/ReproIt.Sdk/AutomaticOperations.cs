@@ -399,6 +399,30 @@ public sealed class AutomaticOperation : IDisposable
         }
     }
 
+    internal SdkEngineDependencyConnection OpenSemanticDependency(
+        JsonObject request,
+        string? causalParentId)
+    {
+        lock (stateLock)
+        {
+            if (finished || worldComplete)
+            {
+                throw AutomaticProject.CaptureError();
+            }
+            try
+            {
+                SdkEngineDependencyStart start = bridge.OpenDependency(
+                    handle, causalParentId, request);
+                return new SdkEngineDependencyConnection(bridge, start);
+            }
+            catch (Exception)
+            {
+                AbandonLocked();
+                throw AutomaticProject.CaptureError();
+            }
+        }
+    }
+
     internal void MarkUnowned(
         AutomaticObservationClass observationClass,
         string? causalParentId,

@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	sdkEngineABIContractDigest                  = "sha256:35ea88f10ce9284ae85bd9a35e8b1e78e8c292a843ebe3d349dbed6a3b4113b3"
+	sdkEngineABIContractDigest                  = "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3"
 	sdkEngineABIVersion                         = uint32(1)
 	sdkEngineMaxEvidenceBytes                   = 785_408
 	sdkEngineMaxObservationAdapters             = 7
@@ -15,6 +15,7 @@ const (
 	sdkEngineMaxObservationReadBytes            = 8_192
 	sdkEngineMaxObservationSessions             = 1_024
 	sdkEngineMaxObservationSessionsPerOperation = 64
+	sdkEngineMaxSemanticDependencyRecordBytes   = 65_536
 	sdkEngineMaxSinkWaiters                     = 16
 	sdkEngineSinkWaitMilliseconds               = uint64(1_800_000)
 	sdkEngineOutputCapacity                     = 16_384
@@ -86,6 +87,23 @@ func expectedSDKEngineContract() map[string]any {
 	}
 	return map[string]any{
 		"abi_version": int64(sdkEngineABIVersion),
+		"dependency_contract": map[string]any{
+			"finish_fields":        []any{"dependency_handle", "response"},
+			"finish_result_fields": []any{"outcome"},
+			"open_fields": []any{
+				"causal_parent_id", "operation_handle", "request",
+			},
+			"open_result_fields":    []any{"action", "dependency_handle"},
+			"replay_read_operation": "observation-read",
+			"request_fields": []any{
+				"encoding", "metadata", "method", "observation_class", "operation",
+				"payload", "protocol", "target",
+			},
+			"response_fields": []any{
+				"error_code", "error_number", "metadata", "outcome", "payload", "status",
+				"status_code",
+			},
+		},
 		"error_behavior": map[string]any{
 			"json_error": map[string]any{
 				"error_code_source": "reproit-core-v1",
@@ -118,6 +136,7 @@ func expectedSDKEngineContract() map[string]any {
 			"observation_sessions":               sdkEngineMaxObservationSessions,
 			"observation_sessions_per_operation": sdkEngineMaxObservationSessionsPerOperation,
 			"operations":                         512,
+			"semantic_dependency_record_bytes":   sdkEngineMaxSemanticDependencyRecordBytes,
 			"sink_wait_ms":                       int64(sdkEngineSinkWaitMilliseconds),
 			"sinks":                              sdkEngineMaxSinkWaiters,
 		},

@@ -19,7 +19,7 @@ internal interface INativeSdkEngine
 internal sealed class SdkEngineBridge : IDisposable
 {
     internal const string AbiContractDigest =
-        "sha256:35ea88f10ce9284ae85bd9a35e8b1e78e8c292a843ebe3d349dbed6a3b4113b3";
+        "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3";
     internal const uint AbiVersion = 1;
     internal const int MaxEvidenceBytes = 785_408;
     internal const int MaxObservationAdapters = 7;
@@ -27,6 +27,7 @@ internal sealed class SdkEngineBridge : IDisposable
     internal const int MaxObservationReadBytes = 8_192;
     internal const int MaxObservationSessions = 1_024;
     internal const int MaxObservationSessionsPerOperation = 64;
+    internal const int MaxSemanticDependencyRecordBytes = 65_536;
     internal const int MaxSinkWaiters = 16;
     internal const ulong SinkWaitMilliseconds = 1_800_000;
     internal const int OutputCapacity = 16_384;
@@ -92,6 +93,21 @@ internal sealed class SdkEngineBridge : IDisposable
         return new JsonObject
         {
             ["abi_version"] = AbiVersion,
+            ["dependency_contract"] = new JsonObject
+            {
+                ["finish_fields"] = new JsonArray("dependency_handle", "response"),
+                ["finish_result_fields"] = new JsonArray("outcome"),
+                ["open_fields"] = new JsonArray(
+                    "causal_parent_id", "operation_handle", "request"),
+                ["open_result_fields"] = new JsonArray("action", "dependency_handle"),
+                ["replay_read_operation"] = "observation-read",
+                ["request_fields"] = new JsonArray(
+                    "encoding", "metadata", "method", "observation_class", "operation",
+                    "payload", "protocol", "target"),
+                ["response_fields"] = new JsonArray(
+                    "error_code", "error_number", "metadata", "outcome", "payload", "status",
+                    "status_code"),
+            },
             ["error_behavior"] = new JsonObject
             {
                 ["json_error"] = new JsonObject
@@ -129,6 +145,7 @@ internal sealed class SdkEngineBridge : IDisposable
                 ["observation_sessions"] = MaxObservationSessions,
                 ["observation_sessions_per_operation"] = MaxObservationSessionsPerOperation,
                 ["operations"] = 512,
+                ["semantic_dependency_record_bytes"] = MaxSemanticDependencyRecordBytes,
                 ["sink_wait_ms"] = SinkWaitMilliseconds,
                 ["sinks"] = MaxSinkWaiters,
             },
