@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .encoding import canonical_bytes
+from .http_adapter import (
+    _hooks_are_original as _http_hooks_are_original,
+    _install_http_adapter,
+    _restore_http_adapter,
+)
 from .native_engine import (
     MAX_OBSERVATION_CHUNK_BYTES,
     MAX_OBSERVATION_RESPONSE_READ_BYTES,
@@ -110,6 +115,7 @@ def _implementation_digest() -> str:
             for name in (
                 "automatic_adapters.py",
                 "engine_operation.py",
+                "http_adapter.py",
                 "semantic_dependency.py",
                 "sqlite_adapter.py",
             )
@@ -137,6 +143,7 @@ _REGISTRATIONS = tuple(
         "database",
         "environment",
         "filesystem",
+        "outbound-http",
         "randomness",
     )
 )
@@ -194,6 +201,7 @@ def _hooks_are_original() -> bool:
         and _ENVIRONMENT_TYPE.__iter__ is _ORIGINAL_ENVIRONMENT_ITER
         and _ENVIRONMENT_TYPE.__len__ is _ORIGINAL_ENVIRONMENT_LEN
         and _sqlite_hooks_are_original()
+        and _http_hooks_are_original()
     )
 
 
@@ -216,9 +224,11 @@ def _install_hooks() -> None:
     _ENVIRONMENT_TYPE.__iter__ = _unsupported_environment_iter
     _ENVIRONMENT_TYPE.__len__ = _unsupported_environment_len
     _install_sqlite_adapter()
+    _install_http_adapter()
 
 
 def _restore_hooks() -> None:
+    _restore_http_adapter()
     _restore_sqlite_adapter()
     if time.time_ns is _time_ns:
         time.time_ns = _ORIGINAL_TIME_NS

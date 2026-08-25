@@ -240,7 +240,14 @@ class AutomaticAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             [value["class"] for value in _installed_observation_adapters()],
-            ["clock", "database", "environment", "filesystem", "randomness"],
+            [
+                "clock",
+                "database",
+                "environment",
+                "filesystem",
+                "outbound-http",
+                "randomness",
+            ],
         )
         automatic_adapters._release_automatic_adapters()
         self.assertIs(time.time_ns, automatic_adapters._time_ns)
