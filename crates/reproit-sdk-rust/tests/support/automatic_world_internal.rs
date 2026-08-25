@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{
+    Arc, Mutex, MutexGuard, PoisonError,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use reproit_core::{
     crypto::encode_base64url,
@@ -35,6 +38,22 @@ impl CandidateSink for Sink {
 
     fn try_send(&self, _candidate: Candidate) -> bool {
         false
+    }
+}
+
+#[derive(Default)]
+struct CountingSink {
+    deliveries: AtomicUsize,
+}
+
+impl CandidateSink for CountingSink {
+    fn queued_bytes(&self) -> usize {
+        0
+    }
+
+    fn try_send(&self, _candidate: Candidate) -> bool {
+        self.deliveries.fetch_add(1, Ordering::SeqCst);
+        true
     }
 }
 
@@ -243,8 +262,10 @@ fn immutable_state_keeps_only_response_and_keys_it_by_request_digest() {
 #[test]
 fn registered_hooks_without_native_sentinel_evidence_fail_closed() {
     let _process = process_test();
-    let (sdk, operation_id, _) = started_sdk();
+    let sink = Arc::new(CountingSink::default());
+    let (sdk, operation_id, _) = started_sdk_with_sink(sink.clone());
     let mut coordinator = AutomaticWorldCoordinator::new(sdk.clone(), operation_id).unwrap();
+    let spool = coordinator.spool.path().to_owned();
     for class in AutomaticObservationClass::ALL {
         coordinator
             .register_observation_adapter(
@@ -282,6 +303,114 @@ fn registered_hooks_without_native_sentinel_evidence_fail_closed() {
     };
     assert_eq!(error.code, ErrorCode::WorldNotClosed);
     sdk.abandon_incomplete(operation_id);
+    assert!(!spool.exists());
+    assert_eq!(sdk.active_operations(), 0);
+    assert_eq!(sink.deliveries.load(Ordering::SeqCst), 0);
+    assert_eq!(sdk.recall_counters().candidate_incomplete, 1);
+}
+
+#[test]
+fn clean_native_sentinel_coverage_binds_all_seven_registered_adapters() {
+    let _process = process_test();
+    let (sdk, operation_id, _) = started_sdk();
+    let mut coordinator = AutomaticWorldCoordinator::new(sdk, operation_id).unwrap();
+    register_all_adapters(&mut coordinator);
+
+    coordinator
+        .bind_native_sentinel_coverage(b"clean bounded kernel trace")
+        .unwrap();
+
+    let coverage_digests = coordinator
+        .registrations
+        .values()
+        .map(|registration| registration.sentinel_coverage_digest.unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(coordinator.registrations.len(), 7);
+    assert_eq!(coverage_digests.len(), 7);
+    coordinator.capture_ambient().unwrap();
+    coordinator.close(TriggerCompletion::Return).unwrap();
+}
+
+#[test]
+fn native_sentinel_coverage_digest_is_deterministic_and_domain_separated() {
+    let _process = process_test();
+    let ownership = AutomaticObservationRegistration::new(
+        AutomaticObservationClass::Database,
+        ADAPTER_ID.to_owned(),
+        ADAPTER_VERSION.to_owned(),
+        Digest::of(b"semantic-hook-implementation"),
+    )
+    .unwrap()
+    .ownership();
+    let evidence = b"clean bounded kernel trace";
+
+    let first = sentinel_coverage_digest(&ownership, evidence).unwrap();
+    let second = sentinel_coverage_digest(&ownership, evidence).unwrap();
+
+    assert_eq!(first, second);
+    assert_ne!(first, Digest::of(evidence));
+    assert_ne!(
+        first,
+        sentinel_coverage_digest(&ownership, b"different kernel trace").unwrap()
+    );
+}
+
+#[test]
+fn native_sentinel_coverage_requires_every_registered_adapter() {
+    let _process = process_test();
+    let (sdk, operation_id, _) = started_sdk();
+    let mut coordinator = AutomaticWorldCoordinator::new(sdk, operation_id).unwrap();
+    for class in AutomaticObservationClass::ALL
+        .into_iter()
+        .filter(|class| *class != AutomaticObservationClass::Queue)
+    {
+        register_adapter(&mut coordinator, class);
+    }
+
+    assert_eq!(
+        coordinator
+            .bind_native_sentinel_coverage(b"clean bounded kernel trace")
+            .unwrap_err()
+            .code,
+        ErrorCode::WorldNotClosed
+    );
+    assert!(
+        coordinator
+            .registrations
+            .values()
+            .all(|registration| registration.sentinel_coverage_digest.is_none())
+    );
+    assert_world_not_closed(coordinator);
+}
+
+#[test]
+fn invalid_native_sentinel_evidence_keeps_world_incomplete() {
+    let _process = process_test();
+    let (sdk, operation_id, _) = started_sdk();
+    let mut empty = AutomaticWorldCoordinator::new(sdk.clone(), operation_id).unwrap();
+    register_all_adapters(&mut empty);
+    assert_eq!(
+        empty.bind_native_sentinel_coverage(&[]).unwrap_err().code,
+        ErrorCode::RuntimeQuota
+    );
+    assert_world_not_closed(empty);
+
+    let mut at_limit = AutomaticWorldCoordinator::new(sdk.clone(), operation_id).unwrap();
+    register_all_adapters(&mut at_limit);
+    let maximum = vec![0_u8; MAX_NATIVE_SENTINEL_EVIDENCE_BYTES];
+    at_limit.bind_native_sentinel_coverage(&maximum).unwrap();
+
+    let mut one_over = AutomaticWorldCoordinator::new(sdk, operation_id).unwrap();
+    register_all_adapters(&mut one_over);
+    let evidence = vec![0_u8; MAX_NATIVE_SENTINEL_EVIDENCE_BYTES + 1];
+    assert_eq!(
+        one_over
+            .bind_native_sentinel_coverage(&evidence)
+            .unwrap_err()
+            .code,
+        ErrorCode::RuntimeQuota
+    );
+    assert_world_not_closed(one_over);
 }
 
 #[test]
@@ -656,20 +785,28 @@ fn semantic_dependency_records(
 
 fn coordinator_with_coverage(sdk: Sdk, operation_id: OperationId) -> AutomaticWorldCoordinator {
     let mut coordinator = AutomaticWorldCoordinator::new(sdk, operation_id).unwrap();
-    for class in AutomaticObservationClass::ALL {
-        coordinator
-            .register_observation_adapter(
-                class,
-                ADAPTER_ID.to_owned(),
-                ADAPTER_VERSION.to_owned(),
-                Digest::of(b"semantic-hook-implementation"),
-            )
-            .unwrap();
-        coordinator
-            .register_sentinel_coverage(class, Digest::of(class.boundary_id().as_bytes()))
-            .unwrap();
-    }
+    register_all_adapters(&mut coordinator);
     coordinator
+        .bind_native_sentinel_coverage(b"clean bounded kernel trace")
+        .unwrap();
+    coordinator
+}
+
+fn register_all_adapters(coordinator: &mut AutomaticWorldCoordinator) {
+    for class in AutomaticObservationClass::ALL {
+        register_adapter(coordinator, class);
+    }
+}
+
+fn register_adapter(coordinator: &mut AutomaticWorldCoordinator, class: AutomaticObservationClass) {
+    coordinator
+        .register_observation_adapter(
+            class,
+            ADAPTER_ID.to_owned(),
+            ADAPTER_VERSION.to_owned(),
+            Digest::of(b"semantic-hook-implementation"),
+        )
+        .unwrap();
 }
 
 fn assert_world_not_closed(coordinator: AutomaticWorldCoordinator) {
@@ -680,9 +817,13 @@ fn assert_world_not_closed(coordinator: AutomaticWorldCoordinator) {
 }
 
 fn started_sdk() -> (Sdk, OperationId, OperationId) {
+    started_sdk_with_sink(Arc::new(Sink))
+}
+
+fn started_sdk_with_sink(sink: Arc<dyn CandidateSink>) -> (Sdk, OperationId, OperationId) {
     let operation_id = parse("op_01890f3e-7b1c-7cc0-8a1b-123456789ab1");
     let causal_parent_id = parse("op_01890f3e-7b1c-7cc0-8a1b-123456789ab2");
-    let sdk = Sdk::new(Arc::new(Sink));
+    let sdk = Sdk::new(sink);
     sdk.begin_automatic(
         AutomaticCandidateStart {
             capture_id: parse("cap_01890f3e-7b1c-7cc0-8a1b-123456789abc"),

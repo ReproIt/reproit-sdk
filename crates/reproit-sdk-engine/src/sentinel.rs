@@ -1,10 +1,10 @@
 //! Bounded Linux coverage sentinel for automatic World capture.
 //!
 //! The sentinel detects unowned kernel-visible effects. It never reads syscall
-//! arguments or copies application payload bytes. A clean syscall trace is not
-//! sufficient proof for observations that can stay in process, such as vDSO
-//! clock reads and environment access. The engine therefore keeps the result
-//! local and does not bind it as complete World coverage.
+//! arguments or copies application payload bytes. A clean trace is one part of
+//! World coverage. The engine can bind it only when all seven semantic adapter
+//! classes are registered. Official package validation must prove that the
+//! registered hooks are installed. Registration alone does not prove this.
 
 use std::{
     collections::BTreeMap,
@@ -21,7 +21,37 @@ static SENTINEL: OnceLock<Mutex<Controller>> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OperationCoverage {
     Incomplete,
-    KernelTraceCompleteButFullCoverageUnproved,
+    CleanKernelTrace(KernelTraceEvidence),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct KernelTraceEvidence {
+    start_sequence: u64,
+    end_sequence: u64,
+    relevant_events: u64,
+    owned_events: u64,
+}
+
+impl KernelTraceEvidence {
+    pub(crate) fn encode(self) -> [u8; 40] {
+        const FORMAT: u64 = 1;
+
+        let mut encoded = [0_u8; 40];
+        for (index, value) in [
+            FORMAT,
+            self.start_sequence,
+            self.end_sequence,
+            self.relevant_events,
+            self.owned_events,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let offset = index * size_of::<u64>();
+            encoded[offset..offset + size_of::<u64>()].copy_from_slice(&value.to_be_bytes());
+        }
+        encoded
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -148,12 +178,8 @@ impl Controller {
             .runtime
             .as_mut()
             .is_some_and(platform::Runtime::is_healthy);
-        let counters_valid = operation.owned_events <= operation.relevant_events
-            && self
-                .runtime
-                .as_ref()
-                .is_some_and(|runtime| runtime.sequence() >= operation.start_sequence);
-        coverage_result(operation.incomplete, healthy, counters_valid)
+        let end_sequence = self.runtime.as_ref().map_or(0, platform::Runtime::sequence);
+        coverage_result(operation, healthy, end_sequence)
     }
 
     fn remove_operation(&mut self, operation_handle: u64) {
@@ -288,15 +314,23 @@ fn controller() -> &'static Mutex<Controller> {
 }
 
 const fn coverage_result(
-    incomplete: bool,
+    operation: ActiveOperation,
     runtime_healthy: bool,
-    counters_valid: bool,
+    end_sequence: u64,
 ) -> OperationCoverage {
-    if incomplete || !runtime_healthy || !counters_valid {
+    if operation.incomplete
+        || !runtime_healthy
+        || operation.owned_events > operation.relevant_events
+        || end_sequence < operation.start_sequence
+    {
         OperationCoverage::Incomplete
     } else {
-        // Syscalls cannot prove vDSO clock reads or in-process environment reads.
-        OperationCoverage::KernelTraceCompleteButFullCoverageUnproved
+        OperationCoverage::CleanKernelTrace(KernelTraceEvidence {
+            start_sequence: operation.start_sequence,
+            end_sequence,
+            relevant_events: operation.relevant_events,
+            owned_events: operation.owned_events,
+        })
     }
 }
 
@@ -364,29 +398,82 @@ mod tests {
 
     #[test]
     fn clean_kernel_trace_does_not_claim_full_world_coverage() {
+        let operation = ActiveOperation {
+            start_sequence: 7,
+            relevant_events: 2,
+            owned_events: 2,
+            incomplete: false,
+        };
         assert_eq!(
-            coverage_result(false, true, true),
-            OperationCoverage::KernelTraceCompleteButFullCoverageUnproved
+            coverage_result(operation, true, 9),
+            OperationCoverage::CleanKernelTrace(KernelTraceEvidence {
+                start_sequence: 7,
+                end_sequence: 9,
+                relevant_events: 2,
+                owned_events: 2,
+            })
         );
         assert_ne!(
-            coverage_result(false, true, true),
+            coverage_result(operation, true, 9),
             OperationCoverage::Incomplete
         );
     }
 
     #[test]
     fn loss_overflow_or_invalid_counters_make_coverage_incomplete() {
+        let clean = ActiveOperation {
+            start_sequence: 7,
+            relevant_events: 2,
+            owned_events: 2,
+            incomplete: false,
+        };
         assert_eq!(
-            coverage_result(true, true, true),
+            coverage_result(
+                ActiveOperation {
+                    incomplete: true,
+                    ..clean
+                },
+                true,
+                9
+            ),
             OperationCoverage::Incomplete
         );
         assert_eq!(
-            coverage_result(false, false, true),
+            coverage_result(clean, false, 9),
             OperationCoverage::Incomplete
         );
         assert_eq!(
-            coverage_result(false, true, false),
+            coverage_result(
+                ActiveOperation {
+                    owned_events: 3,
+                    ..clean
+                },
+                true,
+                9
+            ),
             OperationCoverage::Incomplete
         );
+        assert_eq!(
+            coverage_result(clean, true, 6),
+            OperationCoverage::Incomplete
+        );
+    }
+
+    #[test]
+    fn clean_coverage_evidence_has_one_fixed_encoding() {
+        let evidence = KernelTraceEvidence {
+            start_sequence: 1,
+            end_sequence: 2,
+            relevant_events: 3,
+            owned_events: 3,
+        }
+        .encode();
+
+        assert_eq!(evidence.len(), 40);
+        assert_eq!(&evidence[..8], &1_u64.to_be_bytes());
+        assert_eq!(&evidence[8..16], &1_u64.to_be_bytes());
+        assert_eq!(&evidence[16..24], &2_u64.to_be_bytes());
+        assert_eq!(&evidence[24..32], &3_u64.to_be_bytes());
+        assert_eq!(&evidence[32..], &3_u64.to_be_bytes());
     }
 }

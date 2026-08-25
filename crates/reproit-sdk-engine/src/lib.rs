@@ -536,12 +536,16 @@ impl Registry {
         operation_handle: u64,
         completion: TriggerCompletion,
     ) -> Result<Value, Error> {
-        let _coverage = sentinel::operation_finished(operation_handle);
-        self.operations
+        let coverage = sentinel::operation_finished(operation_handle);
+        let operation = &mut self
+            .operations
             .get_mut(&operation_handle)
             .ok_or_else(not_found)?
-            .operation
-            .close_world(completion)?;
+            .operation;
+        if let sentinel::OperationCoverage::CleanKernelTrace(evidence) = coverage {
+            operation.bind_native_sentinel_coverage(&evidence.encode())?;
+        }
+        operation.close_world(completion)?;
         Ok(json!({}))
     }
 

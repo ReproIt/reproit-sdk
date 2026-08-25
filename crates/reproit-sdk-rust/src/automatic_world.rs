@@ -25,6 +25,7 @@ use reproit_core::{
         validate_semantic_dependency_pair, validate_semantic_observation_pair,
     },
 };
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -46,6 +47,7 @@ const OBSERVATION_OBJECT_MEDIA_TYPE: &str = "application/octet-stream";
 const FENCE_ID: &str = "reproit-native-observation-fence";
 const MAX_AMBIENT_ENVIRONMENT_BYTES: usize = 512 * 1_024;
 const MAX_AMBIENT_ENVIRONMENT_VALUES: usize = 4_096;
+pub(crate) const MAX_NATIVE_SENTINEL_EVIDENCE_BYTES: usize = 256;
 const MAX_RECOVERABLE_SECONDS: i64 = 1_800;
 const MAX_SESSION_POSITION: u64 = 9_007_199_254_740_991;
 const MAX_SEMANTIC_RECORD_BYTES: u64 = 64 * 1_024;
@@ -299,17 +301,30 @@ impl AutomaticWorldCoordinator {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn register_sentinel_coverage(
-        &mut self,
-        class: AutomaticObservationClass,
-        evidence_digest: Digest,
-    ) -> Result<(), Error> {
-        let registration = self
-            .registrations
-            .get_mut(&class)
-            .ok_or_else(world_not_closed)?;
-        registration.sentinel_coverage_digest = Some(evidence_digest);
+    pub(crate) fn bind_native_sentinel_coverage(&mut self, evidence: &[u8]) -> Result<(), Error> {
+        if evidence.is_empty() || evidence.len() > MAX_NATIVE_SENTINEL_EVIDENCE_BYTES {
+            self.incomplete_session = true;
+            return Err(capture_limit());
+        }
+        let required_classes = AutomaticObservationClass::ALL
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let registered_classes = self.registrations.keys().copied().collect::<BTreeSet<_>>();
+        if registered_classes != required_classes
+            || self
+                .registrations
+                .values()
+                .any(|registration| registration.sentinel_coverage_digest.is_some())
+        {
+            self.incomplete_session = true;
+            return Err(world_not_closed());
+        }
+        for registration in self.registrations.values_mut() {
+            registration.sentinel_coverage_digest = Some(sentinel_coverage_digest(
+                &registration.ownership(),
+                evidence,
+            )?);
+        }
         Ok(())
     }
 
@@ -879,6 +894,24 @@ fn adapter_ownership(
         .values()
         .map(AutomaticObservationRegistration::ownership)
         .collect()
+}
+
+fn sentinel_coverage_digest(
+    ownership: &SemanticAdapterOwnership,
+    evidence: &[u8],
+) -> Result<Digest, Error> {
+    const DOMAIN: &[u8] = b"reproit.native-sentinel-coverage.v1\0";
+
+    let ownership = canonical::canonical_bytes(ownership)?;
+    let ownership_bytes = u64::try_from(ownership.len()).map_err(|_| capture_limit())?;
+    let evidence_bytes = u64::try_from(evidence.len()).map_err(|_| capture_limit())?;
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN);
+    hasher.update(ownership_bytes.to_be_bytes());
+    hasher.update(&ownership);
+    hasher.update(evidence_bytes.to_be_bytes());
+    hasher.update(evidence);
+    Ok(Digest::from_bytes(hasher.finalize().into()))
 }
 
 fn closure_policy() -> ClosurePolicy {

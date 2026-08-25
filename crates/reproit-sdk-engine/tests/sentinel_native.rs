@@ -16,7 +16,8 @@ use sentinel_linux::{Event, EventKind, Runtime};
 
 #[cfg(target_os = "linux")]
 fn main() {
-    clean_syscall_trace_stays_unbound();
+    clean_syscall_trace_produces_bounded_evidence();
+    finished_operation_releases_its_sentinel_state();
     detects_unowned_randomness_without_reading_arguments();
     tracks_clone_events();
     queue_overflow_makes_the_runtime_unhealthy();
@@ -26,7 +27,23 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-fn clean_syscall_trace_stays_unbound() {
+fn finished_operation_releases_its_sentinel_state() {
+    use sentinel_controller::OperationCoverage;
+
+    sentinel_controller::engine_opened();
+    let guard = sentinel_controller::engine_call_scope();
+    sentinel_controller::operation_started(9_002);
+    let _coverage = sentinel_controller::operation_finished(9_002);
+    assert_eq!(
+        sentinel_controller::operation_finished(9_002),
+        OperationCoverage::Incomplete
+    );
+    drop(guard);
+    sentinel_controller::engine_closed();
+}
+
+#[cfg(target_os = "linux")]
+fn clean_syscall_trace_produces_bounded_evidence() {
     use sentinel_controller::OperationCoverage;
 
     sentinel_controller::engine_opened();
@@ -36,10 +53,10 @@ fn clean_syscall_trace_stays_unbound() {
     let guard = sentinel_controller::engine_call_scope();
     let coverage = sentinel_controller::operation_finished(9_001);
     drop(guard);
-    assert_eq!(
-        coverage,
-        OperationCoverage::KernelTraceCompleteButFullCoverageUnproved
-    );
+    let OperationCoverage::CleanKernelTrace(evidence) = coverage else {
+        panic!("a clean native trace must produce coverage evidence");
+    };
+    assert_eq!(evidence.encode().len(), 40);
     sentinel_controller::engine_closed();
 }
 

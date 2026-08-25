@@ -22,6 +22,7 @@ use crate::{
         AutomaticWorldCoordinator, MAX_AUTOMATIC_OBSERVATION_CHUNK_BYTES,
         MAX_AUTOMATIC_OBSERVATION_RESPONSE_READ_BYTES,
         MAX_AUTOMATIC_OBSERVATION_SESSIONS_PER_OPERATION,
+        MAX_NATIVE_SENTINEL_EVIDENCE_BYTES as MAX_NATIVE_SENTINEL_EVIDENCE_BOUND,
     },
     official_operation::{
         ManagedProjectTokenProvider, RustOperation, RustOperationFactory, failure_payload,
@@ -132,6 +133,7 @@ impl AutomaticManagedOperation {
     pub const MAX_OBSERVATION_RESPONSE_READ_BYTES: usize =
         MAX_AUTOMATIC_OBSERVATION_RESPONSE_READ_BYTES;
     pub const MAX_OBSERVATION_SESSIONS: usize = MAX_AUTOMATIC_OBSERVATION_SESSIONS_PER_OPERATION;
+    pub const MAX_NATIVE_SENTINEL_EVIDENCE_BYTES: usize = MAX_NATIVE_SENTINEL_EVIDENCE_BOUND;
 
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
@@ -214,6 +216,14 @@ impl AutomaticManagedOperation {
             .as_mut()
             .ok_or_else(incomplete_operation)?
             .mark_unowned(class, causal_parent_id, evidence)
+    }
+
+    #[doc(hidden)]
+    pub fn bind_native_sentinel_coverage(&mut self, evidence: &[u8]) -> Result<(), Error> {
+        self.coordinator
+            .as_mut()
+            .ok_or_else(incomplete_operation)?
+            .bind_native_sentinel_coverage(evidence)
     }
 
     fn write_observation(
