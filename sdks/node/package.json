@@ -31,6 +31,7 @@
     "src/runtime-observation-adapters.js",
     "src/semantic-dependency.js",
     "src/semantic-observation.js",
+    "src/sqlite-adapter.js",
     "src/subject-protocol.js",
     "native"
   ],

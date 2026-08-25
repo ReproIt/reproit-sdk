@@ -36,6 +36,7 @@ test("package is deterministic, bounded, and installable from a local file", asy
     assert.ok(entries.includes("package/src/runtime-observation-adapters.js"));
     assert.ok(entries.includes("package/src/semantic-dependency.js"));
     assert.ok(entries.includes("package/src/semantic-observation.js"));
+    assert.ok(entries.includes("package/src/sqlite-adapter.js"));
     assert.ok(entries.includes("package/native/reproit-sdk-engine-loader.c"));
     assert.equal(entries.includes("package/src/index.js"), false);
     assert.equal(entries.includes("package/src/managed-candidate.js"), false);
@@ -125,7 +126,7 @@ import {
 
 const startupDate = Date;
 assert.deepEqual(runtimeObservationAdapterStateForTest(), {
-  classes: ["clock", "environment", "filesystem", "randomness"],
+  classes: ["clock", "database", "environment", "filesystem", "randomness"],
   leases: 1,
 });
 const registerModule = await import("@reproit/sdk/register");
