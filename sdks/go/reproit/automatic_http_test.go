@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"testing"
@@ -138,6 +139,80 @@ func TestAutomaticHTTPCaptureReturnsExactLivePointerAndError(t *testing.T) {
 	gotResponse, gotError := transport.RoundTrip(request)
 	if gotResponse != wantResponse || gotError != wantError {
 		t.Fatal("Capture changed the exact live response pointer or error.")
+	}
+}
+
+func TestAutomaticHTTPCaptureKeepsSupportedErrorIdentity(t *testing.T) {
+	for _, sentinel := range []error{context.Canceled, context.DeadlineExceeded} {
+		bridge := semanticDependencyBridge(t, "capture", nil, nil)
+		operation := semanticTestOperation(bridge)
+		transport := &automaticHTTPTransport{base: automaticHTTPRoundTripper(
+			func(*http.Request) (*http.Response, error) { return nil, sentinel },
+		)}
+		transport.active.Store(true)
+		request, _ := http.NewRequestWithContext(
+			automaticHTTPTestContext(operation), http.MethodGet, "https://example.test", nil,
+		)
+		response, gotError := transport.RoundTrip(request)
+		bridge.close()
+		if response != nil || gotError != sentinel {
+			t.Fatal("Capture changed a supported standard error identity.")
+		}
+	}
+}
+
+func TestAutomaticHTTPErrorReplayNeverCallsLive(t *testing.T) {
+	for _, test := range []struct {
+		number uint32
+		want   error
+	}{{1, context.Canceled}, {2, context.DeadlineExceeded}} {
+		code := "interrupted"
+		wire, err := makeSDKEngineDependencyResponse(semanticDependencyResponse{
+			ErrorCode: &code, ErrorNumber: &test.number,
+			Metadata: []semanticDependencyMetadata{}, Outcome: observationError,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, _ := json.Marshal(wire)
+		bridge := semanticDependencyBridge(t, "replay", [][]byte{record}, func(call map[string]any) string {
+			if call["operation"] == sdkEngineDependencyFinish {
+				return sdkEngineSuccess(`{"outcome":"error"}`)
+			}
+			return ""
+		})
+		operation := semanticTestOperation(bridge)
+		transport := &automaticHTTPTransport{base: automaticHTTPRoundTripper(
+			func(*http.Request) (*http.Response, error) {
+				t.Fatal("Error replay called the live transport.")
+				return nil, nil
+			},
+		)}
+		transport.active.Store(true)
+		request, _ := http.NewRequestWithContext(
+			automaticHTTPTestContext(operation), http.MethodGet, "https://example.test", nil,
+		)
+		response, gotError := transport.RoundTrip(request)
+		bridge.close()
+		if response != nil || gotError != test.want {
+			t.Fatal("Replay did not return the matching standard error sentinel.")
+		}
+	}
+}
+
+func TestAutomaticHTTPRejectsWrappedAndCorruptErrors(t *testing.T) {
+	wrapped := fmt.Errorf("wrapped: %w", context.Canceled)
+	if _, ok := makeAutomaticHTTPResponse(nil, wrapped); ok {
+		t.Fatal("The adapter accepted a wrapped context error.")
+	}
+	code := "interrupted"
+	badNumber := uint32(3)
+	_, err := reconstructAutomaticHTTPResponse(nil, semanticDependencyResponse{
+		ErrorCode: &code, ErrorNumber: &badNumber,
+		Metadata: []semanticDependencyMetadata{}, Outcome: observationError,
+	})
+	if !errors.Is(err, ErrAutomaticCapture) {
+		t.Fatal("The adapter accepted a corrupt error transcript.")
 	}
 }
 

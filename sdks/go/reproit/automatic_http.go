@@ -1,6 +1,7 @@
 package reproit
 
 import (
+	"context"
 	"encoding/base64"
 	"io"
 	"net/http"
@@ -236,7 +237,26 @@ func makeAutomaticHTTPResponse(
 	liveError error,
 ) (semanticDependencyResponse, bool) {
 	invalid := semanticDependencyResponse{Outcome: observationResponse}
-	if liveError != nil || response == nil || response.StatusCode < 100 ||
+	if liveError != nil {
+		if response != nil {
+			return invalid, false
+		}
+		code := "interrupted"
+		var number uint32
+		switch liveError {
+		case context.Canceled:
+			number = 1
+		case context.DeadlineExceeded:
+			number = 2
+		default:
+			return invalid, false
+		}
+		return semanticDependencyResponse{
+			ErrorCode: &code, ErrorNumber: &number, Metadata: []semanticDependencyMetadata{},
+			Outcome: observationError,
+		}, true
+	}
+	if response == nil || response.StatusCode < 100 ||
 		response.StatusCode > 599 || response.StatusCode == http.StatusSwitchingProtocols ||
 		(response.Body != nil && !isAutomaticHTTPNoBody(response.Body)) || len(response.Trailer) != 0 {
 		return invalid, false
@@ -328,6 +348,21 @@ func reconstructAutomaticHTTPResponse(
 	request *http.Request,
 	response semanticDependencyResponse,
 ) (*http.Response, error) {
+	if response.Outcome == observationError {
+		if response.ErrorCode == nil || *response.ErrorCode != "interrupted" ||
+			response.ErrorNumber == nil || len(response.Metadata) != 0 || response.HasPayload ||
+			response.Status != nil || response.StatusCode != nil {
+			return nil, ErrAutomaticCapture
+		}
+		switch *response.ErrorNumber {
+		case 1:
+			return nil, context.Canceled
+		case 2:
+			return nil, context.DeadlineExceeded
+		default:
+			return nil, ErrAutomaticCapture
+		}
+	}
 	if response.Outcome != observationResponse || !response.HasPayload ||
 		response.StatusCode == nil || response.ErrorCode != nil || response.ErrorNumber != nil ||
 		response.Status != nil {
