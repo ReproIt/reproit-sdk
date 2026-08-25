@@ -195,20 +195,14 @@ impl Runtime {
         let initial_tids = enumerate_threads()?;
         let control = SharedControl::allocate()?;
         let event_pipe = create_pipe(libc::O_CLOEXEC | libc::O_NONBLOCK)?;
-        let gate_pipe = match create_pipe(libc::O_CLOEXEC) {
-            Ok(pipe) => pipe,
-            Err(()) => {
-                close_pipe(event_pipe);
-                return Err(());
-            }
+        let Ok(gate_pipe) = create_pipe(libc::O_CLOEXEC) else {
+            close_pipe(event_pipe);
+            return Err(());
         };
-        let ready_pipe = match create_pipe(libc::O_CLOEXEC) {
-            Ok(pipe) => pipe,
-            Err(()) => {
-                close_pipe(event_pipe);
-                close_pipe(gate_pipe);
-                return Err(());
-            }
+        let Ok(ready_pipe) = create_pipe(libc::O_CLOEXEC) else {
+            close_pipe(event_pipe);
+            close_pipe(gate_pipe);
+            return Err(());
         };
 
         // Safety: No Rust work runs in the child after the fork. The child uses fixed storage
@@ -259,9 +253,9 @@ impl Runtime {
         }
         // Safety: This branch owns the descriptor.
         unsafe { libc::close(ready_pipe[0]) };
-        let threads_changed = enumerate_threads()
-            .map(|current| current.iter().any(|tid| !initial_tids.contains(tid)))
-            .unwrap_or(true);
+        let threads_changed = enumerate_threads().map_or(true, |current| {
+            current.iter().any(|tid| !initial_tids.contains(tid))
+        });
         if threads_changed {
             abort_install(child_pid, event_pipe[0]);
             return Err(());
@@ -358,6 +352,7 @@ impl Runtime {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn terminate_tracer_for_test(&mut self) {
         if !self.reaped {
             // Safety: The PID identifies only the tracer child created by this runtime.
@@ -484,6 +479,8 @@ struct SyscallInfo {
     data: [u64; 8],
 }
 
+// Keep the post-fork child lifecycle cohesive so this path never runs a Rust destructor.
+#[allow(clippy::too_many_lines)]
 unsafe fn tracer_child(
     target_pid: libc::pid_t,
     initial_tids: *const libc::pid_t,
@@ -502,6 +499,9 @@ unsafe fn tracer_child(
     if initial_count == 0 || initial_count > MAX_TRACED_THREADS {
         unsafe { libc::_exit(3) };
     }
+    let Ok(trace_options) = usize::try_from(TRACE_OPTIONS) else {
+        unsafe { libc::_exit(3) };
+    };
     let mut tids = [0_i32; MAX_TRACED_THREADS];
     let mut tid_count = initial_count;
     for (index, slot) in tids[..initial_count].iter_mut().enumerate() {
@@ -511,7 +511,7 @@ unsafe fn tracer_child(
                 PTRACE_SEIZE,
                 *slot,
                 std::ptr::null_mut::<libc::c_void>(),
-                TRACE_OPTIONS as usize as *mut libc::c_void,
+                trace_options as *mut libc::c_void,
             )
         } != 0
         {
@@ -620,13 +620,14 @@ unsafe fn tracer_child(
 }
 
 fn resume_syscall(tid: libc::pid_t, signal: libc::c_int) {
+    let signal = usize::try_from(signal).unwrap_or(0);
     // Safety: The tracer owns this stopped tracee and preserves real signal delivery.
     unsafe {
         libc::ptrace(
             libc::PTRACE_SYSCALL,
             tid,
             std::ptr::null_mut::<libc::c_void>(),
-            signal as usize as *mut libc::c_void,
+            signal as *mut libc::c_void,
         );
     }
 }
@@ -651,7 +652,7 @@ fn trace_syscall_entry(tid: libc::pid_t, shared: *mut SharedState, event_fd: Raw
     if info.operation != PTRACE_SYSCALL_INFO_ENTRY || is_ignored(tid, shared) {
         return;
     }
-    if let Some(kind) = classify_syscall(info.data[0] as libc::c_long) {
+    if let Some(kind) = classify_syscall(info.data[0].cast_signed()) {
         emit_event(tid, kind, shared, event_fd);
     }
 }
