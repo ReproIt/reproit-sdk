@@ -45,7 +45,7 @@ if (queueRestartChild is not null)
 }
 
 MemorySink memory = new();
-Sdk sdk = new(memory);
+Sdk sdk = TestSdk(memory);
 Fail(sdk, start);
 Require(memory.Candidates.Count == 1 &&
     memory.Candidates[0].AsSpan().SequenceEqual(CanonicalJson.Bytes(expected)),
@@ -53,7 +53,7 @@ Require(memory.Candidates.Count == 1 &&
 Require(sdk.ActiveOperations == 0, "The failed operation remained active.");
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 JsonNode dependency = Value("dependency_close_request")["cursor"]!.DeepClone();
 sdk.Begin(start, Value("operation_begin_payload"));
 sdk.RecordInput(start.OperationId, Value("operation_input_payload"));
@@ -80,7 +80,7 @@ Require(sdk.RecallCounters.EligibleFailureObserved == 2 &&
     "The exact-storm recall counters are incorrect.");
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 for (int index = 0; index < 1_000; index += 1)
 {
     string suffix = index.ToString("x12");
@@ -97,7 +97,7 @@ Require(sdk.RecallCounters.EligibleFailureObserved == 1_000 &&
     "The repeated-Failure recall counters are incorrect.");
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 for (int index = 0; index < 257; index += 1)
 {
     JsonNode failure = Value("failure_payload");
@@ -120,7 +120,7 @@ Require(sdk.RecallCounters.SuppressedHighCardinalityStorm > 0,
     "The high-cardinality recall counter did not advance.");
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 sdk.Begin(start, Value("operation_begin_payload"));
 sdk.Succeed(start.OperationId);
 sdk.Begin(start, Value("operation_begin_payload"));
@@ -146,7 +146,7 @@ Require(memory.Candidates.Count == 1, "The failed operation did not reach the si
 foreach (string operationKind in new[] { "stream", "delivered-work" })
 {
     memory = new MemorySink();
-    sdk = new Sdk(memory);
+    sdk = TestSdk(memory);
     JsonNode begin = Value("operation_begin_payload");
     begin["operation_kind"] = operationKind;
     JsonNode failure = Value("failure_payload");
@@ -194,7 +194,7 @@ foreach (string operationKind in new[] { "stream", "delivered-work" })
 }
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 original = new InvalidOperationException("customer conversion failure");
 try
 {
@@ -215,7 +215,7 @@ Require(memory.Candidates.Count == 0 && sdk.ActiveOperations == 0 &&
     "Failure conversion changed application behavior or retained capture state.");
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 JsonNode invalidDependency = dependency.DeepClone();
 invalidDependency["cursor_digest"] = "invalid";
 original = new InvalidOperationException("customer dependency failure");
@@ -240,7 +240,7 @@ Require(memory.Candidates.Count == 0 && sdk.ActiveOperations == 0 &&
     "The invalid dependency changed the result or reached the sink.");
 
 PrivateOnlySink privateOnly = new();
-sdk = new Sdk(privateOnly);
+sdk = TestSdk(privateOnly);
 JsonNode managedDeployment = start.Deployment.DeepClone();
 managedDeployment["processing_mode"] = "managed";
 CandidateStart managedStart = start with { Deployment = managedDeployment };
@@ -257,7 +257,7 @@ Require(privateOnly.Deliveries == 0 && sdk.RecallCounters.CandidateRejected == 1
     "The managed candidate entered the private transport.");
 
 MemorySink managedMemory = new();
-Fail(new Sdk(managedMemory), managedStart);
+Fail(TestSdk(managedMemory), managedStart);
 UnixRuntimeSink privateRuntime = new(
     "/tmp/reproit-missing-private-runtime.sock",
     () => "ReproIt workload-token");
@@ -277,7 +277,7 @@ Require(privateRuntime.QueuedBytes == 0,
     "A rejected candidate changed the private Runtime queue.");
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 sdk.Begin(start, Value("operation_begin_payload"));
 JsonNode oversized = Value("failure_payload");
 oversized["oversized"] = new string('x', Sdk.MaxEventBytes);
@@ -293,7 +293,7 @@ Require(sdk.ActiveOperations == 0 && memory.Candidates.Count == 0,
     "The oversized operation was retained or delivered.");
 
 memory = new MemorySink();
-sdk = new Sdk(memory);
+sdk = TestSdk(memory);
 List<string> operationIds = new(Sdk.MaxActiveOperations);
 for (int index = 0; index < Sdk.MaxActiveOperations; index += 1)
 {
@@ -327,7 +327,7 @@ listener.Bind(new UnixDomainSocketEndPoint(socketPath));
 listener.Listen(1);
 Task<byte[]> received = ReceiveAsync(listener);
 UnixRuntimeSink runtime = new(socketPath, () => "ReproIt workload-token");
-Fail(new Sdk(runtime), start);
+Fail(TestSdk(runtime), start);
 byte[] request = await received.WaitAsync(TimeSpan.FromSeconds(1));
 Require(request.AsSpan().IndexOf("Reproit-Protocol: 1"u8) >= 0,
     "The protocol header is missing.");
@@ -348,7 +348,7 @@ using (Socket successListener = new(
     successListener.Listen(1);
     runtime = new UnixRuntimeSink(
         successSocketPath, () => "ReproIt workload-token");
-    sdk = new Sdk(runtime);
+    sdk = TestSdk(runtime);
     string success = Operations.Run(
         sdk,
         start,
@@ -365,7 +365,7 @@ Directory.Delete(successDirectory, true);
 
 runtime = new UnixRuntimeSink(
     "/tmp/reproit-dotnet-outage.sock", () => "ReproIt workload-token");
-sdk = new Sdk(runtime);
+sdk = TestSdk(runtime);
 original = new InvalidOperationException("customer Runtime-outage failure");
 try
 {
@@ -392,7 +392,7 @@ Require(runtime.QueuedBytes == 0 && sdk.ActiveOperations == 0,
 runtime = new UnixRuntimeSink(
     "/tmp/reproit-dotnet-authorization.sock",
     () => throw new InvalidOperationException("authorization unavailable"));
-sdk = new Sdk(runtime);
+sdk = TestSdk(runtime);
 Fail(sdk, start);
 outageDeadline = DateTime.UtcNow.AddSeconds(1);
 while (runtime.QueuedBytes != 0 && DateTime.UtcNow < outageDeadline)
@@ -439,7 +439,7 @@ RecordingStagedTransport stagedRuntime = new();
 RecordingStagedTransport stagedDeferred = new();
 byte[] stagingKey = Enumerable.Repeat((byte)0x63, 32).ToArray();
 StagedCandidateSink staged = new(stagedRuntime, stagedDeferred, stagingKey);
-Sdk stagedSdk = new(staged);
+Sdk stagedSdk = TestSdk(staged);
 Fail(stagedSdk, start);
 DateTime stagedDeadline = DateTime.UtcNow.AddSeconds(1);
 while ((stagedRuntime.Received.Count == 0 || stagedDeferred.Received.Count == 0 ||
@@ -482,7 +482,7 @@ StagedCandidateSink unavailableStaging = new(
     new ThrowingStagedTransport(),
     new ThrowingStagedTransport(),
     stagingKey);
-Sdk unavailableStagingSdk = new(unavailableStaging);
+Sdk unavailableStagingSdk = TestSdk(unavailableStaging);
 Fail(unavailableStagingSdk, start);
 stagedDeadline = DateTime.UtcNow.AddSeconds(1);
 while (unavailableStaging.QueuedBytes != 0 && DateTime.UtcNow < stagedDeadline)
@@ -687,6 +687,12 @@ void ReadQueueRestartState(string path, int candidateSize)
         state["pid"]!.GetValue<int>() > 0 &&
         state["pid"]!.GetValue<int>() != Environment.ProcessId,
         "The queue restart state is invalid.");
+}
+
+static Sdk TestSdk(ICandidateSink sink)
+{
+    SdkProcessResources.ResetForTests();
+    return new Sdk(sink, allowPrivate: true);
 }
 
 static void Require(bool condition, string message)

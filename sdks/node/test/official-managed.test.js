@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   ManagedError,
   OfficialManagedProject,
-  ReproIt,
   createOfficialManagedCandidateSink,
 } from "../src/index.js";
 import {
@@ -33,34 +32,6 @@ test("workspace official project fails before project or capture use", () => {
     () => new OfficialManagedProject(null, "invalid", "invalid"),
     (error) =>
       error instanceof ManagedError && error.code === "CONFIG_CONFLICT",
-  );
-});
-
-test("public integration fails before World capture when unbound", () => {
-  let worldAccessed = false;
-  assert.throws(
-    () =>
-      new ReproIt(null, "invalid", "invalid", () => {
-        worldAccessed = true;
-      }),
-    (error) =>
-      error instanceof ManagedError && error.code === "CONFIG_CONFLICT",
-  );
-  assert.equal(worldAccessed, false);
-});
-
-test("framework-neutral operation preserves the exact error", async () => {
-  const original = new Error("customer failure");
-  await assert.rejects(
-    () =>
-      ReproIt.init().operation(
-        "todos.create",
-        Buffer.from('{"title":"trigger-bug"}'),
-        async () => {
-          throw original;
-        },
-      ),
-    (observed) => observed === original,
   );
 });
 

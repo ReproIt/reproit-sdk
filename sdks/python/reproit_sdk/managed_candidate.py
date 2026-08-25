@@ -214,6 +214,8 @@ class PreparedManagedCandidate:
 
         descriptors = [dict(entry.descriptor) for entry in objects]
         total_plaintext_bytes = sum(entry["plain_size"] for entry in descriptors)
+        if total_plaintext_bytes > 4 * 1024 * 1024 * 1024:
+            raise incomplete_candidate()
         deployment = candidate["deployment"]
         identity = {
             "candidate_digest": canonical_digest(candidate),

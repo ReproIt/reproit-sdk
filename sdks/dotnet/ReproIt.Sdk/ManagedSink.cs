@@ -53,9 +53,8 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
     private int queuedBytes;
     private int queuedCandidates;
 
-    // The delivery lifetime is fixed at one second by the plan. Tests
-    // shorten it to prove the expiry path without waiting.
-    internal TimeSpan CandidateDeliveryLifetime { get; set; } = TimeSpan.FromSeconds(1);
+    // Tests shorten this value to prove the expiry path without waiting.
+    internal TimeSpan CandidateDeliveryLifetime { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>Prepares the workload key and starts the delivery worker.</summary>
     /// <param name="client">
@@ -301,7 +300,7 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
         lock (stateLock)
         {
             if (queuedCandidates >= MaxQueuedCandidates ||
-                queuedBytes + candidate.Length > Sdk.MaxGlobalBytes)
+                !SdkProcessResources.ReserveCandidate(candidate.Length))
             {
                 IncrementLocked(ref candidateQueueFull);
                 return false;
@@ -320,6 +319,7 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
             queuedCandidates -= 1;
             IncrementLocked(ref candidateQueueFull);
         }
+        SdkProcessResources.ReleaseCandidate(candidate.Length);
         return false;
     }
 
@@ -375,7 +375,7 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
                 }
                 try
                 {
-                    Deliver(entry.Value);
+                    Deliver(entry.Value, entry.Enqueued);
                     Increment(ref candidateDurablyAccepted);
                 }
                 catch (ManagedCaptureException error)
@@ -395,15 +395,19 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
                     queuedBytes = Math.Max(0, queuedBytes - entry.Size);
                     queuedCandidates = Math.Max(0, queuedCandidates - 1);
                 }
+                SdkProcessResources.ReleaseCandidate(entry.Size);
             }
         }
     }
 
-    private void Deliver(JsonObject candidate)
+    private void Deliver(JsonObject candidate, long enqueued)
     {
+        DeadlineManagedClient client = new(
+            registrationDelivery, grantDelivery, ingressDelivery,
+            enqueued, CandidateDeliveryLifetime);
         PreparedManagedCandidate prepared =
             PreparedManagedCandidate.PrepareComplete(candidate, subject, closure);
-        EnsureRegistered();
+        EnsureRegistered(client);
         string registeredDeploymentDigest = deploymentDigest ??
             throw ManagedProtocol.SchemaInvalid(
                 "The managed Deployment is not bound.");
@@ -412,7 +416,7 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
         byte[] registeredWorkloadSigningKey = workloadSigningKey ??
             throw ManagedProtocol.SchemaInvalid("The managed Deployment is not bound.");
         EncryptionResponse grant = prepared.RequestEncryptionGrant(
-            grantDelivery,
+            client,
             registeredDeploymentDigest,
             registeredWorkloadKeyId,
             registeredWorkloadSigningKey);
@@ -423,7 +427,7 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
             configuration.CaptureSignerPublicKey);
         EncryptionResponse renewal =
             sealedCandidate.RequestCaptureGrantRenewal(
-                grantDelivery,
+                client,
                 registeredDeploymentDigest,
                 registeredWorkloadKeyId,
                 registeredWorkloadSigningKey);
@@ -432,10 +436,10 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
             ManagedProtocol.NowTimestamp(),
             configuration.CaptureSignerId,
             configuration.CaptureSignerPublicKey);
-        sealedCandidate.Upload(ingressDelivery);
+        sealedCandidate.Upload(client);
     }
 
-    private void EnsureRegistered()
+    private void EnsureRegistered(IManagedRegistrationDelivery delivery)
     {
         lock (registrationLock)
         {
@@ -473,7 +477,7 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
                     "AUTHENTICATION_REQUIRED",
                     "The project token provider could not provide a project token.");
             }
-            JsonObject registration = registrationDelivery.RegisterWorkloadKey(
+            JsonObject registration = delivery.RegisterWorkloadKey(
                 projectToken, request, RegistrationTimeout);
             if (ManagedProtocol.Text(registration["key_id"]) != receipt.WorkloadKeyId ||
                 ManagedProtocol.Text(registration["service_id"]) != receipt.ServiceId ||
@@ -627,4 +631,71 @@ public sealed class ManagedCandidateSink : ICandidateSink, IRecallCounterSource
     }
 
     private sealed record QueuedCandidate(JsonObject Value, int Size, long Enqueued);
+
+    private sealed class DeadlineManagedClient(
+        IManagedRegistrationDelivery registration,
+        IManagedGrantDelivery grants,
+        IManagedIngressDelivery ingress,
+        long enqueued,
+        TimeSpan lifetime) :
+        IManagedRegistrationDelivery, IManagedGrantDelivery, IManagedIngressDelivery
+    {
+        public JsonObject RegisterWorkloadKey(
+            ManagedProjectToken projectToken, JsonObject request, TimeSpan timeout) =>
+            Call(() => registration.RegisterWorkloadKey(
+                projectToken, request, Remaining(timeout)));
+
+        public EncryptionResponse RequestEncryptionGrant(
+            JsonObject request, TimeSpan timeout) =>
+            Call(() => grants.RequestEncryptionGrant(request, Remaining(timeout)));
+
+        public JsonObject Start(JsonObject request, TimeSpan timeout) =>
+            Call(() => ingress.Start(request, Remaining(timeout)));
+
+        public JsonObject Missing(
+            string uploadId, string uploadToken, string? cursor, TimeSpan timeout) =>
+            Call(() => ingress.Missing(
+                uploadId, uploadToken, cursor, Remaining(timeout)));
+
+        public void UploadObject(
+            string uploadUrl, string digest, byte[] value, TimeSpan timeout)
+        {
+            ingress.UploadObject(uploadUrl, digest, value, Remaining(timeout));
+            EnsureAlive();
+        }
+
+        public JsonObject Commit(string uploadId, string uploadToken, TimeSpan timeout) =>
+            Call(() => ingress.Commit(uploadId, uploadToken, Remaining(timeout)));
+
+        public JsonObject Cancel(string uploadId, string uploadToken, TimeSpan timeout) =>
+            Call(() => ingress.Cancel(uploadId, uploadToken, Remaining(timeout)));
+
+        private T Call<T>(Func<T> operation)
+        {
+            T result = operation();
+            EnsureAlive();
+            return result;
+        }
+
+        private TimeSpan Remaining(TimeSpan requested)
+        {
+            TimeSpan remaining = lifetime - Stopwatch.GetElapsedTime(enqueued);
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw Expired();
+            }
+            return requested <= remaining ? requested : remaining;
+        }
+
+        private void EnsureAlive()
+        {
+            if (Stopwatch.GetElapsedTime(enqueued) >= lifetime)
+            {
+                throw Expired();
+            }
+        }
+
+        private static ManagedCaptureException Expired() => new(
+            "UPLOAD_EXPIRED", "The managed candidate delivery lifetime expired.");
+    }
 }

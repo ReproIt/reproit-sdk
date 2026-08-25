@@ -1,0 +1,128 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>ReproIt.Sdk</name>
+    </assembly>
+    <members>
+        <member name="T:ReproIt.Sdk.CanonicalJson">
+            <summary>Encodes deterministic protocol JSON.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.CanonicalJson.Bytes(System.Text.Json.Nodes.JsonNode)">
+            <summary>Encodes one protocol value with ordered object properties.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.Operations">
+            <summary>Provides fail-open operation wrapper behavior.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.Operations.Preparation">
+            <summary>Contains the records available before one operation starts.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Operations.Preparation.#ctor(ReproIt.Sdk.CandidateStart,System.Text.Json.Nodes.JsonNode,System.Collections.Generic.IReadOnlyList{System.Text.Json.Nodes.JsonNode},System.Collections.Generic.IReadOnlyList{System.Text.Json.Nodes.JsonNode})">
+            <summary>Contains the records available before one operation starts.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Operations.Run``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.CandidateStart,System.Text.Json.Nodes.JsonNode,System.Collections.Generic.IEnumerable{System.Text.Json.Nodes.JsonNode},System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
+            <summary>Runs an operation and preserves its exact return or exception.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Operations.RunPrepared``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.Operations.Preparation,System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
+            <summary>Runs a prepared operation and preserves its exact return or exception.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Operations.RunStream``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.Operations.Preparation,System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
+            <summary>Runs one ordered stream operation.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Operations.RunDeliveredWork``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.Operations.Preparation,System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
+            <summary>Runs one delivered-work operation.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.CaptureException">
+            <summary>Reports a local capture that is incomplete or exceeds a fixed bound.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.CaptureException.#ctor(System.String)">
+            <summary>Reports a local capture that is incomplete or exceeds a fixed bound.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.CandidateStart">
+            <summary>Supplies the immutable identity needed to start one operation capture.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.CandidateStart.#ctor(System.String,System.Text.Json.Nodes.JsonNode,System.String,System.String)">
+            <summary>Supplies the immutable identity needed to start one operation capture.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.ICandidateSink">
+            <summary>Accepts complete failed candidates without blocking an application operation.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.ICandidateSink.AllowsProcessingMode(System.String)">
+            <summary>Reports whether this sink accepts one processing mode.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.ICandidateSink.QueuedBytes">
+            <summary>Gets the current queued candidate bytes.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.ICandidateSink.TrySend(System.String,System.ReadOnlyMemory{System.Byte})">
+            <summary>Tries to enqueue one complete candidate.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.SdkRecallCounters">
+            <summary>Contains bounded local recall counters without customer values.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.SdkRecallCounters.#ctor(System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64)">
+            <summary>Contains bounded local recall counters without customer values.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.Sdk">
+            <summary>Owns bounded active records and sends complete failed candidates only.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.Sdk.MaxGlobalBytes">
+            <summary>The global active and queued byte bound.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.Sdk.MaxOperationBytes">
+            <summary>The per-operation byte bound.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.Sdk.MaxEventBytes">
+            <summary>The per-event byte bound.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.Sdk.MaxEvents">
+            <summary>The event-count bound.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.Sdk.MaxActiveOperations">
+            <summary>The concurrent active-operation bound.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.#ctor(ReproIt.Sdk.ICandidateSink)">
+            <summary>Creates an SDK with one bounded local candidate sink.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.Sdk.ActiveOperations">
+            <summary>Gets the active operation count.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.Sdk.RecallCounters">
+            <summary>Gets a bounded snapshot of local capture outcomes.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.Begin(ReproIt.Sdk.CandidateStart,System.Text.Json.Nodes.JsonNode)">
+            <summary>Starts one operation with its immutable begin record.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.RecordInput(System.String,System.Text.Json.Nodes.JsonNode)">
+            <summary>Appends one ordered semantic input record.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.RecordDependency(System.String,System.Text.Json.Nodes.JsonNode)">
+            <summary>Appends one dependency cursor record.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.Succeed(System.String)">
+            <summary>Deletes a successful operation without delivery.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.Cancel(System.String)">
+            <summary>Deletes a cancelled operation without delivery.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.AbandonIncomplete(System.String)">
+            <summary>Deletes incomplete local state and records the outcome.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.Sdk.Fail(System.String,System.Text.Json.Nodes.JsonNode)">
+            <summary>Freezes and enqueues one complete failed candidate.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.StagedDeliveryOutcome">
+            <summary>Reports one bounded staged-candidate delivery result.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.CloudProtected">
+            <summary>A durable staging service owns the candidate.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.LocalOnly">
+            <summary>Only the bounded local Runtime journal owns the candidate.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.Rejected">
+            <summary>The receiver rejected the candidate.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.Retryable">
+            <summary>The receiver did not provide a terminal result.</summary>
+        </member>
+    </members>
+</doc>

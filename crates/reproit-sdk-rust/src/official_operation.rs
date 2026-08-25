@@ -4,22 +4,118 @@ use reproit_core::{
     Error, ErrorCode,
     identity::{CaptureId, OperationId},
     model::{
-        DependencyCursorPayload, FailurePayload, OperationBeginPayload, OperationInputPayload,
+        DependencyCursorPayload, FailureIdentity, FailurePayload, FailurePayloadFormat,
+        FailureReference, OperationBeginPayload, OperationInputPayload, OperationKind, Validate,
     },
 };
 use uuid::Uuid;
 
 use crate::{
     CandidateStart, ManagedProjectToken, ManagedRustCandidateSink, ManagedRustCaptureClosure,
-    ManagedRustLocalRecorder, ManagedRustOperationClosure, OfficialManagedProject, Sdk,
-    SdkRecallCounters,
+    ManagedRustCaptureClosureProvider, ManagedRustLocalRecorder, ManagedRustOperationClosure,
+    OfficialManagedProject, Sdk, SdkRecallCounters,
 };
+
+pub trait RustOperation: Send {
+    fn operation_id(&self) -> OperationId;
+    fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error>;
+    fn succeed(self: Box<Self>);
+    fn abandon_incomplete(self: Box<Self>);
+    fn fail(self: Box<Self>, identity: FailureIdentity) -> Result<(), Error>;
+}
+
+pub trait RustOperationFactory: Send + Sync + 'static {
+    fn start(&self, begin: &OperationBeginPayload) -> Result<Box<dyn RustOperation>, Error>;
+}
+
+pub trait ManagedProjectTokenProvider: Send + Sync + 'static {
+    fn project_token(&self) -> Result<ManagedProjectToken, Error>;
+}
+
+impl<F> ManagedProjectTokenProvider for F
+where
+    F: Fn() -> Result<ManagedProjectToken, Error> + Send + Sync + 'static,
+{
+    fn project_token(&self) -> Result<ManagedProjectToken, Error> {
+        self()
+    }
+}
+
+pub struct OfficialManagedRustOperationFactory {
+    closure_coordinator: Arc<dyn ManagedRustCaptureClosureProvider>,
+    project: OfficialManagedProject,
+    token_provider: Arc<dyn ManagedProjectTokenProvider>,
+}
+
+impl OfficialManagedRustOperationFactory {
+    pub fn new<C, T>(
+        project: OfficialManagedProject,
+        closure_coordinator: C,
+        token_provider: T,
+    ) -> Self
+    where
+        C: ManagedRustCaptureClosureProvider,
+        T: ManagedProjectTokenProvider,
+    {
+        Self {
+            closure_coordinator: Arc::new(closure_coordinator),
+            project,
+            token_provider: Arc::new(token_provider),
+        }
+    }
+}
+
+impl RustOperationFactory for OfficialManagedRustOperationFactory {
+    fn start(&self, begin: &OperationBeginPayload) -> Result<Box<dyn RustOperation>, Error> {
+        let operation = OfficialManagedRustOperation::start_coordinated(
+            &self.project,
+            self.closure_coordinator.as_ref(),
+            begin,
+        )?;
+        Ok(Box::new(FactoryOperation {
+            operation,
+            token_provider: self.token_provider.clone(),
+        }))
+    }
+}
+
+struct FactoryOperation {
+    operation: OfficialManagedRustOperation,
+    token_provider: Arc<dyn ManagedProjectTokenProvider>,
+}
+
+impl RustOperation for FactoryOperation {
+    fn operation_id(&self) -> OperationId {
+        self.operation.operation_id()
+    }
+
+    fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error> {
+        self.operation.record_input(input)
+    }
+
+    fn succeed(self: Box<Self>) {
+        self.operation.succeed();
+    }
+
+    fn abandon_incomplete(self: Box<Self>) {
+        self.operation.abandon_incomplete();
+    }
+
+    fn fail(self: Box<Self>, identity: FailureIdentity) -> Result<(), Error> {
+        let token_provider = self.token_provider;
+        self.operation
+            .fail_identity(&identity, move || token_provider.project_token())?;
+        Ok(())
+    }
+}
 
 pub struct OfficialManagedRustOperation {
     capture_id: CaptureId,
     closure: Option<ManagedRustCaptureClosure>,
     finished: bool,
     operation_id: OperationId,
+    operation_kind: OperationKind,
+    operation_name: String,
     recorder: Arc<ManagedRustLocalRecorder>,
     sdk: Sdk,
 }
@@ -30,8 +126,39 @@ impl OfficialManagedRustOperation {
         closure: ManagedRustCaptureClosure,
         begin: &OperationBeginPayload,
     ) -> Result<Self, Error> {
+        let capture_id = new_capture_id()?;
+        let operation_id = new_operation_id()?;
         let world_id = closure.world.world_id()?;
-        Self::start_inner(project, world_id, Some(closure), begin)
+        Self::start_inner(
+            project,
+            capture_id,
+            operation_id,
+            world_id,
+            Some(closure),
+            begin,
+        )
+    }
+
+    pub fn start_coordinated<P>(
+        project: &OfficialManagedProject,
+        closure_coordinator: &P,
+        begin: &OperationBeginPayload,
+    ) -> Result<Self, Error>
+    where
+        P: ManagedRustCaptureClosureProvider + ?Sized,
+    {
+        let capture_id = new_capture_id()?;
+        let operation_id = new_operation_id()?;
+        let closure = closure_coordinator.capture_closure(operation_id)?;
+        let world_id = closure.world.world_id()?;
+        Self::start_inner(
+            project,
+            capture_id,
+            operation_id,
+            world_id,
+            Some(closure),
+            begin,
+        )
     }
 
     pub fn start_open(
@@ -39,17 +166,24 @@ impl OfficialManagedRustOperation {
         world_id: reproit_core::identity::Digest,
         begin: &OperationBeginPayload,
     ) -> Result<Self, Error> {
-        Self::start_inner(project, world_id, None, begin)
+        Self::start_inner(
+            project,
+            new_capture_id()?,
+            new_operation_id()?,
+            world_id,
+            None,
+            begin,
+        )
     }
 
     fn start_inner(
         project: &OfficialManagedProject,
+        capture_id: CaptureId,
+        operation_id: OperationId,
         world_id: reproit_core::identity::Digest,
         closure: Option<ManagedRustCaptureClosure>,
         begin: &OperationBeginPayload,
     ) -> Result<Self, Error> {
-        let capture_id = new_capture_id()?;
-        let operation_id = new_operation_id()?;
         let recorder = Arc::new(ManagedRustLocalRecorder::new(operation_id)?);
         let mut deployment = project.deployment()?;
         recorder.bind_deployment(&mut deployment)?;
@@ -68,6 +202,8 @@ impl OfficialManagedRustOperation {
             closure,
             finished: false,
             operation_id,
+            operation_kind: begin.operation_kind,
+            operation_name: begin.operation_name.clone(),
             recorder,
             sdk,
         })
@@ -113,6 +249,18 @@ impl OfficialManagedRustOperation {
     {
         let closure = self.closure.take().ok_or_else(incomplete_operation)?;
         self.fail_inner(failure, closure, project_token_provider)
+    }
+
+    pub fn fail_identity<F>(
+        self,
+        identity: &FailureIdentity,
+        project_token_provider: F,
+    ) -> Result<ManagedRustCandidateSink, Error>
+    where
+        F: FnOnce() -> Result<ManagedProjectToken, Error>,
+    {
+        let failure = self.failure_payload(identity.clone())?;
+        self.fail(&failure, project_token_provider)
     }
 
     pub fn fail_with_closure<F>(
@@ -176,6 +324,26 @@ impl OfficialManagedRustOperation {
             })?;
         self.finished = true;
         recorded.finalize_official(operation_closure, project_token_provider)
+    }
+
+    fn failure_payload(&self, identity: FailureIdentity) -> Result<FailurePayload, Error> {
+        identity.validate()?;
+        let (operation_kind, operation_name) = identity.operation();
+        if operation_kind != self.operation_kind || operation_name != self.operation_name {
+            return Err(Error::schema_invalid());
+        }
+        let grouping = identity.grouping()?;
+        Ok(FailurePayload {
+            failure: FailureReference {
+                category: grouping.category,
+                identity: grouping.identity_digest,
+                matcher: grouping.matcher,
+                object_id: format!("obj_{}", Uuid::now_v7()).parse()?,
+                schema: "reproit.failure.v1".to_owned(),
+            },
+            format: FailurePayloadFormat::V1,
+            identity,
+        })
     }
 }
 

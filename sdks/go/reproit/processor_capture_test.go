@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -30,7 +29,7 @@ type captureContract struct {
 
 func loadCaptureContract(t *testing.T) captureContract {
 	t.Helper()
-	path := filepath.Join(specsV1Dir, "processor-capture.json")
+	path := os.Getenv("REPROIT_PROCESSOR_CAPTURE")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)

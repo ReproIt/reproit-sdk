@@ -1,6 +1,5 @@
 import {
   Sdk,
-  type ReproIt,
   type CandidateSink,
   type CandidateStart,
   type Json,
@@ -39,6 +38,3 @@ const preparation: OperationPreparation = {
 runPreparedOperation(sdk, preparation, () => "result", () => payload);
 runStreamOperation(sdk, preparation, () => "result", () => payload);
 runDeliveredWork(sdk, preparation, () => "result", () => payload);
-
-let capture: ReproIt | undefined;
-void capture;

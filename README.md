@@ -1,25 +1,27 @@
 # Repro It SDKs
 
-Add Repro It to a backend application in two steps. Run `reproit init`, then wrap each top-level
-application operation.
-
-The SDK loads the project file and the current Git revision. Your application supplies an operation
-name, its input bytes, and the function to run. It does not create schemas, IDs, endpoints, or
-Failure records.
+This repository contains the five Backend SDK cores and the optional Rust Axum adapter.
 
 | Language | Package | Setup |
 | --- | --- | --- |
 | Rust | `reproit-sdk-rust` | [Rust](docs/rust.md) |
+| Rust Axum | `reproit-sdk-rust-axum` | [Rust](docs/rust.md) |
 | Python | `reproit-sdk` | [Python](docs/python.md) |
 | Go | `reproit.dev/sdk-go` | [Go](docs/go.md) |
 | Node.js | `@reproit/sdk` | [Node.js](docs/node.md) |
 | .NET | `ReproIt.Sdk` | [.NET](docs/dotnet.md) |
 
-Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store. Deploy the application through
-its normal release process. Capture failure never changes an application result or error.
+Each SDK core exposes the same framework-neutral operation model. An operation can use a
+request-response, ordered-stream, or delivered-work Trigger. The Axum package translates Axum
+request and response streams to the Rust operation model. It does not own capture policy.
 
-The five SDK cores have no framework dependency. A framework adapter can translate its boundary to
-the same operation API. An adapter cannot own capture rules or protocol data.
+The public packages support managed capture only. They send no successful or incomplete
+operation to Repro It Cloud. A capture error or Cloud outage does not change the application
+result.
+
+Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store. Do not put the token in
+tracked configuration. The SDK works in a host process or an OCI container. It does not require a
+container engine, sidecar, orchestrator, or container control socket.
 
 ## Maintain the SDKs
 

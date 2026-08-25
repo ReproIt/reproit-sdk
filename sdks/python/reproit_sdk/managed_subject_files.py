@@ -13,10 +13,11 @@ import stat
 import sys
 import sysconfig
 import tempfile
+import weakref
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 
-from reproit_sdk import canonical_bytes
+from reproit_sdk import _PROCESS_RESOURCES, canonical_bytes
 
 from .managed_protocol import ManagedError, digest_bytes
 
@@ -26,7 +27,8 @@ MAX_CAPTURED_MODULES = 4_095
 MAX_DEPENDENCIES = 4_096
 MAX_DISCOVERED_PATHS = 65_536
 MAX_RUNTIME_FILES = 32_767
-MAX_SUBJECT_OBJECT_BYTES = 274_878_824_448
+MAX_SUBJECT_OBJECT_BYTES = 512 * 1024 * 1024
+MAX_SUBJECT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SUBJECT_PATH_BYTES = 4_096
 MAX_LINUX_MAPS_BYTES = 1_048_576
 
@@ -54,6 +56,7 @@ class CapturedPythonFiles:
     files: tuple[CapturedPythonFile, ...]
     interpreter: dict[str, object]
     interpreter_path: str
+    reserved_bytes: int
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,11 @@ class _ClosureBuilder:
         self._subject_root = subject_root
         self._discovered_paths = 0
         self._total_bytes = 0
+        self._reserved_bytes = 0
+        self._reservation = [0]
+        self._reservation_finalizer = weakref.finalize(
+            self, _release_subject_reservation, self._reservation
+        )
         self._modules = 0
 
     @property
@@ -115,13 +123,15 @@ class _ClosureBuilder:
             ):
                 raise _subject_unsupported()
             return existing
-        remaining = MAX_SUBJECT_OBJECT_BYTES - self._total_bytes
-        identity, spool_path = _spool_stable_file(
+        remaining = MAX_SUBJECT_TOTAL_BYTES - self._total_bytes
+        identity, spool_path, reserved_bytes = _spool_stable_file(
             source_path,
             self._spool_path,
             remaining,
             allow_empty=allow_empty,
         )
+        self._reserved_bytes += reserved_bytes
+        self._reservation[0] += reserved_bytes
         existing_object = self._objects.get(identity.digest)
         if existing_object is not None:
             if existing_object[1] != identity.size:
@@ -191,13 +201,22 @@ def capture_python_subject_files(
         dependency_root,
     )
     entry_path = f"{subject_root}/{_valid_relative_path(relative_entry)}"
-    return CapturedPythonFiles(
+    captured = CapturedPythonFiles(
         dependencies,
         entry_path,
         builder.files,
         interpreter,
         interpreter_path,
+        builder._reserved_bytes,
     )
+    builder._reservation_finalizer.detach()
+    return captured
+
+
+def _release_subject_reservation(reservation: list[int]) -> None:
+    if reservation[0] > 0:
+        _PROCESS_RESOURCES.release_logical(reservation[0])
+        reservation[0] = 0
 
 
 def _capture_application_root(
@@ -774,7 +793,7 @@ def _spool_stable_file(
     remaining_bytes: int,
     *,
     allow_empty: bool,
-) -> tuple[_StableIdentity, str]:
+) -> tuple[_StableIdentity, str, int]:
     metadata = _required_regular_metadata(source_path)
     if metadata.st_size == 0 and not allow_empty:
         raise _subject_unsupported()
@@ -783,6 +802,9 @@ def _spool_stable_file(
         or metadata.st_size > MAX_SUBJECT_OBJECT_BYTES
     ):
         raise _subject_unbounded()
+    if not _PROCESS_RESOURCES.reserve_logical(metadata.st_size):
+        raise _subject_unbounded()
+    reserved = True
     descriptor, temporary = tempfile.mkstemp(prefix=".subject-", dir=spool_path)
     hasher = hashlib.sha256()
     copied = 0
@@ -810,14 +832,22 @@ def _spool_stable_file(
         destination = os.path.join(spool_path, digest.removeprefix("sha256:"))
         if os.path.exists(destination):
             os.unlink(temporary)
+            _PROCESS_RESOURCES.release_logical(metadata.st_size)
+            reserved = False
         else:
             os.replace(temporary, destination)
-        return _StableIdentity(digest, metadata.st_mode, copied), destination
+        return (
+            _StableIdentity(digest, metadata.st_mode, copied),
+            destination,
+            metadata.st_size if reserved else 0,
+        )
     except BaseException:
         try:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+        if reserved:
+            _PROCESS_RESOURCES.release_logical(metadata.st_size)
         raise
 
 

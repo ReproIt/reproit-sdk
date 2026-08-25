@@ -1,5 +1,4 @@
 import copy
-import io
 import inspect
 import json
 import os
@@ -14,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import managed_fixtures as fixtures
-from reproit_sdk import ReproIt, canonical_bytes, managed_subject_files
+from reproit_sdk import canonical_bytes, managed_subject_files
 from reproit_sdk import managed_protocol as protocol
 from reproit_sdk import official_managed as official
 from reproit_sdk.managed_candidate import (
@@ -662,6 +661,12 @@ class ManagedSubjectPackaging(unittest.TestCase):
                     package_running_python_subject(str(script), directory)
         self.assertEqual(raised.exception.code, "UPLOAD_LIMIT_EXCEEDED")
 
+    def test_total_subject_size_uses_the_two_gibibyte_policy(self):
+        from reproit_sdk import managed_subject
+
+        self.assertEqual(managed_subject.MAX_SUBJECT_OBJECT_BYTES, 512 * 1024 * 1024)
+        self.assertEqual(managed_subject.MAX_SUBJECT_TOTAL_BYTES, 2 * 1024 * 1024 * 1024)
+
     def test_changing_entry_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / "main.py"
@@ -1138,37 +1143,11 @@ class ManagedTransportValidation(unittest.TestCase):
         self.assertEqual(response.body, b"")
 
 
-class FrameworkNeutralOperation(unittest.IsolatedAsyncioTestCase):
-    async def test_operation_preserves_the_exact_application_exception(self):
-        original = RuntimeError("customer failure")
-
-        async def fail():
-            raise original
-
-        with self.assertRaises(RuntimeError) as raised:
-            await ReproIt.init().operation_async(
-                "todos.create", b'{"title":"trigger-bug"}', fail
-            )
-        self.assertIs(raised.exception, original)
-
-
 class OfficialManagedReleaseBinding(unittest.TestCase):
     def test_workspace_project_fails_before_project_or_capture_use(self):
         with self.assertRaises(protocol.ManagedError) as raised:
             official.OfficialManagedProject.from_build({}, "invalid", "invalid")
         self.assertEqual(raised.exception.code, "CONFIG_CONFLICT")
-
-    def test_public_integration_fails_before_world_capture_when_unbound(self):
-        world_accessed = False
-
-        def capture_world():
-            nonlocal world_accessed
-            world_accessed = True
-
-        with self.assertRaises(protocol.ManagedError) as raised:
-            ReproIt({}, "invalid", "invalid", capture_world)
-        self.assertEqual(raised.exception.code, "CONFIG_CONFLICT")
-        self.assertFalse(world_accessed)
 
     def test_workspace_binding_fails_closed_before_project_token_access(self):
         accessed = False

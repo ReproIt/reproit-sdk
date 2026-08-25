@@ -1,6 +1,6 @@
 # .NET SDK
 
-Add Repro It to a .NET application.
+Use the .NET SDK at one supported Backend operation boundary.
 
 ## Install
 
@@ -8,17 +8,11 @@ Add Repro It to a .NET application.
 dotnet add package ReproIt.Sdk --version 1.0.0
 ```
 
-```csharp
-using ReproIt.Sdk;
+Use `Operations.Run`, `Operations.RunStream`, or `Operations.RunDeliveredWork` with the
+framework-neutral SDK core. Backend v1.0 does not publish a .NET framework adapter.
 
-ReproItCapture capture = ReproItCapture.Init();
-Todo todo = await capture.OperationAsync(
-    "todos.create", inputBytes, () => CreateTodo(input));
-```
-
-Run `reproit init` before you deploy. Initialize the SDK once. Call `Operation` or `OperationAsync`
-at a top-level application boundary. The SDK records an exception as the Failure. It preserves the
-exact result. It does not reference a web framework.
+The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
+incomplete, unsupported, and resource-limited operations local.
 
 ## Verify SDK source
 

@@ -401,6 +401,7 @@ type loopbackSessionFixture struct {
 
 func newLoopbackSessionFixture(t *testing.T) *loopbackSessionFixture {
 	t.Helper()
+	processResources = newSDKProcessResources()
 	service := newLoopbackManagedService(t)
 	subject := fixtureSubjectPackage(t)
 	world := emptyWorld()
@@ -631,6 +632,7 @@ func TestIncompleteCandidateStopsLocallyWithACounter(t *testing.T) {
 		t.Fatal("the managed sink did not drain")
 	}
 	requestsBefore := len(fixture.service.requestLog())
+	processResources = newSDKProcessResources()
 
 	fixture.captureFailure(
 		t, deployment,

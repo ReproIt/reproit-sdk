@@ -509,8 +509,13 @@ class ManagedLoopbackSession(unittest.TestCase):
             "op_01890f3e-7b1c-7cc0-8a1b-123456789ac4",
             "sha256:" + "a" * 64,
         )
-        sdk.begin(start, vectors["operation_begin_payload"]["value"])
-        sdk.fail(start.operation_id, vectors["failure_payload"]["value"])
+        begin = copy.deepcopy(vectors["operation_begin_payload"]["value"])
+        begin["operation_name"] = "orders::increment-incomplete"
+        sdk.begin(start, begin)
+        failure = copy.deepcopy(vectors["failure_payload"]["value"])
+        failure["identity"]["operation_name"] = begin["operation_name"]
+        failure["failure"]["identity"] = protocol.canonical_digest(failure["identity"])
+        sdk.fail(start.operation_id, failure)
         self.assertTrue(self.sink.wait_until_idle(10.0))
         counters = self.sink.recall_counters
         self.assertEqual(counters["candidate_incomplete"], 1)

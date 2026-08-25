@@ -28,6 +28,7 @@ import {
 import {
   MAX_SUBJECT_FILES,
   MAX_SUBJECT_OBJECT_BYTES,
+  MAX_SUBJECT_TOTAL_BYTES,
   captureTree,
   compareText,
   digestName,
@@ -43,6 +44,7 @@ import {
   runningRuntimeEvidence,
   verifyRuntimeEvidence,
 } from "./managed-subject-runtime.js";
+import { releaseLogical, reserveLogical } from "./process-resources.js";
 
 export {
   COPY_BUFFER_BYTES,
@@ -84,17 +86,23 @@ const OPERATING_SYSTEMS = {
 // The frozen manifest plus content-addressed object files in a spool.
 export class NodeSubjectPackage {
   #spool;
+  #reservedBytes;
 
-  constructor(manifest, objects, spool) {
+  constructor(manifest, objects, spool, reservedBytes) {
     this.manifest = manifest;
     this.objects = objects;
     this.#spool = spool;
+    this.#reservedBytes = reservedBytes;
   }
 
   dispose() {
     if (this.#spool !== null) {
       rmSync(this.#spool, { force: true, recursive: true });
       this.#spool = null;
+    }
+    if (this.#reservedBytes > 0) {
+      releaseLogical(this.#reservedBytes);
+      this.#reservedBytes = 0;
     }
   }
 }
@@ -123,11 +131,13 @@ export function packageNodeSubjectWithRuntimeEvidence(
     throw subjectUnreadable();
   }
   const spool = mkdtempSync(path.join(os.tmpdir(), "reproit-node-subject-"));
+  let captureState;
   try {
-    const captureState = {
+    captureState = {
       entries: 0,
       logicalBytes: 0,
       packaged: new Map(),
+      reservedBytes: 0,
       temporaryIndex: 0,
     };
     const applicationRoot = findApplicationRoot(scriptPath);
@@ -233,7 +243,7 @@ export function packageNodeSubjectWithRuntimeEvidence(
     const totalBytes = objects.reduce((total, entry) => total + entry.size, 0);
     if (
       objects.length > MAX_SUBJECT_FILES ||
-      totalBytes > MAX_SUBJECT_OBJECT_BYTES
+      totalBytes > MAX_SUBJECT_TOTAL_BYTES
     ) {
       throw subjectUnbounded();
     }
@@ -283,9 +293,20 @@ export function packageNodeSubjectWithRuntimeEvidence(
     if (packaged.length !== objects.length) {
       throw subjectUnreadable();
     }
-    return new NodeSubjectPackage(manifest, packaged, spool);
+    const additionalBytes = Math.max(0, totalBytes - captureState.reservedBytes);
+    if (!reserveLogical(additionalBytes)) throw subjectUnbounded();
+    captureState.reservedBytes += additionalBytes;
+    return new NodeSubjectPackage(
+      manifest,
+      packaged,
+      spool,
+      captureState.reservedBytes,
+    );
   } catch (error) {
     rmSync(spool, { force: true, recursive: true });
+    if (captureState?.reservedBytes > 0) {
+      releaseLogical(captureState.reservedBytes);
+    }
     throw error;
   }
 }
@@ -726,7 +747,7 @@ function validateObjects(objects, totalBytes) {
     total += size;
     kinds.set(entry.digest, entry.kind);
   }
-  if (total !== totalBytes) {
+  if (total !== totalBytes || total > MAX_SUBJECT_TOTAL_BYTES) {
     throw schemaInvalid();
   }
   return kinds;

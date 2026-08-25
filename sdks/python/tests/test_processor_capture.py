@@ -27,6 +27,7 @@ def _capture_contract() -> dict:
             "..",
             "..",
             "..",
+            ".core",
             "specs",
             "v1",
             "processor-capture.json",

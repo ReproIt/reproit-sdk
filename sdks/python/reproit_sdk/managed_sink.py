@@ -22,6 +22,7 @@ from reproit_sdk import (
     MAX_OPERATION_BYTES,
     MAX_QUEUED_CANDIDATES,
     canonical_bytes,
+    _PROCESS_RESOURCES,
 )
 
 from .managed_candidate import (
@@ -58,7 +59,7 @@ from .managed_transport import ManagedProjectToken
 from .processor_capture import capture_processor_capabilities
 
 REGISTRATION_TIMEOUT_SECONDS = 5.0
-CANDIDATE_DELIVERY_LIFETIME_SECONDS = 1.0
+CANDIDATE_DELIVERY_LIFETIME_SECONDS = 1_800.0
 _COUNTER_MAXIMUM = (1 << 63) - 1
 _RECALL_KEYS = (
     "candidate_delivery_expired",
@@ -79,6 +80,70 @@ class ManagedSinkConfiguration:
     project_token: ManagedProjectToken | Callable[[], ManagedProjectToken] | None
     service_id: str
     workload_state_root: str
+
+
+class _DeadlineManagedClient:
+    def __init__(self, client: object, deadline: float):
+        self._client = client
+        self._deadline = deadline
+
+    def _timeout(self, requested: float) -> float:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise ManagedError(
+                "SERVICE_UNAVAILABLE",
+                "The candidate delivery lifetime expired.",
+            )
+        return min(requested, remaining)
+
+    def _check(self) -> None:
+        self._timeout(0.001)
+
+    def register_workload_key(self, token, request, timeout):
+        result = self._client.register_workload_key(
+            token, request, self._timeout(timeout)
+        )
+        self._check()
+        return result
+
+    def request_encryption_grant(self, request, timeout):
+        result = self._client.request_encryption_grant(
+            request, self._timeout(timeout)
+        )
+        self._check()
+        return result
+
+    def start(self, request, timeout):
+        result = self._client.start(request, self._timeout(timeout))
+        self._check()
+        return result
+
+    def missing(self, upload_id, upload_token, cursor, timeout):
+        result = self._client.missing(
+            upload_id, upload_token, cursor, self._timeout(timeout)
+        )
+        self._check()
+        return result
+
+    def upload_object(self, upload_url, digest, value, timeout):
+        self._client.upload_object(
+            upload_url, digest, value, self._timeout(timeout)
+        )
+        self._check()
+
+    def commit(self, upload_id, upload_token, timeout):
+        result = self._client.commit(
+            upload_id, upload_token, self._timeout(timeout)
+        )
+        self._check()
+        return result
+
+    def cancel(self, upload_id, upload_token, timeout):
+        result = self._client.cancel(
+            upload_id, upload_token, self._timeout(timeout)
+        )
+        self._check()
+        return result
 
 
 class ManagedCandidateSink:
@@ -141,8 +206,8 @@ class ManagedCandidateSink:
 
     @property
     def queued_bytes(self) -> int:
-        with self._lock:
-            return self._queued_bytes
+        with _PROCESS_RESOURCES.lock:
+            return _PROCESS_RESOURCES.queued_bytes
 
     @property
     def recall_counters(self) -> dict[str, int]:
@@ -249,15 +314,13 @@ class ManagedCandidateSink:
         except Exception:
             self._increment("candidate_incomplete")
             return False
-        with self._lock:
-            if (
-                self._queued_candidates >= MAX_QUEUED_CANDIDATES
-                or self._queued_bytes + len(candidate) > MAX_GLOBAL_BYTES
-            ):
+        if not _PROCESS_RESOURCES.reserve_candidate(len(candidate)):
+            with self._lock:
                 self._recall["candidate_queue_full"] = min(
                     _COUNTER_MAXIMUM, self._recall["candidate_queue_full"] + 1
                 )
-                return False
+            return False
+        with self._lock:
             self._queued_bytes += len(candidate)
             self._queued_candidates += 1
         try:
@@ -270,6 +333,7 @@ class ManagedCandidateSink:
                 self._recall["candidate_queue_full"] = min(
                     _COUNTER_MAXIMUM, self._recall["candidate_queue_full"] + 1
                 )
+            _PROCESS_RESOURCES.release_candidate(len(candidate))
             return False
 
     def _authorized_candidate(
@@ -316,7 +380,10 @@ class ManagedCandidateSink:
                 with self._lock:
                     self._active = True
                 try:
-                    self._deliver(value)
+                    self._deliver(
+                        value,
+                        queued_at + CANDIDATE_DELIVERY_LIFETIME_SECONDS,
+                    )
                 except ManagedError as error:
                     self._record_failure(error)
                 except Exception:
@@ -329,20 +396,22 @@ class ManagedCandidateSink:
                     self._queued_bytes = max(0, self._queued_bytes - size)
                     self._queued_candidates = max(0, self._queued_candidates - 1)
                     self._idle.notify_all()
+                _PROCESS_RESOURCES.release_candidate(size)
                 self._queue.task_done()
 
-    def _deliver(self, candidate: Mapping[str, object]) -> None:
+    def _deliver(self, candidate: Mapping[str, object], deadline: float) -> None:
         configuration = self._configuration
+        client = _DeadlineManagedClient(self._client, deadline)
         prepared = PreparedManagedCandidate.prepare_complete(
             candidate, self._subject, self._closure
         )
-        self._ensure_registered()
+        self._ensure_registered(client)
         if self._workload_key_id is None or self._workload_signing_key is None:
             raise ManagedError(
                 "CONFIG_CONFLICT", "The managed deployment is not bound."
             )
         grant = prepared.request_encryption_grant(
-            self._client, self._workload_key_id, self._workload_signing_key
+            client, self._workload_key_id, self._workload_signing_key
         )
         sealed = prepared.seal(
             grant,
@@ -351,7 +420,7 @@ class ManagedCandidateSink:
             configuration.capture_signer_public_key,
         )
         renewal = sealed.request_capture_grant_renewal(
-            self._client, self._workload_key_id, self._workload_signing_key
+            client, self._workload_key_id, self._workload_signing_key
         )
         sealed.apply_renewed_capture_grant(
             renewal,
@@ -359,9 +428,9 @@ class ManagedCandidateSink:
             configuration.capture_signer_id,
             configuration.capture_signer_public_key,
         )
-        sealed.upload(self._client)
+        sealed.upload(client)
 
-    def _ensure_registered(self) -> None:
+    def _ensure_registered(self, client: object) -> None:
         with self._registration_lock:
             identity = self._workload_identity
             request = self._registration_request
@@ -384,7 +453,7 @@ class ManagedCandidateSink:
                     "AUTHENTICATION_REQUIRED",
                     "The project token provider did not return a valid project token.",
                 )
-            registration = self._client.register_workload_key(
+            registration = client.register_workload_key(
                 project_token, request, REGISTRATION_TIMEOUT_SECONDS
             )
             if (

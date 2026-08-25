@@ -49,11 +49,15 @@ const specsV1Dir = "../../../.core/specs/v1"
 // TestMain uses the exact Core checkout prepared from core-pin.json.
 // An explicit environment value still wins.
 func TestMain(m *testing.M) {
-	if os.Getenv("REPROIT_PROTOCOL_VECTORS") == "" {
-		_ = os.Setenv(
-			"REPROIT_PROTOCOL_VECTORS",
-			filepath.Join(specsV1Dir, "protocol-vectors.json"),
-		)
+	defaults := map[string]string{
+		"REPROIT_PROTOCOL_VECTORS":  "protocol-vectors.json",
+		"REPROIT_CLOUD_API_VECTORS": "cloud-api-vectors.json",
+		"REPROIT_PROCESSOR_CAPTURE": "processor-capture.json",
+	}
+	for environment, name := range defaults {
+		if os.Getenv(environment) == "" {
+			_ = os.Setenv(environment, filepath.Join(specsV1Dir, name))
+		}
 	}
 	os.Exit(m.Run())
 }
@@ -70,7 +74,13 @@ func loadVectorFile(t *testing.T, name string) map[string]any {
 	if cached, present := vectorCache[name]; present {
 		return cached
 	}
-	raw, err := os.ReadFile(filepath.Join(specsV1Dir, name))
+	path := filepath.Join(specsV1Dir, name)
+	if name == "protocol-vectors.json" {
+		path = os.Getenv("REPROIT_PROTOCOL_VECTORS")
+	} else if name == "cloud-api-vectors.json" {
+		path = os.Getenv("REPROIT_CLOUD_API_VECTORS")
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
@@ -298,6 +308,7 @@ func fixtureCapturedCandidateWithIDs(
 	t *testing.T, deployment map[string]any, worldID, captureID, operationID string,
 ) map[string]any {
 	t.Helper()
+	processResources = newSDKProcessResources()
 	vectors := loadProtocolVectors(t)
 	sink := &MemorySink{}
 	sdk := New(sink)

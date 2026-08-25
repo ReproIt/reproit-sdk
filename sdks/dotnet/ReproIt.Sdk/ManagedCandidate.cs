@@ -620,6 +620,7 @@ public sealed class PreparedManagedCandidate
             throw ManagedProtocol.IncompleteCandidate();
         }
         HashSet<string> objectIds = [];
+        long totalBytes = 0;
         foreach (PreparedObject entry in objects)
         {
             JsonObject descriptor = entry.Descriptor;
@@ -640,6 +641,11 @@ public sealed class PreparedManagedCandidate
             }
             if (actualSize != ManagedProtocol.Count(descriptor["plain_size"]) ||
                 actualDigest != ManagedProtocol.Text(descriptor["plain_digest"]))
+            {
+                throw ManagedProtocol.IncompleteCandidate();
+            }
+            totalBytes = checked(totalBytes + actualSize);
+            if (totalBytes > 4L * 1024 * 1024 * 1024)
             {
                 throw ManagedProtocol.IncompleteCandidate();
             }

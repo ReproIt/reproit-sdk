@@ -1,12 +1,13 @@
 # Repro It SDK for Go
 
-Capture failed Backend operations from a Go application.
+Use this SDK at one supported Backend operation boundary. The SDK keeps bounded records. It sends
+only complete failed operations to managed Repro It Cloud.
 
 ```sh
 go get reproit.dev/sdk-go@v1.0.0
 ```
 
-Run `reproit init`. Then call `capture := reproit.Init()` once. Call `reproit.Operation` at
-each top-level application boundary. The API does not depend on a web framework.
+The framework-neutral API supports request-response, ordered-stream, and delivered-work
+operations. Backend v1.0 does not publish a Go framework adapter.
 
 Read the [Go integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/go.md).

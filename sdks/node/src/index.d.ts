@@ -38,54 +38,6 @@ export interface RecallCounters {
 }
 
 export declare class CaptureError extends Error {}
-export declare class ManagedWorldCapture {
-  constructor(
-    worldId: string,
-    complete: (
-      operationId: string,
-    ) => ManagedCaptureClosure | Promise<ManagedCaptureClosure>,
-  );
-  readonly worldId: string;
-}
-export declare class OperationCapture {
-  readonly operationId: string | null;
-  recordDependency(dependency: { [key: string]: Json }): void;
-}
-export declare class ReproIt {
-  static init(): ReproIt;
-  constructor(
-    project: { [key: string]: Json },
-    buildRepositoryId: string,
-    sourceRevision: string,
-    worldCapture: () => ManagedWorldCapture,
-  );
-  operation<Result>(
-    operationName: string,
-    input: Uint8Array | string,
-    operation: () => Result,
-  ): Result;
-  run<Result>(
-    operationName: string,
-    contentType: string,
-    input: Uint8Array | string,
-    operation: (capture: OperationCapture) => Result,
-    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
-  ): Result;
-  runStream<Result>(
-    operationName: string,
-    contentType: string,
-    input: Uint8Array | string,
-    operation: (capture: OperationCapture) => Result,
-    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
-  ): Result;
-  runDeliveredWork<Result>(
-    operationName: string,
-    contentType: string,
-    input: Uint8Array | string,
-    operation: (capture: OperationCapture) => Result,
-    classifyFailure: (error: unknown) => { [key: string]: Json } | null,
-  ): Result;
-}
 export declare class Sdk {
   constructor(sink: CandidateSink);
   readonly activeOperations: number;

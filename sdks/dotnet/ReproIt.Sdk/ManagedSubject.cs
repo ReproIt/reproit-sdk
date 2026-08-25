@@ -65,7 +65,8 @@ public static class ManagedSubject
     internal const int MaxArguments = 128;
     internal const int MaxDependencies = 4_096;
     internal const int MaxEnvironmentNames = 256;
-    internal const long MaxSubjectObjectBytes = 274_878_824_448;
+    internal const long MaxSubjectObjectBytes = 512L * 1024 * 1024;
+    internal const long MaxSubjectBytes = 2L * 1024 * 1024 * 1024;
 
     private static readonly HashSet<string> ObjectKinds =
     [
@@ -349,7 +350,11 @@ public static class ManagedSubject
                 throw ManagedProtocol.SchemaInvalid();
             }
             previous = digest;
-            total += size.Value;
+            total = checked(total + size.Value);
+            if (total > MaxSubjectBytes)
+            {
+                throw ManagedProtocol.SchemaInvalid();
+            }
             kinds[digest] = kind;
         }
         if (ManagedProtocol.Count(totalBytes) != total)

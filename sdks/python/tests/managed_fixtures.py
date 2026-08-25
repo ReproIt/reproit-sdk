@@ -19,7 +19,7 @@ from reproit_sdk.managed_transport import EncryptionResponse
 from memory_sink import MemorySink
 
 SPECS_V1 = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "specs", "v1")
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", ".core", "specs", "v1")
 )
 
 CAPTURE_ID = "cap_01890f3e-7b1c-7cc0-8a1b-123456789abc"

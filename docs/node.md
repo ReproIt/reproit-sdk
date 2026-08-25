@@ -1,6 +1,6 @@
 # Node.js SDK
 
-Add Repro It to a Node.js application.
+Use the Node.js SDK at one supported Backend operation boundary.
 
 ## Install
 
@@ -8,20 +8,11 @@ Add Repro It to a Node.js application.
 npm install @reproit/sdk@1.0.0
 ```
 
-```javascript
-import { ReproIt } from "@reproit/sdk";
+Use `runOperation`, `runStreamOperation`, or `runDeliveredWork` with the framework-neutral SDK
+core. Backend v1.0 does not publish a Node.js framework adapter.
 
-const reproit = ReproIt.init();
-const todo = await reproit.operation(
-  "todos.create",
-  inputBytes,
-  () => createTodo(input),
-);
-```
-
-Run `reproit init` before you deploy. Initialize the SDK once. Call `operation` at a top-level
-application boundary. The SDK records a thrown or rejected error as the Failure. It preserves the
-exact result. It does not import a web framework.
+The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
+incomplete, unsupported, and resource-limited operations local.
 
 ## Verify SDK source
 

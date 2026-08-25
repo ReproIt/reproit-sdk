@@ -5,11 +5,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -82,7 +80,7 @@ type stagedCandidateSink struct {
 
 func (sink *stagedCandidateSink) AllowsProcessingMode(mode string) bool { return mode == "private" }
 
-func newStagedCandidateSink(
+func NewstagedCandidateSink(
 	runtime stagedDelivery,
 	deferred stagedDelivery,
 	key []byte,
@@ -318,25 +316,4 @@ func parsedFailurePayload(candidate map[string]any) (map[string]any, bool) {
 		return result, decoder.Decode(&result) == nil
 	}
 	return nil, false
-}
-
-func canonicalEqual(left, right any) (bool, error) {
-	leftBytes, err := CanonicalBytes(left)
-	if err != nil {
-		return false, err
-	}
-	rightBytes, err := CanonicalBytes(right)
-	return bytes.Equal(leftBytes, rightBytes), err
-}
-
-func digestValue(value any) string {
-	encoded, err := CanonicalBytes(value)
-	if err != nil {
-		return ""
-	}
-	return digestBytes(encoded)
-}
-
-func digestBytes(value []byte) string {
-	return fmt.Sprintf("sha256:%x", sha256.Sum256(value))
 }

@@ -12,10 +12,11 @@ import hashlib
 import os
 import stat
 import tempfile
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from reproit_sdk import canonical_bytes
+from reproit_sdk import _PROCESS_RESOURCES, canonical_bytes
 
 from .managed_protocol import (
     DEPENDENCY_TRANSCRIPT_MEDIA_TYPE,
@@ -31,7 +32,8 @@ from .managed_protocol import (
     valid_typed_id,
 )
 
-MAX_CAPTURE_ARTIFACT_BYTES = 274_878_824_448
+MAX_CAPTURE_ARTIFACT_BYTES = 1024 * 1024 * 1024
+MAX_WORLD_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_WORLD_MANIFEST_BYTES = 262_144
 COPY_BUFFER_BYTES = 64 * 1024
 
@@ -63,21 +65,59 @@ class FrozenManagedCaptureClosure:
         validate_world_checkpoint(closure.world)
         validate_static_artifact_set(closure.world, closure.artifacts)
         self._spool: tempfile.TemporaryDirectory | None = None
-        artifacts = closure.artifacts
-        if artifacts:
-            self._spool = tempfile.TemporaryDirectory(prefix="reproit-managed-world-")
-            artifacts = [
-                _freeze_artifact(artifact, self._spool.name)
-                for artifact in closure.artifacts
-            ]
-        validate_static_artifact_set(closure.world, artifacts)
-        self.closure = ManagedCaptureClosure(
-            artifacts, closure.completion, closure.world
+        reserved_bytes = _artifact_bytes(closure.artifacts)
+        if not _PROCESS_RESOURCES.reserve_logical(reserved_bytes):
+            raise incomplete_candidate()
+        self._reservation_finalizer = weakref.finalize(
+            self, _PROCESS_RESOURCES.release_logical, reserved_bytes
         )
+        artifacts = closure.artifacts
+        try:
+            if artifacts:
+                self._spool = tempfile.TemporaryDirectory(
+                    prefix="reproit-managed-world-"
+                )
+                artifacts = [
+                    _freeze_artifact(artifact, self._spool.name)
+                    for artifact in closure.artifacts
+                ]
+            validate_static_artifact_set(closure.world, artifacts)
+            self.closure = ManagedCaptureClosure(
+                artifacts, closure.completion, closure.world
+            )
+        except BaseException:
+            self.close()
+            raise
 
     def world_id(self) -> str:
         validate_world_checkpoint(self.closure.world)
         return canonical_digest(self.closure.world)
+
+    def close(self) -> None:
+        if self._spool is not None:
+            self._spool.cleanup()
+            self._spool = None
+        if self._reservation_finalizer.alive:
+            self._reservation_finalizer()
+
+
+def _artifact_bytes(artifacts: list[ManagedCandidateArtifact]) -> int:
+    total = 0
+    for artifact in artifacts:
+        try:
+            metadata = os.lstat(artifact.path)
+        except OSError as error:
+            raise incomplete_candidate() from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_size <= 0
+            or metadata.st_size > MAX_CAPTURE_ARTIFACT_BYTES
+            or total > MAX_WORLD_ARTIFACT_BYTES - metadata.st_size
+        ):
+            raise incomplete_candidate()
+        total += metadata.st_size
+    return total
 
 
 def validate_world_checkpoint(value: object) -> None:

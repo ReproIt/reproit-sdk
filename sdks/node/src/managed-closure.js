@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { releaseLogical, reserveLogical } from "./process-resources.js";
 
 import { canonicalBytes } from "./index.js";
 import {
@@ -39,7 +40,8 @@ import {
   validTypedId,
 } from "./managed-protocol.js";
 
-export const MAX_CAPTURE_ARTIFACT_BYTES = 274_878_824_448;
+export const MAX_CAPTURE_ARTIFACT_BYTES = 1024 * 1024 * 1024;
+export const MAX_WORLD_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
 export const MAX_WORLD_MANIFEST_BYTES = 262_144;
 export const COPY_BUFFER_BYTES = 64 * 1024;
 
@@ -54,10 +56,19 @@ export const ARTIFACT_ROLES = new Set([
 // A capture closure whose artifact bytes are frozen in a private spool.
 export class FrozenManagedCaptureClosure {
   #spool = null;
+  #reservedBytes = 0;
 
   constructor(closure) {
     validateWorldCheckpoint(closure.world);
     validateStaticArtifactSet(closure.world, closure.artifacts);
+    this.#reservedBytes = closure.artifacts.reduce((total, artifact) => {
+      const size = artifactMetadata(artifact.path).size;
+      if (total > MAX_WORLD_ARTIFACT_BYTES - size) {
+        throw incompleteCandidate();
+      }
+      return total + size;
+    }, 0);
+    if (!reserveLogical(this.#reservedBytes)) throw incompleteCandidate();
     let artifacts = closure.artifacts;
     if (artifacts.length > 0) {
       this.#spool = mkdtempSync(
@@ -89,6 +100,10 @@ export class FrozenManagedCaptureClosure {
     if (this.#spool !== null) {
       rmSync(this.#spool, { force: true, recursive: true });
       this.#spool = null;
+    }
+    if (this.#reservedBytes > 0) {
+      releaseLogical(this.#reservedBytes);
+      this.#reservedBytes = 0;
     }
   }
 }

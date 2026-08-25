@@ -4,7 +4,7 @@ use std::{
     io::{Cursor, Read, Write as _},
     path::{Path, PathBuf},
     str::FromStr as _,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use reproit_cloud_api::{
@@ -61,8 +61,34 @@ fn commit_timeout(total_ciphertext_bytes: u64) -> Duration {
 }
 const MAX_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
-const MAX_CAPTURE_ARTIFACT_BYTES: u64 = 274_878_824_448;
 const MAX_CONCURRENT_OBJECT_UPLOADS: usize = 8;
+
+#[derive(Clone, Copy)]
+pub(crate) struct ManagedDeliveryDeadline {
+    deadline: Instant,
+}
+
+impl ManagedDeliveryDeadline {
+    pub(crate) fn from_queued_at(queued_at: Instant) -> Self {
+        Self {
+            deadline: queued_at
+                .checked_add(Duration::from_millis(crate::CANDIDATE_DELIVERY_LIFETIME_MS))
+                .unwrap_or(queued_at),
+        }
+    }
+
+    fn timeout(self, maximum: Duration) -> Result<Duration, Error> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(delivery_expired());
+        }
+        Ok(maximum.min(remaining))
+    }
+
+    pub(crate) fn check(self) -> Result<(), Error> {
+        self.timeout(Duration::MAX).map(|_| ())
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ManagedCandidateArtifact {
@@ -100,6 +126,7 @@ where
 
 pub(crate) struct FrozenManagedRustCaptureClosure {
     pub closure: ManagedRustCaptureClosure,
+    _reservation: crate::resources::LogicalByteReservation,
     _spool: Option<TempDir>,
 }
 
@@ -140,6 +167,23 @@ impl FrozenManagedRustCaptureClosure {
     pub fn freeze(closure: ManagedRustCaptureClosure) -> Result<Self, Error> {
         closure.world.validate()?;
         validate_static_artifact_set(&closure.world, &closure.artifacts)?;
+        let mut reservation = crate::resources::LogicalByteReservation::new();
+        let world_bytes = closure
+            .artifacts
+            .iter()
+            .try_fold(0_u64, |total, artifact| {
+                let metadata =
+                    fs::symlink_metadata(&artifact.path).map_err(|_| incomplete_candidate())?;
+                if metadata.len() > crate::MAX_WORLD_ARTIFACT_BYTES {
+                    return Err(incomplete_candidate());
+                }
+                total
+                    .checked_add(metadata.len())
+                    .ok_or_else(incomplete_candidate)
+            })?;
+        if world_bytes > crate::MAX_WORLD_BYTES || !reservation.reserve(world_bytes) {
+            return Err(capture_limit_exceeded());
+        }
         let spool = (!closure.artifacts.is_empty())
             .then(|| {
                 tempfile::Builder::new()
@@ -163,6 +207,7 @@ impl FrozenManagedRustCaptureClosure {
                 completion: closure.completion,
                 world: closure.world,
             },
+            _reservation: reservation,
             _spool: spool,
         })
     }
@@ -239,6 +284,7 @@ pub trait ManagedCandidateIngressDelivery: Send + Sync + 'static {
 pub struct PreparedManagedRustCandidate {
     identity: ManagedCandidateIdentity,
     objects: Vec<PreparedCandidateObject>,
+    _capture_reservation: crate::resources::LogicalByteReservation,
     _capture_spool: Option<TempDir>,
     _subject: std::sync::Arc<RustSubjectPackage>,
 }
@@ -278,6 +324,27 @@ impl SealedManagedRustCandidate {
             signing_key,
         )?;
         delivery.request_encryption_grant(&request, GRANT_TIMEOUT)
+    }
+
+    pub(crate) fn request_capture_grant_renewal_before(
+        &self,
+        delivery: &dyn ManagedCandidateGrantDelivery,
+        signer_key_id: &str,
+        signing_key: &SecretKey,
+        deadline: ManagedDeliveryDeadline,
+    ) -> Result<ManagedCandidateEncryptionResponse, Error> {
+        let identity = &self.request.ciphertext_identity;
+        let request = signed_grant_request(
+            identity.candidate_identity_digest,
+            identity.capture_id,
+            self.deployment_digest,
+            identity.organization_id,
+            identity.project_id,
+            identity.service_id,
+            signer_key_id,
+            signing_key,
+        )?;
+        delivery.request_encryption_grant(&request, deadline.timeout(GRANT_TIMEOUT)?)
     }
 
     pub fn apply_renewed_capture_grant(
@@ -356,6 +423,121 @@ impl SealedManagedRustCandidate {
         Ok(commit)
     }
 
+    pub(crate) fn upload_before(
+        &self,
+        delivery: &dyn ManagedCandidateIngressDelivery,
+        deadline: ManagedDeliveryDeadline,
+    ) -> Result<ManagedCandidateCommit, Error> {
+        let commit_timeout =
+            commit_timeout(self.request.ciphertext_identity.total_ciphertext_bytes);
+        let start = delivery.start(&self.request, deadline.timeout(GRANT_TIMEOUT)?)?;
+        if start.state == ManagedCandidateUploadState::Committed {
+            return delivery.commit(
+                start.upload_id,
+                &start.upload_token,
+                deadline.timeout(commit_timeout)?,
+            );
+        }
+        if !matches!(
+            start.state,
+            ManagedCandidateUploadState::Open | ManagedCandidateUploadState::Uploading
+        ) {
+            return Err(upload_state_error());
+        }
+        let result = self.upload_missing_before(delivery, &start, deadline);
+        if result.is_err()
+            && let Ok(timeout) = deadline.timeout(GRANT_TIMEOUT)
+        {
+            let _ = delivery.cancel(start.upload_id, &start.upload_token, timeout);
+        }
+        result?;
+        let commit = match delivery.commit(
+            start.upload_id,
+            &start.upload_token,
+            deadline.timeout(commit_timeout)?,
+        ) {
+            Ok(commit) => commit,
+            Err(error) => {
+                if let Ok(timeout) = deadline.timeout(GRANT_TIMEOUT) {
+                    let _ = delivery.cancel(start.upload_id, &start.upload_token, timeout);
+                }
+                return Err(error);
+            }
+        };
+        deadline.check()?;
+        if commit.capture_id != self.request.capture_grant.capture_id
+            || commit.candidate_identity_digest
+                != self.request.ciphertext_identity.candidate_identity_digest
+            || commit.candidate_key_reference
+                != self.request.ciphertext_identity.candidate_key_reference
+            || commit.encrypted_candidate_digest != self.request.encrypted_candidate_digest
+            || commit.state != CandidateDurability::CloudProtected
+        {
+            return Err(upload_state_error());
+        }
+        Ok(commit)
+    }
+
+    fn upload_missing_before(
+        &self,
+        delivery: &dyn ManagedCandidateIngressDelivery,
+        start: &ManagedCandidateStart,
+        deadline: ManagedDeliveryDeadline,
+    ) -> Result<(), Error> {
+        let mut page = UploadMissingPage {
+            missing_objects: start.missing_objects.clone(),
+            next_missing_cursor: start.next_missing_cursor.clone(),
+        };
+        let mut seen = BTreeSet::new();
+        let maximum_pages = self.ciphertext.len().div_ceil(100).saturating_add(1);
+        for _ in 0..maximum_pages {
+            deadline.check()?;
+            if page.missing_objects.len() > 100 {
+                return Err(upload_state_error());
+            }
+            for missing in &page.missing_objects {
+                if !seen.insert(missing.cipher_digest)
+                    || !self.ciphertext.contains_key(&missing.cipher_digest)
+                {
+                    return Err(upload_state_error());
+                }
+            }
+            for batch in page.missing_objects.chunks(MAX_CONCURRENT_OBJECT_UPLOADS) {
+                std::thread::scope(|scope| {
+                    let handles = batch
+                        .iter()
+                        .map(|missing| {
+                            let path = &self.ciphertext[&missing.cipher_digest];
+                            scope.spawn(move || {
+                                upload_missing_object_before(
+                                    delivery,
+                                    missing,
+                                    path,
+                                    start.limits.object_attempts,
+                                    deadline,
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    for handle in handles {
+                        handle.join().map_err(|_| upload_state_error())??;
+                    }
+                    Ok::<(), Error>(())
+                })?;
+            }
+            let Some(cursor) = page.next_missing_cursor.as_deref() else {
+                return Ok(());
+            };
+            page = delivery.missing(
+                start.upload_id,
+                &start.upload_token,
+                Some(cursor),
+                deadline.timeout(GRANT_TIMEOUT)?,
+            )?;
+        }
+        Err(upload_state_error())
+    }
+
     fn upload_missing(
         &self,
         delivery: &dyn ManagedCandidateIngressDelivery,
@@ -428,6 +610,36 @@ fn upload_missing_object(
     upload_with_bound(delivery, missing, &bytes, attempts)
 }
 
+fn upload_missing_object_before(
+    delivery: &dyn ManagedCandidateIngressDelivery,
+    missing: &reproit_cloud_api::MissingObject,
+    path: &Path,
+    attempts: u8,
+    deadline: ManagedDeliveryDeadline,
+) -> Result<(), Error> {
+    let bytes = fs::read(path).map_err(|_| local_storage_error())?;
+    if Digest::of(&bytes) != missing.cipher_digest {
+        return Err(Error::object_digest_mismatch());
+    }
+    if attempts == 0 || attempts > 5 {
+        return Err(upload_state_error());
+    }
+    let mut last_error = None;
+    for _ in 0..attempts {
+        match delivery.upload_object(
+            &missing.upload_url,
+            missing.cipher_digest,
+            &bytes,
+            deadline.timeout(GRANT_TIMEOUT)?,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.retryable => last_error = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(upload_state_error))
+}
+
 fn upload_with_bound(
     delivery: &dyn ManagedCandidateIngressDelivery,
     missing: &reproit_cloud_api::MissingObject,
@@ -491,6 +703,41 @@ impl PreparedManagedRustCandidate {
         subject: std::sync::Arc<RustSubjectPackage>,
         closure: &ManagedRustCaptureClosure,
     ) -> Result<Self, Error> {
+        let mut reservation = crate::resources::LogicalByteReservation::new();
+        let world_bytes = closure_artifact_bytes(closure)?;
+        if !reservation.reserve(world_bytes) {
+            return Err(capture_limit_exceeded());
+        }
+        Self::prepare_shared(
+            candidate,
+            subject,
+            closure,
+            ArtifactPreparation::Copy,
+            reservation,
+        )
+    }
+
+    pub(crate) fn prepare_frozen_shared(
+        candidate: &Candidate,
+        subject: std::sync::Arc<RustSubjectPackage>,
+        closure: &FrozenManagedRustCaptureClosure,
+    ) -> Result<Self, Error> {
+        Self::prepare_shared(
+            candidate,
+            subject,
+            &closure.closure,
+            ArtifactPreparation::Frozen,
+            crate::resources::LogicalByteReservation::new(),
+        )
+    }
+
+    fn prepare_shared(
+        candidate: &Candidate,
+        subject: std::sync::Arc<RustSubjectPackage>,
+        closure: &ManagedRustCaptureClosure,
+        artifact_preparation: ArtifactPreparation,
+        reservation: crate::resources::LogicalByteReservation,
+    ) -> Result<Self, Error> {
         candidate.validate()?;
         subject.manifest.validate()?;
         closure.world.validate()?;
@@ -505,14 +752,15 @@ impl PreparedManagedRustCandidate {
             return Err(incomplete_candidate());
         }
 
-        let capture_spool = (!closure.artifacts.is_empty())
-            .then(|| {
-                tempfile::Builder::new()
-                    .prefix("reproit-managed-closure-")
-                    .tempdir()
-                    .map_err(|_| local_storage_error())
-            })
-            .transpose()?;
+        let capture_spool = (artifact_preparation == ArtifactPreparation::Copy
+            && !closure.artifacts.is_empty())
+        .then(|| {
+            tempfile::Builder::new()
+                .prefix("reproit-managed-closure-")
+                .tempdir()
+                .map_err(|_| local_storage_error())
+        })
+        .transpose()?;
         let mut objects = Vec::new();
         push_bytes(
             &mut objects,
@@ -537,6 +785,7 @@ impl PreparedManagedRustCandidate {
             &closure.world,
             &closure.artifacts,
             capture_spool.as_ref().map(TempDir::path),
+            artifact_preparation,
         )?;
         objects.sort_by_key(|object| object.descriptor.object_id);
 
@@ -552,6 +801,9 @@ impl PreparedManagedRustCandidate {
                 .checked_add(object.plain_size)
                 .ok_or_else(Error::schema_invalid)
         })?;
+        if total_plaintext_bytes > crate::MAX_CANDIDATE_CLOSURE_BYTES {
+            return Err(capture_limit_exceeded());
+        }
         let identity = ManagedCandidateIdentity {
             candidate_digest,
             capture_id: candidate.capture_id,
@@ -570,6 +822,7 @@ impl PreparedManagedRustCandidate {
         Ok(Self {
             identity,
             objects,
+            _capture_reservation: reservation,
             _capture_spool: capture_spool,
             _subject: subject,
         })
@@ -598,6 +851,28 @@ impl PreparedManagedRustCandidate {
             signing_key,
         )?;
         delivery.request_encryption_grant(&request, GRANT_TIMEOUT)
+    }
+
+    pub(crate) fn request_encryption_grant_before(
+        &self,
+        delivery: &dyn ManagedCandidateGrantDelivery,
+        signer_key_id: &str,
+        signing_key: &SecretKey,
+        deadline: ManagedDeliveryDeadline,
+    ) -> Result<ManagedCandidateEncryptionResponse, Error> {
+        self.identity.validate()?;
+        verify_local_closure(&self.objects)?;
+        let request = signed_grant_request(
+            canonical::digest(&self.identity)?,
+            self.identity.capture_id,
+            self.identity.deployment_digest,
+            self.identity.organization_id,
+            self.identity.project_id,
+            self.identity.service_id,
+            signer_key_id,
+            signing_key,
+        )?;
+        delivery.request_encryption_grant(&request, deadline.timeout(GRANT_TIMEOUT)?)
     }
 
     pub fn seal(
@@ -700,6 +975,36 @@ impl PreparedManagedRustCandidate {
             _spool: spool,
         })
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ArtifactPreparation {
+    Copy,
+    Frozen,
+}
+
+fn closure_artifact_bytes(closure: &ManagedRustCaptureClosure) -> Result<u64, Error> {
+    let total = closure
+        .artifacts
+        .iter()
+        .try_fold(0_u64, |total, artifact| {
+            let metadata =
+                fs::symlink_metadata(&artifact.path).map_err(|_| incomplete_candidate())?;
+            if !metadata.file_type().is_file()
+                || metadata.file_type().is_symlink()
+                || metadata.len() == 0
+                || metadata.len() > crate::MAX_WORLD_ARTIFACT_BYTES
+            {
+                return Err(incomplete_candidate());
+            }
+            total
+                .checked_add(metadata.len())
+                .ok_or_else(incomplete_candidate)
+        })?;
+    if total > crate::MAX_WORLD_BYTES {
+        return Err(capture_limit_exceeded());
+    }
+    Ok(total)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -962,6 +1267,7 @@ fn push_capture_artifacts(
     world: &WorldCheckpoint,
     artifacts: &[ManagedCandidateArtifact],
     spool: Option<&Path>,
+    preparation: ArtifactPreparation,
 ) -> Result<(), Error> {
     if artifacts.len() > 32_767
         || artifacts.is_empty() && closure_requires_artifacts(candidate, world)
@@ -993,10 +1299,11 @@ fn push_capture_artifacts(
     {
         return Err(incomplete_candidate());
     }
-    let spool = match (artifacts.is_empty(), spool) {
-        (true, _) => return validate_dependency_closure(candidate, objects),
-        (false, Some(spool)) => spool,
-        (false, None) => return Err(local_storage_error()),
+    let spool = match (artifacts.is_empty(), preparation, spool) {
+        (true, _, _) => return validate_dependency_closure(candidate, objects),
+        (false, ArtifactPreparation::Copy, Some(spool)) => Some(spool),
+        (false, ArtifactPreparation::Frozen, None) => None,
+        _ => return Err(local_storage_error()),
     };
     let mut seen_uris = BTreeSet::new();
     for artifact in artifacts {
@@ -1009,7 +1316,10 @@ fn push_capture_artifacts(
         {
             return Err(incomplete_candidate());
         }
-        let captured = capture_artifact(artifact, spool)?;
+        let captured = match spool {
+            Some(spool) => capture_artifact(artifact, spool)?,
+            None => reference_artifact(artifact)?,
+        };
         if artifact.role == LogicalObjectRole::WorldState
             && !expected_world.contains(&(
                 artifact.uri.clone(),
@@ -1076,7 +1386,7 @@ fn validate_static_artifact_set(
         if !metadata.file_type().is_file()
             || metadata.file_type().is_symlink()
             || metadata.len() == 0
-            || metadata.len() > MAX_CAPTURE_ARTIFACT_BYTES
+            || metadata.len() > crate::MAX_WORLD_ARTIFACT_BYTES
         {
             return Err(incomplete_candidate());
         }
@@ -1138,7 +1448,7 @@ fn capture_artifact(
     if !metadata.file_type().is_file()
         || metadata.file_type().is_symlink()
         || metadata.len() == 0
-        || metadata.len() > MAX_CAPTURE_ARTIFACT_BYTES
+        || metadata.len() > crate::MAX_WORLD_ARTIFACT_BYTES
     {
         return Err(incomplete_candidate());
     }
@@ -1169,6 +1479,32 @@ fn capture_artifact(
     Ok(PreparedCandidateObject {
         descriptor,
         source: PreparedObjectSource::File(path),
+    })
+}
+
+fn reference_artifact(
+    artifact: &ManagedCandidateArtifact,
+) -> Result<PreparedCandidateObject, Error> {
+    let metadata = fs::symlink_metadata(&artifact.path).map_err(|_| incomplete_candidate())?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() == 0
+        || metadata.len() > crate::MAX_WORLD_ARTIFACT_BYTES
+    {
+        return Err(incomplete_candidate());
+    }
+    let (plain_digest, plain_size) = digest_file(&artifact.path, metadata.len())?;
+    let descriptor = LogicalObject {
+        media_type: artifact.media_type.clone(),
+        object_id: artifact.object_id,
+        plain_digest,
+        plain_size,
+        role: artifact.role,
+    };
+    descriptor.validate()?;
+    Ok(PreparedCandidateObject {
+        descriptor,
+        source: PreparedObjectSource::File(artifact.path.clone()),
     })
 }
 
@@ -1491,6 +1827,13 @@ fn incomplete_candidate() -> Error {
     )
 }
 
+fn capture_limit_exceeded() -> Error {
+    Error::new(
+        ErrorCode::UploadLimitExceeded,
+        "The local managed capture limit was reached.",
+    )
+}
+
 fn local_storage_error() -> Error {
     Error::new(
         ErrorCode::ServiceUnavailable,
@@ -1502,6 +1845,13 @@ fn upload_state_error() -> Error {
     Error::new(
         ErrorCode::ServiceUnavailable,
         "The managed candidate upload did not reach a valid durable state.",
+    )
+}
+
+fn delivery_expired() -> Error {
+    Error::new(
+        ErrorCode::ServiceUnavailable,
+        "The managed candidate delivery lifetime expired.",
     )
 }
 
@@ -1525,6 +1875,24 @@ mod commit_timeout_tests {
             Duration::from_secs(5 + 128)
         );
         assert_eq!(commit_timeout(u64::MAX), COMMIT_TIMEOUT_CAP);
+    }
+
+    #[test]
+    fn delivery_deadline_caps_longer_request_timeouts() {
+        let deadline = ManagedDeliveryDeadline {
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let timeout = deadline.timeout(COMMIT_TIMEOUT_CAP).unwrap();
+        assert!(timeout > Duration::ZERO);
+        assert!(timeout <= Duration::from_secs(1));
+
+        let expired = ManagedDeliveryDeadline {
+            deadline: Instant::now(),
+        };
+        assert_eq!(
+            expired.timeout(COMMIT_TIMEOUT_CAP).unwrap_err().code,
+            ErrorCode::ServiceUnavailable
+        );
     }
 }
 

@@ -76,22 +76,21 @@ public sealed class Sdk
     /// <summary>The concurrent active-operation bound.</summary>
     public const int MaxActiveOperations = 512;
 
-    private const int MaxFailureStormIdentities = 256;
-
     private readonly Dictionary<string, ActiveOperation> operations = [];
     private readonly object stateLock = new();
     private readonly ICandidateSink sink;
+    private readonly bool allowPrivate;
     private readonly MutableRecallCounters recall = new();
-    private readonly Dictionary<string, StormEntry> stormAdmitted = [];
-    private int globalBytes;
-    private long stormLastRefill = Stopwatch.GetTimestamp();
-    private ulong stormTokenRejections;
-    private double stormTokens = 4;
 
     /// <summary>Creates an SDK with one bounded local candidate sink.</summary>
-    public Sdk(ICandidateSink sink)
+    public Sdk(ICandidateSink sink) : this(sink, allowPrivate: false)
+    {
+    }
+
+    internal Sdk(ICandidateSink sink, bool allowPrivate)
     {
         this.sink = sink ?? new DiscardCandidateSink();
+        this.allowPrivate = allowPrivate;
     }
 
     /// <summary>Gets the active operation count.</summary>
@@ -127,7 +126,8 @@ public sealed class Sdk
         if (!CandidateProtocol.ValidPrefixedUuid7(start.CaptureId, "cap_") ||
             !CandidateProtocol.ValidPrefixedUuid7(start.OperationId, "op_") ||
             !CandidateProtocol.ValidDigest(start.WorldId) ||
-            start.Deployment["processing_mode"]?.GetValue<string>() is not ("managed" or "private"))
+            start.Deployment["processing_mode"]?.GetValue<string>() is not string mode ||
+            mode != "managed" && !(allowPrivate && mode == "private"))
         {
             throw Incomplete();
         }
@@ -139,14 +139,12 @@ public sealed class Sdk
             {
                 throw new CaptureException("The operation already has capture state.");
             }
-            if (operations.Count >= MaxActiveOperations ||
-                globalBytes + sink.QueuedBytes + size > MaxGlobalBytes)
+            if (!SdkProcessResources.ReserveOperation(start.OperationId, size))
             {
                 throw Limit();
             }
             CandidateStart snapshot = start with { Deployment = start.Deployment.DeepClone() };
             operations.Add(start.OperationId, new ActiveOperation(size, [record], snapshot));
-            globalBytes += size;
         }
     }
 
@@ -309,52 +307,18 @@ public sealed class Sdk
             throw Incomplete();
         }
         string key = Convert.ToHexString(SHA256.HashData(CanonicalJson.Bytes(stable)));
-        long now = Stopwatch.GetTimestamp();
-        double elapsed = Stopwatch.GetElapsedTime(stormLastRefill, now).TotalSeconds;
-        stormTokens = Math.Min(4, stormTokens + Math.Max(0, elapsed) * 2);
-        stormLastRefill = now;
-        foreach (string known in stormAdmitted
-            .Where(entry => Stopwatch.GetElapsedTime(entry.Value.Admitted, now).TotalSeconds >= 60)
-            .Select(entry => entry.Key)
-            .ToArray())
+        FailureAdmission admission = SdkProcessResources.AdmitFailure(key);
+        if (admission == FailureAdmission.SuppressedExact)
         {
-            stormAdmitted.Remove(known);
-        }
-        if (stormAdmitted.TryGetValue(key, out StormEntry? existing))
-        {
-            existing.Observed = now;
-            existing.Suppressed = existing.Suppressed == ulong.MaxValue
-                ? ulong.MaxValue
-                : existing.Suppressed + 1;
             recall.IncrementSuppressedExactStorm();
             return false;
         }
-        if (stormTokens < 1)
+        if (admission == FailureAdmission.SuppressedHighCardinality)
         {
-            stormTokenRejections = stormTokenRejections == ulong.MaxValue
-                ? ulong.MaxValue
-                : stormTokenRejections + 1;
             recall.IncrementSuppressedHighCardinalityStorm();
             return false;
         }
-        if (stormAdmitted.Count >= MaxFailureStormIdentities)
-        {
-            string oldest = stormAdmitted
-                .OrderBy(entry => entry.Value.Observed)
-                .ThenBy(entry => entry.Key, StringComparer.Ordinal)
-                .First().Key;
-            stormAdmitted.Remove(oldest);
-        }
-        stormTokens--;
-        stormAdmitted.Add(key, new StormEntry(now));
         return true;
-    }
-
-    private sealed class StormEntry(long now)
-    {
-        public long Admitted { get; } = now;
-        public long Observed { get; set; } = now;
-        public ulong Suppressed { get; set; }
     }
 
     private sealed class MutableRecallCounters
@@ -410,7 +374,7 @@ public sealed class Sdk
             }
             int size = RecordSize(record);
             if (!WithinOperation(active, size) ||
-                globalBytes + sink.QueuedBytes + size > MaxGlobalBytes)
+                !SdkProcessResources.GrowOperation(operationId, size))
             {
                 Delete(operationId);
                 recall.IncrementCandidateIncomplete();
@@ -418,7 +382,6 @@ public sealed class Sdk
             }
             active.Records.Add(record);
             active.Bytes += size;
-            globalBytes += size;
         }
     }
 
@@ -426,7 +389,7 @@ public sealed class Sdk
     {
         if (operations.Remove(operationId, out ActiveOperation? active))
         {
-            globalBytes = Math.Max(0, globalBytes - active.Bytes);
+            SdkProcessResources.ReleaseOperation(operationId, active.Bytes);
         }
     }
 

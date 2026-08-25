@@ -36,6 +36,15 @@ public sealed class FrozenManagedCaptureClosure : IDisposable
         List<ManagedCandidateArtifact> artifacts = [.. closure.Artifacts];
         if (artifacts.Count > 0)
         {
+            long totalBytes = 0;
+            foreach (ManagedCandidateArtifact artifact in artifacts)
+            {
+                totalBytes = checked(totalBytes + ManagedClosure.ArtifactLength(artifact.Path));
+                if (totalBytes > ManagedClosure.MaxCaptureBytes)
+                {
+                    throw ManagedProtocol.IncompleteCandidate();
+                }
+            }
             spool = Directory.CreateTempSubdirectory("reproit-managed-world-").FullName;
             artifacts = closure.Artifacts
                 .Select(artifact => ManagedClosure.FreezeArtifact(artifact, spool))
@@ -77,7 +86,9 @@ public sealed class FrozenManagedCaptureClosure : IDisposable
 public static class ManagedClosure
 {
     /// <summary>The per-artifact byte bound.</summary>
-    public const long MaxCaptureArtifactBytes = 274_878_824_448;
+    public const long MaxCaptureArtifactBytes = 1024L * 1024 * 1024;
+    /// <summary>The total captured World byte bound.</summary>
+    public const long MaxCaptureBytes = 2L * 1024 * 1024 * 1024;
     /// <summary>The canonical world manifest byte bound.</summary>
     public const int MaxWorldManifestBytes = 262_144;
     internal const int CopyBufferBytes = 64 * 1024;

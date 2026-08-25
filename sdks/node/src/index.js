@@ -9,6 +9,14 @@ import {
   runPreparedOperation,
   runStreamOperation,
 } from "./operation.js";
+import {
+  admitFailure,
+  allowsPrivateSdkForTests,
+  growOperation,
+  releaseOperation,
+  reserveOperation,
+} from "./process-resources.js";
+
 export {
   CaptureError,
   runDeliveredWork,
@@ -50,11 +58,6 @@ export {
   OfficialManagedProject,
 } from "./official-managed.js";
 export { captureProcessorCapabilities } from "./processor-capture.js";
-export {
-  ManagedWorldCapture,
-  OperationCapture,
-  ReproIt,
-} from "./integration.js";
 
 export const MAX_GLOBAL_BYTES = 1_048_576;
 export const MAX_OPERATION_BYTES = 262_144;
@@ -63,10 +66,6 @@ export const MAX_EVENTS = 1_024;
 export const MAX_ACTIVE_OPERATIONS = 512;
 export const MAX_QUEUED_CANDIDATES = 16;
 export const MAX_FAILURE_STORM_IDENTITIES = 256;
-const FAILURE_SUPPRESSION_MS = 60_000;
-const FAILURE_TOKEN_CAPACITY = 4;
-const FAILURE_TOKENS_PER_MS = 0.002;
-const WORLD_TOKEN_BYTES = 65_536;
 const COUNTER_MAXIMUM = Number.MAX_SAFE_INTEGER;
 const RECALL_KEYS = [
   "candidate_delivery_expired",
@@ -126,14 +125,9 @@ function recordSize(record) {
 }
 
 export class Sdk {
-  #globalBytes = 0;
   #operations = new Map();
   #recall = Object.fromEntries(RECALL_KEYS.map((key) => [key, 0]));
   #sink;
-  #stormAdmitted = new Map();
-  #stormLastRefill = performance.now();
-  #stormTokenRejections = 0n;
-  #stormTokens = FAILURE_TOKEN_CAPACITY;
 
   constructor(sink) {
     this.#sink = sink;
@@ -158,15 +152,22 @@ export class Sdk {
   }
 
   begin(start, value) {
+    const mode = start?.deployment?.processing_mode;
+    if (mode !== "managed" && !(allowsPrivateSdkForTests() && mode === "private")) {
+      throw new CaptureError(
+        "The operation does not have complete capture state.",
+      );
+    }
     const record = eventRecord("begin", 0, value);
     const bytes = recordSize(record);
     if (this.#operations.has(start.operationId)) {
       throw new CaptureError("The operation already has capture state.");
     }
-    if (
-      this.#operations.size >= MAX_ACTIVE_OPERATIONS ||
-      this.#globalBytes + this.#sink.queuedBytes + bytes > MAX_GLOBAL_BYTES
-    ) {
+    const reservation = reserveOperation(start.operationId, bytes);
+    if (reservation === "duplicate") {
+      throw new CaptureError("The operation already has capture state.");
+    }
+    if (reservation !== "reserved") {
       throw new CaptureError("The SDK capture limit was reached.");
     }
     this.#operations.set(start.operationId, {
@@ -174,7 +175,6 @@ export class Sdk {
       records: [record],
       start: structuredClone(start),
     });
-    this.#globalBytes += bytes;
   }
 
   recordInput(operationId, value) {
@@ -265,7 +265,15 @@ export class Sdk {
         "The candidate sink does not support this processing mode.",
       );
     }
-    if (!this.#admitFailure(candidate, value)) return;
+    const admission = this.#admitFailure(candidate, value);
+    if (admission === "suppressed-exact") {
+      incrementCounter(this.#recall, "suppressed_exact_storm");
+      return;
+    }
+    if (admission === "suppressed-high-cardinality") {
+      incrementCounter(this.#recall, "suppressed_high_cardinality_storm");
+      return;
+    }
     const encoded = canonicalBytes(candidate);
     if (
       encoded.length > MAX_OPERATION_BYTES ||
@@ -306,49 +314,7 @@ export class Sdk {
     const key = createHash("sha256")
       .update(canonicalBytes(stable))
       .digest("hex");
-    const now = performance.now();
-    const elapsed = Math.max(0, now - this.#stormLastRefill);
-    this.#stormTokens = Math.min(
-      FAILURE_TOKEN_CAPACITY,
-      this.#stormTokens + elapsed * FAILURE_TOKENS_PER_MS,
-    );
-    this.#stormLastRefill = now;
-    for (const [known, entry] of this.#stormAdmitted) {
-      if (now - entry.admitted >= FAILURE_SUPPRESSION_MS)
-        this.#stormAdmitted.delete(known);
-    }
-    const existing = this.#stormAdmitted.get(key);
-    if (existing) {
-      existing.observed = now;
-      existing.suppressed =
-        existing.suppressed === 2n ** 64n - 1n
-          ? existing.suppressed
-          : existing.suppressed + 1n;
-      incrementCounter(this.#recall, "suppressed_exact_storm");
-      return false;
-    }
-    if (this.#stormTokens < 1) {
-      this.#stormTokenRejections =
-        this.#stormTokenRejections === 2n ** 64n - 1n
-          ? this.#stormTokenRejections
-          : this.#stormTokenRejections + 1n;
-      incrementCounter(this.#recall, "suppressed_high_cardinality_storm");
-      return false;
-    }
-    if (this.#stormAdmitted.size >= MAX_FAILURE_STORM_IDENTITIES) {
-      const oldest = [...this.#stormAdmitted].sort(
-        ([leftKey, left], [rightKey, right]) =>
-          left.observed - right.observed || leftKey.localeCompare(rightKey),
-      )[0];
-      if (oldest) this.#stormAdmitted.delete(oldest[0]);
-    }
-    this.#stormTokens -= 1;
-    this.#stormAdmitted.set(key, {
-      admitted: now,
-      observed: now,
-      suppressed: 0n,
-    });
-    return true;
+    return admitFailure(key);
   }
 
   #append(operationId, kind, value) {
@@ -368,21 +334,20 @@ export class Sdk {
     const bytes = recordSize(record);
     if (
       !withinOperation(operation, bytes) ||
-      this.#globalBytes + this.#sink.queuedBytes + bytes > MAX_GLOBAL_BYTES
+      !growOperation(operationId, bytes)
     ) {
       this.#delete(operationId);
       throw new CaptureError("The SDK capture limit was reached.");
     }
     operation.records.push(record);
     operation.bytes += bytes;
-    this.#globalBytes += bytes;
   }
 
   #delete(operationId) {
     const operation = this.#operations.get(operationId);
     if (operation) {
       this.#operations.delete(operationId);
-      this.#globalBytes = Math.max(0, this.#globalBytes - operation.bytes);
+      releaseOperation(operationId, operation.bytes);
     }
   }
 }

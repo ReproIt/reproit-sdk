@@ -548,8 +548,11 @@ internal static class ManagedLoopbackConformance
 {
     internal static void Run()
     {
+        SdkProcessResources.ResetForTests();
         LoopbackSession();
+        SdkProcessResources.ResetForTests();
         SinkBounds();
+        SdkProcessResources.ResetForTests();
         DeliveryExpiry();
         Console.WriteLine("dotnet_managed_loopback=PASS");
         Console.WriteLine("dotnet_managed_sink=PASS");
@@ -694,6 +697,7 @@ internal static class ManagedLoopbackConformance
 
         // An incomplete candidate stops locally with a counter.
         int requestsBefore = service.RequestsSnapshot().Count;
+        SdkProcessResources.ResetForTests();
         CaptureFailure(
             sink, deployment, "sha256:" + new string('a', 64),
             "cap_01890f3e-7b1c-7cc0-8a1b-123456789ac3",
@@ -729,6 +733,7 @@ internal static class ManagedLoopbackConformance
         service.GrantFailureStatus = 503;
         int candidatesBefore = service.RequestsSnapshot()
             .Count(entry => entry.Path == "/v1/managed-candidates");
+        SdkProcessResources.ResetForTests();
         CaptureFailure(sink, deployment, worldId);
         Check(sink.WaitUntilIdle(TimeSpan.FromSeconds(30)),
             "The managed sink did not drain during the grant outage.");
@@ -760,6 +765,7 @@ internal static class ManagedLoopbackConformance
                 .SequenceEqual(CanonicalJson.Bytes(deployment)),
             "Restart changed the exact signed Deployment.");
         service.GrantFailureStatus = 0;
+        SdkProcessResources.ResetForTests();
         CaptureFailure(restarted, restartedDeployment, worldId);
         Check(restarted.WaitUntilIdle(TimeSpan.FromSeconds(30)),
             "The restarted managed sink did not drain.");

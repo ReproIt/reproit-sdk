@@ -3,7 +3,6 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::Instant,
 };
 
 use reproit_core::{
@@ -19,14 +18,13 @@ use reproit_core::{
 pub use reproit_core::{
     Error,
     model::{
-        DependencyCursorFormat, DependencyCursorPayload, FailureIdentity, FailurePayload,
-        FailurePayloadFormat, InputChannel, OperationBeginFormat, OperationBeginPayload,
-        OperationInputFormat, OperationInputPayload, OperationKind, TriggerCompletion,
-        WorldCheckpoint, WorldCheckpointFormat,
+        DependencyCursorFormat, DependencyCursorPayload, FailurePayload, FailurePayloadFormat,
+        InputChannel, OperationBeginFormat, OperationBeginPayload, OperationInputFormat,
+        OperationInputPayload, OperationKind, TriggerCompletion, WorldCheckpoint,
+        WorldCheckpointFormat,
     },
 };
 
-mod integration;
 mod managed;
 mod managed_deployment;
 mod managed_identity;
@@ -35,9 +33,10 @@ mod managed_transport;
 mod official_managed;
 mod official_operation;
 mod processor_capture;
+mod request_response;
+mod resources;
 mod subject;
 
-pub use integration::{ManagedWorldCapture, OperationCapture, ReproIt};
 pub use managed::{
     ManagedCandidateArtifact, ManagedCandidateGrantDelivery, ManagedCandidateIngressDelivery,
     ManagedRustCaptureClosure, ManagedRustCaptureClosureProvider, ManagedRustOperationClosure,
@@ -54,8 +53,16 @@ pub use managed_sink::{
     ManagedRustSinkConfiguration,
 };
 pub use managed_transport::{ManagedProjectToken, ManagedTlsClient, ManagedTlsEndpoint};
-pub use official_operation::OfficialManagedRustOperation;
+pub use official_operation::{
+    ManagedProjectTokenProvider, OfficialManagedRustOperation, OfficialManagedRustOperationFactory,
+    RustOperation, RustOperationFactory,
+};
 pub use processor_capture::capture_processor_capabilities;
+pub use request_response::{
+    ExactResponseFailureClassifier, MAX_REQUEST_INPUT_CHUNK_BYTES, MAX_RESPONSE_HEADER_BYTES,
+    MAX_RESPONSE_HEADERS, RequestResponseFailureClassifier, RequestResponseHead,
+    RequestResponseHeader, RequestResponseOperation, ResponseFailureClassification,
+};
 pub use subject::{PackagedSubjectObject, RustSubjectPackage, package_running_rust_subject};
 
 pub const MAX_GLOBAL_BYTES: usize = 1_048_576;
@@ -65,11 +72,21 @@ pub const MAX_EVENTS: usize = 1_024;
 pub const MAX_ACTIVE_OPERATIONS: usize = 512;
 pub const MAX_QUEUED_CANDIDATES: usize = 16;
 pub const MAX_FAILURE_STORM_IDENTITIES: usize = 256;
+pub const MAX_SUBJECT_FILE_BYTES: u64 = 512 * 1_024 * 1_024;
+pub const MAX_SUBJECT_BYTES: u64 = 2 * 1_024 * 1_024 * 1_024;
+pub const MAX_WORLD_ARTIFACT_BYTES: u64 = 1_024 * 1_024 * 1_024;
+pub const MAX_WORLD_BYTES: u64 = 2 * 1_024 * 1_024 * 1_024;
+pub const MAX_CANDIDATE_CLOSURE_BYTES: u64 = 4 * 1_024 * 1_024 * 1_024;
+pub const MAX_PROCESS_CAPTURE_BYTES: u64 = 4 * 1_024 * 1_024 * 1_024;
+pub const CANDIDATE_DELIVERY_LIFETIME_MS: u64 = 1_800_000;
 const FAILURE_SUPPRESSION_MS: u64 = 60_000;
 const FAILURE_TOKENS_MILLI_CAPACITY: u64 = 4_000;
 
 pub trait CandidateSink: Send + Sync {
     fn queued_bytes(&self) -> usize;
+    fn retains_queued_candidates(&self) -> bool {
+        false
+    }
     fn recall_counters(&self) -> SdkRecallCounters {
         SdkRecallCounters::default()
     }
@@ -150,13 +167,7 @@ impl Sdk {
         if state.operations.contains_key(&start.operation_id) {
             return Err(Error::schema_invalid());
         }
-        if state.operations.len() >= MAX_ACTIVE_OPERATIONS
-            || state
-                .global_bytes
-                .saturating_add(self.sink.queued_bytes())
-                .saturating_add(record_bytes)
-                > MAX_GLOBAL_BYTES
-        {
+        if !resources::reserve_operation(start.operation_id, record_bytes) {
             return Err(runtime_quota());
         }
         state.global_bytes += record_bytes;
@@ -230,6 +241,7 @@ impl Sdk {
                 return Err(incomplete_candidate());
             };
             state.global_bytes = state.global_bytes.saturating_sub(operation.bytes);
+            resources::release_operation(operation_id);
             let added_bytes = record_size(&failure_record);
             if !within_operation_bounds(&operation, added_bytes) {
                 return Err(runtime_quota());
@@ -263,17 +275,14 @@ impl Sdk {
                 world_id: operation.start.world_id,
             };
             candidate.validate()?;
-            match state
-                .storm
-                .admit(candidate.failure_storm_identity()?.key()?)
-            {
-                StormDecision::Admitted => {}
-                StormDecision::SuppressedExact => {
+            match resources::admit_storm(candidate.failure_storm_identity()?.key()?) {
+                resources::StormDecision::Admitted => {}
+                resources::StormDecision::SuppressedExact => {
                     state.recall.suppressed_exact_storm =
                         state.recall.suppressed_exact_storm.saturating_add(1);
                     return Ok(());
                 }
-                StormDecision::SuppressedHighCardinality => {
+                resources::StormDecision::SuppressedHighCardinality => {
                     state.recall.suppressed_high_cardinality_storm = state
                         .recall
                         .suppressed_high_cardinality_storm
@@ -283,17 +292,23 @@ impl Sdk {
             }
             let candidate_bytes = canonical::canonical_bytes(&candidate)?;
             if candidate_bytes.len() > MAX_OPERATION_BYTES
-                || state
-                    .global_bytes
-                    .saturating_add(self.sink.queued_bytes())
-                    .saturating_add(candidate_bytes.len())
-                    > MAX_GLOBAL_BYTES
+                || !resources::reserve_candidate_handoff(
+                    candidate.capture_id,
+                    candidate_bytes.len(),
+                )
             {
                 state.recall.candidate_queue_full =
                     state.recall.candidate_queue_full.saturating_add(1);
                 return Err(runtime_quota());
             }
-            if !self.sink.try_send(candidate) {
+            let capture_id = candidate.capture_id;
+            let sent = self.sink.try_send(candidate);
+            let retained = self.sink.retains_queued_candidates()
+                && resources::candidate_is_retained(capture_id);
+            if !retained {
+                resources::release_candidate(capture_id);
+            }
+            if !sent || self.sink.retains_queued_candidates() && !retained {
                 return Err(runtime_quota());
             }
         }
@@ -328,11 +343,7 @@ impl Sdk {
         )?;
         let added_bytes = record_size(&record);
         if !within_operation_bounds(operation, added_bytes)
-            || state
-                .global_bytes
-                .saturating_add(self.sink.queued_bytes())
-                .saturating_add(added_bytes)
-                > MAX_GLOBAL_BYTES
+            || !resources::grow_operation(operation_id, added_bytes)
         {
             state.delete(operation_id);
             return Err(runtime_quota());
@@ -358,7 +369,6 @@ struct State {
     global_bytes: usize,
     operations: BTreeMap<OperationId, ActiveOperation>,
     recall: SdkRecallCounters,
-    storm: FailureStormGate,
 }
 
 impl State {
@@ -367,94 +377,23 @@ impl State {
             global_bytes: 0,
             operations: BTreeMap::new(),
             recall: SdkRecallCounters::default(),
-            storm: FailureStormGate::new(),
         }
     }
 
     fn delete(&mut self, operation_id: OperationId) {
         if let Some(operation) = self.operations.remove(&operation_id) {
             self.global_bytes = self.global_bytes.saturating_sub(operation.bytes);
+            resources::release_operation(operation_id);
         }
     }
 }
 
-struct FailureStormGate {
-    admitted: BTreeMap<Digest, FailureStormEntry>,
-    last_refill_ms: u64,
-    started: Instant,
-    token_rejections: u64,
-    tokens_milli: u64,
-}
-
-struct FailureStormEntry {
-    admitted_at_ms: u64,
-    observed_at_ms: u64,
-    suppressed: u64,
-}
-
-impl FailureStormGate {
-    fn new() -> Self {
-        Self {
-            admitted: BTreeMap::new(),
-            last_refill_ms: 0,
-            started: Instant::now(),
-            token_rejections: 0,
-            tokens_milli: FAILURE_TOKENS_MILLI_CAPACITY,
+impl Drop for State {
+    fn drop(&mut self) {
+        for operation_id in self.operations.keys().copied().collect::<Vec<_>>() {
+            resources::release_operation(operation_id);
         }
     }
-
-    fn admit(&mut self, identity: Digest) -> StormDecision {
-        let now_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        self.refill(now_ms);
-        self.admitted.retain(|_, entry| {
-            now_ms.saturating_sub(entry.admitted_at_ms) < FAILURE_SUPPRESSION_MS
-        });
-        if let Some(entry) = self.admitted.get_mut(&identity) {
-            entry.observed_at_ms = now_ms;
-            entry.suppressed = entry.suppressed.saturating_add(1);
-            return StormDecision::SuppressedExact;
-        }
-        if self.tokens_milli < 1_000 {
-            self.token_rejections = self.token_rejections.saturating_add(1);
-            return StormDecision::SuppressedHighCardinality;
-        }
-        if self.admitted.len() >= MAX_FAILURE_STORM_IDENTITIES {
-            let oldest = self
-                .admitted
-                .iter()
-                .min_by_key(|(digest, entry)| (entry.observed_at_ms, **digest))
-                .map(|(digest, _)| *digest);
-            if let Some(oldest) = oldest {
-                self.admitted.remove(&oldest);
-            }
-        }
-        self.tokens_milli -= 1_000;
-        self.admitted.insert(
-            identity,
-            FailureStormEntry {
-                admitted_at_ms: now_ms,
-                observed_at_ms: now_ms,
-                suppressed: 0,
-            },
-        );
-        StormDecision::Admitted
-    }
-
-    fn refill(&mut self, now_ms: u64) {
-        let elapsed_ms = now_ms.saturating_sub(self.last_refill_ms);
-        self.tokens_milli = self
-            .tokens_milli
-            .saturating_add(elapsed_ms.saturating_mul(2))
-            .min(FAILURE_TOKENS_MILLI_CAPACITY);
-        self.last_refill_ms = now_ms;
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum StormDecision {
-    Admitted,
-    SuppressedExact,
-    SuppressedHighCardinality,
 }
 
 struct ActiveOperation {
@@ -503,19 +442,12 @@ fn incomplete_candidate() -> Error {
 }
 
 #[cfg(test)]
-mod storm_tests {
-    use super::*;
-
+mod resource_tests {
     #[test]
     fn high_cardinality_churn_cannot_bypass_candidate_tokens() {
-        let mut gate = FailureStormGate::new();
-        let admitted = (0_u64..257)
-            .filter(|index| {
-                gate.last_refill_ms = u64::MAX;
-                gate.admit(Digest::of(&index.to_be_bytes())) == StormDecision::Admitted
-            })
-            .count();
-        assert_eq!(admitted, 4);
-        assert_eq!(gate.token_rejections, 253);
+        assert_eq!(
+            super::resources::high_cardinality_admission_count_for_test(),
+            4
+        );
     }
 }

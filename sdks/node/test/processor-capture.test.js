@@ -20,6 +20,7 @@ const capturePath =
     "..",
     "..",
     "..",
+    ".core",
     "specs",
     "v1",
     "processor-capture.json",

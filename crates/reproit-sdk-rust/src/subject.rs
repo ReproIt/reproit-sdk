@@ -22,12 +22,11 @@ const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const LINUX_RUNNING_EXECUTABLE: &str = "/proc/self/exe";
 const MAX_LINUX_MAPS_BYTES: u64 = 1_048_576;
 const MAX_SUBJECT_FILES: usize = 32_767;
-const MAX_SUBJECT_OBJECT_BYTES: u64 = 274_878_824_448;
-const MAX_SUBJECT_TOTAL_BYTES: u64 = 274_878_824_448;
 
 pub struct RustSubjectPackage {
     pub manifest: SubjectClosureManifest,
     pub objects: Vec<PackagedSubjectObject>,
+    _reservation: crate::resources::LogicalByteReservation,
     _spool: TempDir,
 }
 
@@ -56,12 +55,14 @@ fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
         .prefix("reproit-rust-subject-")
         .tempdir()
         .map_err(subject_unreadable)?;
+    let mut reservation = crate::resources::LogicalByteReservation::new();
     let mut captured = Vec::with_capacity(paths.len().saturating_add(1));
     captured.push(capture_file(
         &executable,
         FileSource::RunningExecutable,
         spool.path(),
         SubjectObjectKind::Application,
+        &mut reservation,
     )?);
     for path in paths {
         captured.push(capture_file(
@@ -69,6 +70,7 @@ fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
             FileSource::Path(&path),
             spool.path(),
             SubjectObjectKind::NativeDependency,
+            &mut reservation,
         )?);
     }
     if !captured
@@ -78,7 +80,7 @@ fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
     {
         return Err(debug_artifact_missing());
     }
-    build_package(spool, &captured, &executable)
+    build_package(spool, &captured, &executable, reservation)
 }
 
 fn loaded_linux_modules(executable: &Path) -> Result<BTreeSet<PathBuf>, Error> {
@@ -205,12 +207,14 @@ fn capture_file(
     source: FileSource<'_>,
     spool_root: &Path,
     kind: SubjectObjectKind,
+    reservation: &mut crate::resources::LogicalByteReservation,
 ) -> Result<CapturedFile, Error> {
     let mut source_file = source.open().map_err(subject_unreadable)?;
     let before = source.metadata(&source_file).map_err(subject_unreadable)?;
-    if !before.is_file() || before.len() == 0 || before.len() > MAX_SUBJECT_OBJECT_BYTES {
+    if !before.is_file() || before.len() == 0 || before.len() > crate::MAX_SUBJECT_FILE_BYTES {
         return Err(subject_unbounded());
     }
+    reserve_subject_bytes(reservation, before.len())?;
     let temporary_path = spool_root.join(format!("capture-{}", uuid_text()?));
     if !same_file_version(
         &before,
@@ -232,7 +236,7 @@ fn capture_file(
         copied = copied
             .checked_add(u64::try_from(count).map_err(|_| subject_unbounded())?)
             .ok_or_else(subject_unbounded)?;
-        if copied > MAX_SUBJECT_OBJECT_BYTES || copied > before.len() {
+        if copied > crate::MAX_SUBJECT_FILE_BYTES || copied > before.len() {
             return Err(subject_changing());
         }
         hasher.update(&buffer[..count]);
@@ -259,6 +263,7 @@ fn capture_file(
             if fs::metadata(&spool_path).map_err(subject_unreadable)?.len() != copied {
                 return Err(Error::object_digest_mismatch());
             }
+            reservation.release(copied);
         }
         Err(error) => return Err(subject_unreadable(error)),
     }
@@ -302,6 +307,7 @@ fn build_package(
     spool: TempDir,
     captured: &[CapturedFile],
     executable: &Path,
+    mut reservation: crate::resources::LogicalByteReservation,
 ) -> Result<RustSubjectPackage, Error> {
     let executable_digest = captured
         .iter()
@@ -328,6 +334,7 @@ fn build_package(
         SubjectObjectKind::LaunchData,
         &mut assembly.objects,
         &mut assembly.packaged,
+        &mut reservation,
     )?;
     assembly.files.push(SubjectFile {
         executable: false,
@@ -342,6 +349,7 @@ fn build_package(
             SubjectObjectKind::ModuleIdentity,
             &mut assembly.objects,
             &mut assembly.packaged,
+            &mut reservation,
         )?;
     }
     assembly
@@ -366,7 +374,7 @@ fn build_package(
     let total_bytes = objects.iter().try_fold(0_u64, |total, object| {
         total.checked_add(object.size).ok_or_else(subject_unbounded)
     })?;
-    if total_bytes > MAX_SUBJECT_TOTAL_BYTES {
+    if total_bytes > crate::MAX_SUBJECT_BYTES {
         return Err(subject_unbounded());
     }
     let manifest = SubjectClosureManifest {
@@ -385,6 +393,7 @@ fn build_package(
     Ok(RustSubjectPackage {
         manifest,
         objects: assembly.packaged.into_values().collect(),
+        _reservation: reservation,
         _spool: spool,
     })
 }
@@ -454,21 +463,40 @@ fn capture_bytes(
     kind: SubjectObjectKind,
     objects: &mut BTreeMap<Digest, (SubjectObjectKind, u64)>,
     packaged: &mut BTreeMap<Digest, PackagedSubjectObject>,
+    reservation: &mut crate::resources::LogicalByteReservation,
 ) -> Result<Digest, Error> {
     if bytes.is_empty() {
         return Err(subject_unsupported());
     }
     let digest = Digest::of(bytes);
     let path = spool_root.join(digest_name(digest));
+    let size = u64::try_from(bytes.len()).map_err(|_| subject_unbounded())?;
+    if !packaged.contains_key(&digest) {
+        reserve_subject_bytes(reservation, size)?;
+    }
     if !path.exists() {
         fs::write(&path, bytes).map_err(subject_unreadable)?;
     }
-    let size = u64::try_from(bytes.len()).map_err(|_| subject_unbounded())?;
     insert_object(objects, digest, kind, size)?;
     packaged
         .entry(digest)
         .or_insert(PackagedSubjectObject { digest, path, size });
     Ok(digest)
+}
+
+fn reserve_subject_bytes(
+    reservation: &mut crate::resources::LogicalByteReservation,
+    bytes: u64,
+) -> Result<(), Error> {
+    if reservation
+        .bytes()
+        .checked_add(bytes)
+        .is_none_or(|total| total > crate::MAX_SUBJECT_BYTES)
+        || !reservation.reserve(bytes)
+    {
+        return Err(subject_unbounded());
+    }
+    Ok(())
 }
 
 fn insert_object(
@@ -726,11 +754,13 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner);
         let spool = tempfile::tempdir().unwrap();
         let reported_path = spool.path().join("unreadable/running-subject");
+        let mut reservation = crate::resources::LogicalByteReservation::new();
         let captured = capture_file(
             &reported_path,
             FileSource::RunningExecutable,
             spool.path(),
             SubjectObjectKind::Application,
+            &mut reservation,
         )
         .unwrap();
         let running_bytes = fs::read(LINUX_RUNNING_EXECUTABLE).unwrap();

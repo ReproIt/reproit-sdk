@@ -147,6 +147,7 @@ internal static class ManagedFixtures
     /// <summary>Captures one complete managed candidate through the SDK.</summary>
     internal static JsonObject CapturedCandidate(JsonObject deployment, string worldId)
     {
+        SdkProcessResources.ResetForTests();
         MemorySink sink = new();
         Sdk sdk = new(sink);
         CandidateStart start = new(

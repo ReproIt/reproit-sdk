@@ -6,9 +6,10 @@ import os
 import platform
 import sys
 import tempfile
+import weakref
 from dataclasses import dataclass, field
 
-from reproit_sdk import canonical_bytes
+from reproit_sdk import _PROCESS_RESOURCES, canonical_bytes
 
 from .managed_protocol import (
     ManagedError,
@@ -26,7 +27,8 @@ MODULE_IDENTITY_MEDIA_TYPE = "application/vnd.reproit.subject-module-identity.v1
 MAX_ARGUMENTS = 128
 MAX_ENVIRONMENT_NAMES = 256
 MAX_SUBJECT_OBJECTS = 32_767
-MAX_SUBJECT_OBJECT_BYTES = 274_878_824_448
+MAX_SUBJECT_OBJECT_BYTES = 512 * 1024 * 1024
+MAX_SUBJECT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 
 _SUPPORTED_INTERPRETER_FLAGS = frozenset(
     {
@@ -73,6 +75,14 @@ class PythonSubjectPackage:
     manifest: dict[str, object]
     objects: list[PackagedSubjectObject]
     _spool: tempfile.TemporaryDirectory = field(repr=False)
+    _reserved_bytes: int = field(repr=False)
+    _reservation_finalizer: weakref.finalize = field(repr=False)
+
+    def close(self) -> None:
+        self._spool.cleanup()
+        if self._reservation_finalizer.alive:
+            self._reservation_finalizer()
+        self._reserved_bytes = 0
 
 
 def package_running_python_subject(
@@ -93,6 +103,9 @@ def package_running_python_subject(
     except BaseException:
         spool.cleanup()
         raise
+    reservation_finalizer = weakref.finalize(
+        spool, _PROCESS_RESOURCES.release_logical, captured.reserved_bytes
+    )
     script_file = next(
         (file for file in captured.files if file.path == captured.entry_path),
         None,
@@ -145,7 +158,7 @@ def package_running_python_subject(
     )
     if (
         len(objects) > MAX_SUBJECT_OBJECTS
-        or sum(entry["size"] for entry in objects) > MAX_SUBJECT_OBJECT_BYTES
+        or sum(entry["size"] for entry in objects) > MAX_SUBJECT_TOTAL_BYTES
     ):
         spool.cleanup()
         raise _subject_unbounded()
@@ -241,7 +254,13 @@ def package_running_python_subject(
     for packaged in metadata_objects:
         packaged_by_digest[packaged.digest] = packaged
     packaged = [packaged_by_digest[digest] for digest in sorted(packaged_by_digest)]
-    return PythonSubjectPackage(manifest, packaged, spool)
+    return PythonSubjectPackage(
+        manifest,
+        packaged,
+        spool,
+        captured.reserved_bytes,
+        reservation_finalizer,
+    )
 
 
 def _assemble_objects(
@@ -464,7 +483,7 @@ def _validate_objects(objects: list, total_bytes: object) -> dict[str, str]:
         previous = entry["digest"]
         total += size
         kinds[entry["digest"]] = entry["kind"]
-    if total != total_bytes or total > MAX_SUBJECT_OBJECT_BYTES:
+    if total != total_bytes or total > MAX_SUBJECT_TOTAL_BYTES:
         raise schema_invalid()
     return kinds
 

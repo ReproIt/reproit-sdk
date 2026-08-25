@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +30,12 @@ type recordingStagedDelivery struct {
 
 type privateOnlySink struct {
 	deliveries int
+}
+
+func newTestSDK(sink CandidateSink) *SDK {
+	sdk := New(sink)
+	sdk.allowPrivate = true
+	return sdk
 }
 
 func (sink *privateOnlySink) AllowsProcessingMode(mode string) bool { return mode == "private" }
@@ -79,6 +87,7 @@ func value(positive map[string]any, name string) map[string]any {
 
 func fixture(t *testing.T) (*SDK, *MemorySink, CandidateStart, map[string]any) {
 	t.Helper()
+	processResources = newSDKProcessResources()
 	positive := vectors(t)
 	expected := value(positive, "candidate")
 	start := CandidateStart{
@@ -86,7 +95,7 @@ func fixture(t *testing.T) (*SDK, *MemorySink, CandidateStart, map[string]any) {
 		OperationID: expected["operation_id"].(string), WorldID: expected["world_id"].(string),
 	}
 	sink := &MemorySink{}
-	return New(sink), sink, start, positive
+	return newTestSDK(sink), sink, start, positive
 }
 
 func TestCandidateMatchesCanonicalVector(t *testing.T) {
@@ -154,7 +163,7 @@ func TestOneThousandExactFailuresUseOneCandidateToken(t *testing.T) {
 
 func TestHighCardinalityStormStopsAtCandidateTokens(t *testing.T) {
 	sdk, sink, start, positive := fixture(t)
-	sdk.stormLastRefill = time.Now().Add(time.Hour)
+	processResources.stormLastRefill = time.Now().Add(time.Hour)
 	for index := 0; index < 257; index++ {
 		failure, err := cloneMap(value(positive, "failure_payload"))
 		if err != nil {
@@ -208,7 +217,7 @@ func TestSuccessCancellationAndApplicationError(t *testing.T) {
 
 func TestMissingCaptureSinkPreservesApplicationError(t *testing.T) {
 	_, _, start, positive := fixture(t)
-	sdk := New(nil)
+	sdk := newTestSDK(nil)
 	original := errors.New("customer failure")
 	returned := RunOperation(
 		sdk, start, value(positive, "operation_begin_payload"), nil,
@@ -278,7 +287,7 @@ func TestAuthenticatedUnixDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sdk := New(sink)
+	sdk := newTestSDK(sink)
 	_ = sdk.Begin(start, value(positive, "operation_begin_payload"))
 	_ = sdk.RecordInput(start.OperationID, value(positive, "operation_input_payload"))
 	if err := sdk.Fail(start.OperationID, value(positive, "failure_payload")); err != nil {
@@ -520,7 +529,7 @@ func TestStagedDeliveryEncryptsOnceAndSendsTheSameCompleteCandidate(t *testing.T
 	runtime := &recordingStagedDelivery{}
 	deferred := &recordingStagedDelivery{}
 	key := bytes.Repeat([]byte{0x63}, 32)
-	sink, err := newStagedCandidateSink(runtime, deferred, key)
+	sink, err := NewstagedCandidateSink(runtime, deferred, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +580,7 @@ func TestStagedDeliveryEncryptsOnceAndSendsTheSameCompleteCandidate(t *testing.T
 func TestIncompleteCandidateMakesNoStagedDeliveryRequest(t *testing.T) {
 	runtime := &recordingStagedDelivery{}
 	deferred := &recordingStagedDelivery{}
-	sink, err := newStagedCandidateSink(runtime, deferred, bytes.Repeat([]byte{0x63}, 32))
+	sink, err := NewstagedCandidateSink(runtime, deferred, bytes.Repeat([]byte{0x63}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,6 +598,94 @@ func TestIncompleteCandidateMakesNoStagedDeliveryRequest(t *testing.T) {
 	if sink.RecallCounters().CandidateIncomplete != 1 {
 		t.Fatal("the incomplete candidate was not counted")
 	}
+}
+
+func TestHTTPBoundaryPreservesPanic(t *testing.T) {
+	sdk, sink, start, positive := fixture(t)
+	original := &struct{ message string }{"customer failure"}
+	handler := HTTPMiddleware(
+		sdk,
+		func(*http.Request) HTTPPreparation {
+			return HTTPPreparation{
+				Begin:  value(positive, "operation_begin_payload"),
+				Inputs: []map[string]any{value(positive, "operation_input_payload")},
+				Start:  start,
+			}
+		},
+		func(any) map[string]any { return value(positive, "failure_payload") },
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(original) }),
+	)
+	defer func() {
+		if recover() != original {
+			t.Fatal("the HTTP boundary changed the application panic")
+		}
+		expected, _ := CanonicalBytes(value(positive, "candidate"))
+		if len(sink.Candidates) != 1 || !bytes.Equal(sink.Candidates[0], expected) {
+			t.Fatal("the HTTP failure did not produce the expected candidate")
+		}
+	}()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+}
+
+func TestHTTPBoundaryStreamsRequestBodyAsOrderedInputs(t *testing.T) {
+	sdk, sink, start, positive := fixture(t)
+	body := append(bytes.Repeat([]byte("a"), 32*1024), []byte("tail")...)
+	original := &struct{ message string }{"customer failure"}
+	handler := HTTPMiddleware(
+		sdk,
+		func(*http.Request) HTTPPreparation {
+			return HTTPPreparation{
+				Begin: value(positive, "operation_begin_payload"), Start: start,
+			}
+		},
+		func(any) map[string]any { return value(positive, "failure_payload") },
+		http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			if _, err := io.ReadAll(request.Body); err != nil {
+				t.Fatal(err)
+			}
+			panic(original)
+		}),
+	)
+	request := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/octet-stream")
+	defer func() {
+		if recover() != original {
+			t.Fatal("the HTTP boundary changed the application panic")
+		}
+		if len(sink.Candidates) != 1 {
+			t.Fatal("the complete streamed request did not produce a candidate")
+		}
+		var candidate map[string]any
+		decoder := json.NewDecoder(bytes.NewReader(sink.Candidates[0]))
+		decoder.UseNumber()
+		if err := decoder.Decode(&candidate); err != nil {
+			t.Fatal(err)
+		}
+		records, ok := candidateRecords(candidate["records"])
+		if !ok {
+			t.Fatal("the candidate records are invalid")
+		}
+		captured := make([]byte, 0, len(body))
+		inputIndex := int64(0)
+		for _, record := range records {
+			if record["kind"] != "input" {
+				continue
+			}
+			payload, payloadOK := decodedRecordPayload(record)
+			current, indexOK := integerValue(payload["input_index"])
+			encoded, valueOK := payload["value"].(string)
+			chunk, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
+			if !payloadOK || !indexOK || !valueOK || decodeErr != nil || current != inputIndex {
+				t.Fatal("the request body input order is invalid")
+			}
+			captured = append(captured, chunk...)
+			inputIndex++
+		}
+		if !bytes.Equal(captured, body) {
+			t.Fatal("the captured request body differs from the application body")
+		}
+	}()
+	handler.ServeHTTP(httptest.NewRecorder(), request)
 }
 
 func TestOversizedFailureDeletesOperation(t *testing.T) {
@@ -796,6 +893,58 @@ func TestStreamBoundaryPreservesUnexpectedPanicAndReleasesCapture(t *testing.T) 
 		func() error { panic(original) },
 		func(error) map[string]any { return value(positive, "failure_payload") },
 	)
+}
+
+func TestHTTPBoundaryPreservesOriginalPanicWhenCaptureFails(t *testing.T) {
+	sdk, sink, start, positive := fixture(t)
+	original := &struct{ message string }{"customer failure"}
+	handler := HTTPMiddleware(
+		sdk,
+		func(*http.Request) HTTPPreparation {
+			input := cloneForTest(t, value(positive, "operation_input_payload"))
+			input["oversized"] = strings.Repeat("x", MaxEventBytes)
+			return HTTPPreparation{
+				Begin:  value(positive, "operation_begin_payload"),
+				Inputs: []map[string]any{input}, Start: start,
+			}
+		},
+		func(any) map[string]any { panic("capture mapper failure") },
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(original) }),
+	)
+	defer func() {
+		if recover() != original {
+			t.Fatal("capture failure changed the application panic")
+		}
+		if len(sink.Candidates) != 0 || sdk.ActiveOperations() != 0 {
+			t.Fatal("incomplete HTTP capture reached the sink or retained state")
+		}
+	}()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+}
+
+func TestHTTPBoundaryPreservesOriginalPanicWhenFailureMapperPanics(t *testing.T) {
+	sdk, sink, start, positive := fixture(t)
+	original := &struct{ message string }{"customer failure"}
+	handler := HTTPMiddleware(
+		sdk,
+		func(*http.Request) HTTPPreparation {
+			return HTTPPreparation{
+				Begin: value(positive, "operation_begin_payload"), Start: start,
+			}
+		},
+		func(any) map[string]any { panic("capture mapper failure") },
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(original) }),
+	)
+	defer func() {
+		if recover() != original {
+			t.Fatal("the Failure mapper changed the application panic")
+		}
+		if len(sink.Candidates) != 0 || sdk.ActiveOperations() != 0 ||
+			sdk.RecallCounters().CandidateIncomplete == 0 {
+			t.Fatal("the failed Failure mapper did not abandon local capture")
+		}
+	}()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 }
 
 func cloneForTest(t *testing.T, value map[string]any) map[string]any {

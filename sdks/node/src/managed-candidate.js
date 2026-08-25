@@ -190,6 +190,9 @@ export class PreparedManagedCandidate {
       (total, entry) => total + entry.plain_size,
       0,
     );
+    if (totalPlaintextBytes > 4 * 1024 * 1024 * 1024) {
+      throw incompleteCandidate();
+    }
     const deployment = candidate.deployment;
     const identity = {
       candidate_digest: canonicalDigest(candidate),

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -13,7 +16,9 @@ import {
   runPreparedOperation,
   runStreamOperation,
 } from "../src/index.js";
+import { wrapHttpHandler } from "./http-support.js";
 import { MemorySink } from "./memory-sink.js";
+import "./setup.js";
 
 const positive = JSON.parse(
   fs.readFileSync(process.env.REPROIT_PROTOCOL_VECTORS, "utf8"),
@@ -106,6 +111,77 @@ test("high-cardinality storm stops at candidate tokens", () => {
   }
   assert.ok(sink.candidates.length <= 4);
   assert.ok(sdk.recallCounters.suppressed_high_cardinality_storm > 0);
+});
+
+test("process restart recovers exact queue capacity", async () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "reproit-node-queue-restart-"),
+  );
+  const resourceModule = new URL(
+    "../src/process-resources.js",
+    import.meta.url,
+  ).href;
+  const probe = `
+import fs from 'node:fs';
+import { reserveCandidate } from ${JSON.stringify(resourceModule)};
+const statePath = process.argv[1];
+let accepted = 0;
+for (let index = 0; index < 17; index += 1) {
+  if (reserveCandidate(1)) accepted += 1;
+}
+const descriptor = fs.openSync(statePath, 'wx', 0o600);
+fs.writeFileSync(descriptor, JSON.stringify({ accepted }));
+fs.fsyncSync(descriptor);
+fs.closeSync(descriptor);
+setInterval(() => {}, 1_000);
+`;
+  const waitForState = async (statePath) => {
+    const deadline = performance.now() + 2_000;
+    while (performance.now() < deadline) {
+      if (fs.existsSync(statePath)) {
+        return JSON.parse(fs.readFileSync(statePath, "utf8"));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("The queue restart child did not publish its state.");
+  };
+  const start = (statePath) =>
+    spawn(process.execPath, ["--input-type=module", "-e", probe, statePath], {
+      stdio: "ignore",
+    });
+  let first;
+  let second;
+  try {
+    first = start(path.join(directory, "first.json"));
+    assert.equal(
+      (await waitForState(path.join(directory, "first.json"))).accepted,
+      16,
+    );
+    first.kill("SIGTERM");
+    await new Promise((resolve) => first.once("exit", resolve));
+
+    second = start(path.join(directory, "second.json"));
+    assert.equal(
+      (await waitForState(path.join(directory, "second.json"))).accepted,
+      16,
+    );
+    second.kill("SIGTERM");
+    await new Promise((resolve) => second.once("exit", resolve));
+  } finally {
+    if (first?.exitCode === null) first.kill("SIGKILL");
+    if (second?.exitCode === null) second.kill("SIGKILL");
+    fs.rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("incomplete candidate makes no staged delivery request", () => {
+  const { sdk, sink, start } = fixture();
+  sdk.begin(start, value("operation_begin_payload"));
+  const failure = structuredClone(value("failure_payload"));
+  failure.failure.identity = `sha256:${"0".repeat(64)}`;
+  assert.throws(() => sdk.fail(start.operationId, failure), CaptureError);
+  assert.deepEqual(sink.candidates, []);
+  assert.equal(sdk.recallCounters.candidate_incomplete, 1);
 });
 
 test("success, cancellation, and application behavior are exact", () => {
@@ -323,6 +399,66 @@ test("capture setup and cleanup failures do not change application behavior", as
     ),
     "application-result",
   );
+});
+
+test("managed candidate does not use a private candidate sink", () => {
+  const sink = {
+    calls: 0,
+    processingModes: new Set(["private"]),
+    queuedBytes: 0,
+    trySend() {
+      this.calls += 1;
+      return true;
+    },
+  };
+  const { sdk, start } = fixture(sink);
+  const managed = {
+    ...start,
+    deployment: structuredClone(start.deployment),
+  };
+  managed.deployment.processing_mode = "managed";
+  sdk.begin(managed, value("operation_begin_payload"));
+  assert.throws(
+    () => sdk.fail(managed.operationId, value("failure_payload")),
+    CaptureError,
+  );
+  assert.equal(sink.calls, 0);
+  assert.equal(sdk.activeOperations, 0);
+  assert.equal(sdk.recallCounters.candidate_incomplete, 1);
+});
+
+test("HTTP boundary preserves the application exception", () => {
+  const { expected, sdk, sink, start } = fixture();
+  const original = new Error("customer failure");
+  const handler = wrapHttpHandler(
+    sdk,
+    () => ({
+      begin: value("operation_begin_payload"),
+      inputs: [value("operation_input_payload")],
+      start,
+    }),
+    () => value("failure_payload"),
+    () => {
+      throw original;
+    },
+  );
+  assert.throws(
+    () => handler({}, {}),
+    (error) => error === original,
+  );
+  assert.deepEqual(sink.candidates, [canonicalBytes(expected)]);
+});
+
+test("HTTP preparation failure does not change the handler result", async () => {
+  const handler = wrapHttpHandler(
+    {},
+    () => {
+      throw new CaptureError("The World token is unavailable.");
+    },
+    () => value("failure_payload"),
+    async () => "handler-result",
+  );
+  assert.equal(await handler({}, {}), "handler-result");
 });
 
 test("oversized failure deletes the operation", () => {

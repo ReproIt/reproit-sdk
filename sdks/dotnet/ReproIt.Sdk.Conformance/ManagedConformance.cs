@@ -29,29 +29,12 @@ internal static class ManagedConformance
         }
         CommitTimeout();
         OfficialManagedBindingsFailClosed();
-        FrameworkNeutralOperationPreservesApplicationError();
         PrepareAndSeal();
         TransportValidation();
         Console.WriteLine("dotnet_managed_vectors=PASS");
         Console.WriteLine("dotnet_managed_seal=PASS");
         Console.WriteLine("dotnet_managed_workload_key=PASS");
         Console.WriteLine("dotnet_managed_transport=PASS");
-    }
-
-    private static void FrameworkNeutralOperationPreservesApplicationError()
-    {
-        ReproItCapture capture = ReproItCapture.Init();
-        InvalidOperationException original = new("customer failure");
-        try
-        {
-            _ = capture.Operation<int>(
-                "todos.create", "input"u8.ToArray(), () => throw original);
-            throw new InvalidOperationException(
-                "The framework-neutral operation did not return the application error.");
-        }
-        catch (InvalidOperationException observed) when (ReferenceEquals(observed, original))
-        {
-        }
     }
 
     private static void OfficialManagedBindingsFailClosed()
@@ -64,19 +47,6 @@ internal static class ManagedConformance
             () => new OfficialManagedProject(new JsonObject(), "invalid", "invalid"),
             "CONFIG_CONFLICT",
             "The workspace official project reached project or capture validation.");
-        int worldCalls = 0;
-        RequireManagedFailure(
-            () => new ReproItCapture(
-                new JsonObject(), "invalid", "invalid",
-                () =>
-                {
-                    worldCalls += 1;
-                    throw new InvalidOperationException("The World provider must not run.");
-                }),
-            "CONFIG_CONFLICT",
-            "The public integration accepted release sentinels.");
-        Check(worldCalls == 0,
-            "The unbound public integration called the World provider.");
         int tokenCalls = 0;
         JsonObject deployment = BoundDeployment(SharedSubject());
         deployment["runtime_endpoint"] = "unchanged";

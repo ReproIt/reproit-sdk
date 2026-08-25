@@ -2,7 +2,6 @@ package reproit
 
 import (
 	"bytes"
-	"errors"
 	"testing"
 )
 
@@ -113,29 +112,5 @@ func TestOfficialManagedProjectFailsBeforeProjectOrCaptureUseWhenUnbound(t *test
 	project, err := NewOfficialManagedProject(nil, "invalid", "invalid")
 	if managedErrorCode(t, err) != "CONFIG_CONFLICT" || project != nil {
 		t.Fatalf("unbound official project: %#v, %v", project, err)
-	}
-}
-
-func TestPublicIntegrationFailsBeforeWorldCaptureWhenUnbound(t *testing.T) {
-	worldAccessed := false
-	capture, err := Start(nil, "invalid", "invalid", func() (ManagedWorldCapture, error) {
-		worldAccessed = true
-		return ManagedWorldCapture{}, nil
-	})
-	if managedErrorCode(t, err) != "CONFIG_CONFLICT" || capture != nil || worldAccessed {
-		t.Fatalf("unbound public integration: %#v, %v, %t", capture, err, worldAccessed)
-	}
-}
-
-func TestFrameworkNeutralOperationPreservesExactError(t *testing.T) {
-	original := errors.New("customer failure")
-	result, observed := Operation(
-		Init(),
-		"todos.create",
-		[]byte(`{"title":"trigger-bug"}`),
-		func() (string, error) { return "unchanged", original },
-	)
-	if result != "unchanged" || observed != original {
-		t.Fatalf("operation changed the application result: %q, %v", result, observed)
 	}
 }

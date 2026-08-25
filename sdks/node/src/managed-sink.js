@@ -44,9 +44,14 @@ import {
   subjectBinding,
 } from "./managed-subject.js";
 import { captureProcessorCapabilities } from "./processor-capture.js";
+import {
+  queuedBytes as processQueuedBytes,
+  releaseCandidate,
+  reserveCandidate,
+} from "./process-resources.js";
 
 export const REGISTRATION_TIMEOUT_MS = 5_000;
-export const CANDIDATE_DELIVERY_LIFETIME_MS = 1_000;
+export const CANDIDATE_DELIVERY_LIFETIME_MS = 1_800_000;
 const COUNTER_MAXIMUM = Number.MAX_SAFE_INTEGER;
 const RECALL_KEYS = [
   "candidate_delivery_expired",
@@ -58,6 +63,66 @@ const RECALL_KEYS = [
   "suppressed_exact_storm",
   "suppressed_high_cardinality_storm",
 ];
+
+class DeadlineManagedClient {
+  #client;
+  #deadline;
+
+  constructor(client, deadline) {
+    this.#client = client;
+    this.#deadline = deadline;
+  }
+
+  #timeout(requested) {
+    const remaining = this.#deadline - performance.now();
+    if (remaining <= 0) {
+      throw new ManagedError(
+        "SERVICE_UNAVAILABLE",
+        "The candidate delivery lifetime expired.",
+      );
+    }
+    return Math.min(requested, remaining);
+  }
+
+  async #call(name, argumentsList, timeoutIndex) {
+    argumentsList[timeoutIndex] = this.#timeout(argumentsList[timeoutIndex]);
+    const result = await this.#client[name](...argumentsList);
+    this.#timeout(1);
+    return result;
+  }
+
+  registerWorkloadKey(token, request, timeout) {
+    return this.#call("registerWorkloadKey", [token, request, timeout], 2);
+  }
+
+  requestEncryptionGrant(request, timeout) {
+    return this.#call("requestEncryptionGrant", [request, timeout], 1);
+  }
+
+  start(request, timeout) {
+    return this.#call("start", [request, timeout], 1);
+  }
+
+  missing(uploadId, uploadToken, cursor, timeout) {
+    return this.#call("missing", [uploadId, uploadToken, cursor, timeout], 3);
+  }
+
+  uploadObject(uploadUrl, digest, value, timeout) {
+    return this.#call(
+      "uploadObject",
+      [uploadUrl, digest, value, timeout],
+      3,
+    );
+  }
+
+  commit(uploadId, uploadToken, timeout) {
+    return this.#call("commit", [uploadId, uploadToken, timeout], 2);
+  }
+
+  cancel(uploadId, uploadToken, timeout) {
+    return this.#call("cancel", [uploadId, uploadToken, timeout], 2);
+  }
+}
 
 // Deliver complete managed candidates through the bounded upload session.
 // Construct with the async factory: ManagedCandidateSink.create(...).
@@ -190,7 +255,7 @@ export class ManagedCandidateSink {
   }
 
   get queuedBytes() {
-    return this.#queuedBytes;
+    return processQueuedBytes();
   }
 
   // Bounded counters that contain no customer values.
@@ -257,10 +322,7 @@ export class ManagedCandidateSink {
       this.#increment("candidate_incomplete");
       return false;
     }
-    if (
-      this.#queuedCandidates >= MAX_QUEUED_CANDIDATES ||
-      this.#queuedBytes + candidate.length > MAX_GLOBAL_BYTES
-    ) {
+    if (!reserveCandidate(candidate.length)) {
       this.#increment("candidate_queue_full");
       return false;
     }
@@ -323,7 +385,10 @@ export class ManagedCandidateSink {
           }
           this.#active = true;
           try {
-            await this.#deliver(candidate.value);
+            await this.#deliver(
+              candidate.value,
+              candidate.enqueued + this._deliveryLifetimeMs,
+            );
             this.#increment("candidate_durably_accepted");
           } catch (error) {
             if (error instanceof ManagedError) {
@@ -336,6 +401,7 @@ export class ManagedCandidateSink {
           this.#active = false;
           this.#queuedBytes = Math.max(0, this.#queuedBytes - candidate.size);
           this.#queuedCandidates = Math.max(0, this.#queuedCandidates - 1);
+          releaseCandidate(candidate.size);
         }
       }
     } finally {
@@ -343,16 +409,17 @@ export class ManagedCandidateSink {
     }
   }
 
-  async #deliver(candidate) {
+  async #deliver(candidate, deadline) {
     const configuration = this.#configuration;
+    const client = new DeadlineManagedClient(this.#client, deadline);
     const prepared = PreparedManagedCandidate.prepareComplete(
       candidate,
       this.#subject,
       this.#closure,
     );
-    await this.#ensureRegistered();
+    await this.#ensureRegistered(client);
     const grant = await prepared.requestEncryptionGrant(
-      this.#client,
+      client,
       this.#workloadKeyId,
       this.#workloadSigningKey,
     );
@@ -364,7 +431,7 @@ export class ManagedCandidateSink {
     );
     try {
       const renewal = await sealed.requestCaptureGrantRenewal(
-        this.#client,
+        client,
         this.#workloadKeyId,
         this.#workloadSigningKey,
       );
@@ -374,19 +441,19 @@ export class ManagedCandidateSink {
         configuration.captureSignerId,
         configuration.captureSignerPublicKey,
       );
-      await sealed.upload(this.#client);
+      await sealed.upload(client);
     } finally {
       sealed.dispose();
     }
   }
 
-  async #ensureRegistered() {
+  async #ensureRegistered(client) {
     if (this.#registration.registered) return;
     if (this.#registration.projectTokenProvider === null) {
       throw registrationTokenRequired();
     }
     const projectToken = await this.#registration.projectTokenProvider();
-    const registration = await this.#client.registerWorkloadKey(
+    const registration = await client.registerWorkloadKey(
       projectToken,
       this.#registration.request,
       REGISTRATION_TIMEOUT_MS,

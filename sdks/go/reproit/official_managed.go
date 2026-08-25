@@ -101,7 +101,7 @@ func (operation *OfficialManagedOperation) CandidateSink(
 	subject *GoSubjectPackage,
 ) (*ManagedCandidateSink, error) {
 	sink, deployment, err := newOfficialManagedCandidateSink(
-		projectToken, closure, operation.deployment, subject, operation.OperationID,
+		projectToken, "", closure, operation.deployment, subject, operation.OperationID,
 	)
 	if err != nil {
 		return nil, err
@@ -120,13 +120,14 @@ func NewOfficialManagedCandidateSink(
 	subject *GoSubjectPackage,
 ) (*ManagedCandidateSink, error) {
 	sink, _, err := newOfficialManagedCandidateSink(
-		projectToken, closure, deployment, subject, "",
+		projectToken, serviceID, closure, deployment, subject, "",
 	)
 	return sink, err
 }
 
 func newOfficialManagedCandidateSink(
 	projectToken *ManagedProjectToken,
+	serviceID string,
 	closure ManagedCaptureClosure,
 	deployment map[string]any,
 	subject *GoSubjectPackage,
@@ -135,19 +136,28 @@ func newOfficialManagedCandidateSink(
 	if deployment == nil {
 		return nil, nil, errSchemaInvalid()
 	}
-	configuration, err := loadOfficialManagedConfiguration(projectToken)
-	if err != nil {
-		return nil, nil, err
-	}
 	boundDeployment, err := cloneMap(deployment)
 	if err != nil {
 		return nil, nil, err
 	}
-	boundDeployment["runtime_endpoint"] = officialManagedHTTPSOrigin
-	serviceID, err := requireTypedID(boundDeployment["service_id"], "service_id")
+	deploymentServiceID, err := requireTypedID(boundDeployment["service_id"], "service_id")
 	if err != nil {
 		return nil, nil, err
 	}
+	if serviceID == "" {
+		serviceID = deploymentServiceID
+	}
+	if _, err := requireTypedID(serviceID, "service_id"); err != nil ||
+		serviceID != deploymentServiceID {
+		return nil, nil, newManagedError(
+			"AUTHORIZATION_DENIED", "The managed service does not match this Deployment.",
+		)
+	}
+	configuration, err := loadOfficialManagedConfiguration(projectToken)
+	if err != nil {
+		return nil, nil, err
+	}
+	boundDeployment["runtime_endpoint"] = officialManagedHTTPSOrigin
 	sink, err := NewManagedCandidateSink(
 		configuration.client,
 		closure,
@@ -162,7 +172,12 @@ func newOfficialManagedCandidateSink(
 	if err != nil {
 		return nil, nil, err
 	}
-	_ = operationID
+	if operationID != "" {
+		if _, err := requireTypedID(operationID, "operation_id"); err != nil {
+			return nil, nil, err
+		}
+		sink.operationID = operationID
+	}
 	if err := sink.BindDeployment(boundDeployment); err != nil {
 		return nil, nil, err
 	}

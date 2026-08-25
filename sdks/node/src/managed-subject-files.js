@@ -17,8 +17,10 @@ import {
 import path from "node:path";
 
 import { ManagedError } from "./managed-protocol.js";
+import { reserveLogical } from "./process-resources.js";
 
-export const MAX_SUBJECT_OBJECT_BYTES = 274_878_824_448;
+export const MAX_SUBJECT_OBJECT_BYTES = 512 * 1024 * 1024;
+export const MAX_SUBJECT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 export const COPY_BUFFER_BYTES = 64 * 1024;
 export const MAX_SUBJECT_FILES = 32_767;
 const MAX_SUBJECT_TREE_DEPTH = 128;
@@ -128,8 +130,12 @@ export function freezeSubjectFile(sourcePath, spool, state) {
     throw subjectUnbounded();
   }
   const size = Number(before.size);
+  if (!reserveLogical(size)) {
+    throw subjectUnbounded();
+  }
+  state.reservedBytes += size;
   state.logicalBytes += size;
-  if (state.logicalBytes > MAX_SUBJECT_OBJECT_BYTES) {
+  if (state.logicalBytes > MAX_SUBJECT_TOTAL_BYTES) {
     throw subjectUnbounded();
   }
 

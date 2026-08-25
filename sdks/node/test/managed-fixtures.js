@@ -27,7 +27,15 @@ import {
 } from "../src/managed-transport.js";
 import { packageRunningNodeSubject, subjectBinding } from "../src/managed-subject.js";
 
-const specsV1 = path.resolve(import.meta.dirname, "..", "..", "..", "specs", "v1");
+const specsV1 = path.resolve(
+  import.meta.dirname,
+  "..",
+  "..",
+  "..",
+  ".core",
+  "specs",
+  "v1",
+);
 
 export const CAPTURE_ID = "cap_01890f3e-7b1c-7cc0-8a1b-123456789abc";
 export const OPERATION_ID = "op_01890f3e-7b1c-7cc0-8a1b-123456789ab1";

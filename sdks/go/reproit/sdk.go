@@ -2,20 +2,14 @@
 package reproit
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
-	"net"
-	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,8 +25,9 @@ const (
 	MaxActiveOperations       = 512
 	MaxQueuedCandidates       = 16
 	MaxFailureStormIdentities = 256
-	deliveryLifetime          = time.Second
+	deliveryLifetime          = 30 * time.Minute
 	maxResponseHeaderBytes    = 4_096
+	maxProcessLogicalBytes    = int64(4 * 1024 * 1024 * 1024)
 )
 
 var (
@@ -90,16 +85,36 @@ type stormEntry struct {
 	suppressed uint64
 }
 
+type sdkProcessResources struct {
+	activeBytes      int
+	activeOperations map[string]bool
+	mu               sync.Mutex
+	queuedBytes      int
+	queuedCandidates int
+	logicalBytes     int64
+	stormAdmitted    map[string]stormEntry
+	stormLastRefill  time.Time
+	stormRejected    uint64
+	stormTokens      float64
+}
+
+var processResources = newSDKProcessResources()
+
+func newSDKProcessResources() *sdkProcessResources {
+	return &sdkProcessResources{
+		activeOperations: make(map[string]bool),
+		stormAdmitted:    make(map[string]stormEntry),
+		stormLastRefill:  time.Now(),
+		stormTokens:      4,
+	}
+}
+
 type SDK struct {
-	globalBytes     int
-	mu              sync.Mutex
-	operations      map[string]*operation
-	sink            CandidateSink
-	recall          RecallCounters
-	stormAdmitted   map[string]stormEntry
-	stormLastRefill time.Time
-	stormRejected   uint64
-	stormTokens     float64
+	allowPrivate bool
+	mu           sync.Mutex
+	operations   map[string]*operation
+	sink         CandidateSink
+	recall       RecallCounters
 }
 
 func New(sink CandidateSink) *SDK {
@@ -107,11 +122,8 @@ func New(sink CandidateSink) *SDK {
 		sink = discardCandidateSink{}
 	}
 	return &SDK{
-		operations:      make(map[string]*operation),
-		sink:            sink,
-		stormAdmitted:   make(map[string]stormEntry),
-		stormLastRefill: time.Now(),
-		stormTokens:     4,
+		operations: make(map[string]*operation),
+		sink:       sink,
 	}
 }
 
@@ -137,7 +149,7 @@ func (sdk *SDK) Begin(start CandidateStart, value map[string]any) error {
 		return ErrIncompleteCapture
 	}
 	mode, modeOK := start.Deployment["processing_mode"].(string)
-	if !modeOK || mode != "managed" && mode != "private" {
+	if !modeOK || mode != "managed" && !(sdk.allowPrivate && mode == "private") {
 		return ErrIncompleteCapture
 	}
 	record, err := eventRecord("begin", 0, value)
@@ -150,16 +162,16 @@ func (sdk *SDK) Begin(start CandidateStart, value map[string]any) error {
 	if _, exists := sdk.operations[start.OperationID]; exists {
 		return ErrDuplicateOperation
 	}
-	if len(sdk.operations) >= MaxActiveOperations || sdk.globalBytes+sdk.sink.QueuedBytes()+size > MaxGlobalBytes {
-		return ErrCaptureLimit
+	if err := processResources.reserveOperation(start.OperationID, size); err != nil {
+		return err
 	}
 	deployment, err := cloneMap(start.Deployment)
 	if err != nil {
+		processResources.releaseOperation(start.OperationID, size)
 		return ErrIncompleteCapture
 	}
 	start.Deployment = deployment
 	sdk.operations[start.OperationID] = &operation{bytes: size, records: []map[string]any{record}, start: start}
-	sdk.globalBytes += size
 	return nil
 }
 
@@ -238,11 +250,16 @@ func (sdk *SDK) Fail(operationID string, value map[string]any) error {
 		increment(&sdk.recall.CandidateIncomplete)
 		return err
 	}
-	admitted, err := sdk.admitFailure(candidate, value)
+	admission, err := processResources.admitFailure(candidate, value)
 	if err != nil {
 		return err
 	}
-	if !admitted {
+	if admission == "suppressed-exact" {
+		increment(&sdk.recall.SuppressedExactStorm)
+		return nil
+	}
+	if admission == "suppressed-high-cardinality" {
+		increment(&sdk.recall.SuppressedHighCardinalityStorm)
 		return nil
 	}
 	encoded, err := CanonicalBytes(candidate)
@@ -262,16 +279,16 @@ func (sdk *SDK) Fail(operationID string, value map[string]any) error {
 	return nil
 }
 
-func (sdk *SDK) admitFailure(candidate, value map[string]any) (bool, error) {
+func (resources *sdkProcessResources) admitFailure(candidate, value map[string]any) (string, error) {
 	identity, identityOK := value["identity"].(map[string]any)
 	failure, failureOK := value["failure"].(map[string]any)
 	deployment, deploymentOK := candidate["deployment"].(map[string]any)
 	if !identityOK || !failureOK || !deploymentOK {
-		return false, ErrIncompleteCapture
+		return "", ErrIncompleteCapture
 	}
 	subject, subjectOK := deployment["subject"].(map[string]any)
 	if !subjectOK {
-		return false, ErrIncompleteCapture
+		return "", ErrIncompleteCapture
 	}
 	stable := map[string]any{
 		"failure_identity_digest": failure["identity"],
@@ -285,52 +302,129 @@ func (sdk *SDK) admitFailure(candidate, value map[string]any) (bool, error) {
 	for _, part := range stable {
 		value, ok := part.(string)
 		if !ok || value == "" {
-			return false, ErrIncompleteCapture
+			return "", ErrIncompleteCapture
 		}
 	}
 	encoded, err := CanonicalBytes(stable)
 	if err != nil {
-		return false, ErrIncompleteCapture
+		return "", ErrIncompleteCapture
 	}
 	key := fmt.Sprintf("%x", sha256.Sum256(encoded))
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
 	now := time.Now()
-	elapsed := max(0, now.Sub(sdk.stormLastRefill).Seconds())
-	sdk.stormTokens = min(4, sdk.stormTokens+elapsed*2)
-	sdk.stormLastRefill = now
-	for known, entry := range sdk.stormAdmitted {
+	elapsed := max(0, now.Sub(resources.stormLastRefill).Seconds())
+	resources.stormTokens = min(4, resources.stormTokens+elapsed*2)
+	resources.stormLastRefill = now
+	for known, entry := range resources.stormAdmitted {
 		if now.Sub(entry.admitted) >= time.Minute {
-			delete(sdk.stormAdmitted, known)
+			delete(resources.stormAdmitted, known)
 		}
 	}
-	if entry, exists := sdk.stormAdmitted[key]; exists {
+	if entry, exists := resources.stormAdmitted[key]; exists {
 		entry.observed = now
 		if entry.suppressed < ^uint64(0) {
 			entry.suppressed++
 		}
-		sdk.stormAdmitted[key] = entry
-		increment(&sdk.recall.SuppressedExactStorm)
-		return false, nil
+		resources.stormAdmitted[key] = entry
+		return "suppressed-exact", nil
 	}
-	if sdk.stormTokens < 1 {
-		if sdk.stormRejected < ^uint64(0) {
-			sdk.stormRejected++
+	if resources.stormTokens < 1 {
+		if resources.stormRejected < ^uint64(0) {
+			resources.stormRejected++
 		}
-		increment(&sdk.recall.SuppressedHighCardinalityStorm)
-		return false, nil
+		return "suppressed-high-cardinality", nil
 	}
-	if len(sdk.stormAdmitted) >= MaxFailureStormIdentities {
+	if len(resources.stormAdmitted) >= MaxFailureStormIdentities {
 		oldestKey := ""
 		var oldest time.Time
-		for known, entry := range sdk.stormAdmitted {
+		for known, entry := range resources.stormAdmitted {
 			if oldestKey == "" || entry.observed.Before(oldest) || entry.observed.Equal(oldest) && known < oldestKey {
 				oldestKey, oldest = known, entry.observed
 			}
 		}
-		delete(sdk.stormAdmitted, oldestKey)
+		delete(resources.stormAdmitted, oldestKey)
 	}
-	sdk.stormTokens--
-	sdk.stormAdmitted[key] = stormEntry{admitted: now, observed: now}
-	return true, nil
+	resources.stormTokens--
+	resources.stormAdmitted[key] = stormEntry{admitted: now, observed: now}
+	return "admitted", nil
+}
+
+func (resources *sdkProcessResources) reserveOperation(operationID string, size int) error {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	if resources.activeOperations[operationID] {
+		return ErrDuplicateOperation
+	}
+	if len(resources.activeOperations) >= MaxActiveOperations ||
+		resources.activeBytes+resources.queuedBytes+size > MaxGlobalBytes {
+		return ErrCaptureLimit
+	}
+	resources.activeOperations[operationID] = true
+	resources.activeBytes += size
+	return nil
+}
+
+func (resources *sdkProcessResources) growOperation(operationID string, size int) bool {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	if !resources.activeOperations[operationID] ||
+		resources.activeBytes+resources.queuedBytes+size > MaxGlobalBytes {
+		return false
+	}
+	resources.activeBytes += size
+	return true
+}
+
+func (resources *sdkProcessResources) releaseOperation(operationID string, size int) {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	if !resources.activeOperations[operationID] {
+		return
+	}
+	delete(resources.activeOperations, operationID)
+	resources.activeBytes = max(0, resources.activeBytes-size)
+}
+
+func (resources *sdkProcessResources) reserveCandidate(size int) bool {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	if resources.queuedCandidates >= MaxQueuedCandidates ||
+		resources.activeBytes+resources.queuedBytes+size > MaxGlobalBytes {
+		return false
+	}
+	resources.queuedCandidates++
+	resources.queuedBytes += size
+	return true
+}
+
+func (resources *sdkProcessResources) releaseCandidate(size int) {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	resources.queuedCandidates = max(0, resources.queuedCandidates-1)
+	resources.queuedBytes = max(0, resources.queuedBytes-size)
+}
+
+func (resources *sdkProcessResources) queuedByteCount() int {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	return resources.queuedBytes
+}
+
+func (resources *sdkProcessResources) reserveLogical(size int64) bool {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	if size < 0 || resources.logicalBytes > maxProcessLogicalBytes-size {
+		return false
+	}
+	resources.logicalBytes += size
+	return true
+}
+
+func (resources *sdkProcessResources) releaseLogical(size int64) {
+	resources.mu.Lock()
+	defer resources.mu.Unlock()
+	resources.logicalBytes = max(0, resources.logicalBytes-size)
 }
 
 func (counters *RecallCounters) merge(other RecallCounters) {
@@ -373,21 +467,20 @@ func (sdk *SDK) append(operationID, kind string, value map[string]any) error {
 		return err
 	}
 	size := recordSize(record)
-	if !withinOperation(active, size) || sdk.globalBytes+sdk.sink.QueuedBytes()+size > MaxGlobalBytes {
+	if !withinOperation(active, size) || !processResources.growOperation(operationID, size) {
 		sdk.delete(operationID)
 		increment(&sdk.recall.CandidateIncomplete)
 		return ErrCaptureLimit
 	}
 	active.records = append(active.records, record)
 	active.bytes += size
-	sdk.globalBytes += size
 	return nil
 }
 
 func (sdk *SDK) delete(operationID string) {
 	if active := sdk.operations[operationID]; active != nil {
 		delete(sdk.operations, operationID)
-		sdk.globalBytes = max(0, sdk.globalBytes-active.bytes)
+		processResources.releaseOperation(operationID, active.bytes)
 	}
 }
 
@@ -712,231 +805,4 @@ func encodeCanonical(output *bytes.Buffer, value any) error {
 		return fmt.Errorf("The protocol value has unsupported type %T.", value)
 	}
 	return nil
-}
-
-type queuedCandidate struct {
-	bytes     []byte
-	captureID string
-	enqueued  time.Time
-}
-
-type runtimeSink struct {
-	authorization func() string
-	candidatePath string
-	contentType   string
-	dial          func(time.Duration) (net.Conn, error)
-	host          string
-	mu            sync.Mutex
-	queue         chan queuedCandidate
-	queuedBytes   int
-	queuedCount   int
-}
-
-type unixRuntimeSink struct{ *runtimeSink }
-
-type tlsRuntimeSink struct{ *runtimeSink }
-
-func (sink *runtimeSink) AllowsProcessingMode(mode string) bool { return mode == "private" }
-
-func newunixRuntimeSink(socketPath string, authorization func() string) (*unixRuntimeSink, error) {
-	if !strings.HasPrefix(socketPath, "/") || authorization == nil {
-		return nil, errors.New("The Runtime socket path must be absolute.")
-	}
-	sink := &runtimeSink{
-		authorization: authorization,
-		candidatePath: "/v1/candidates/{capture_id}",
-		contentType:   "application/reproit-candidate+json",
-		dial: func(timeout time.Duration) (net.Conn, error) {
-			return net.DialTimeout("unix", socketPath, timeout)
-		},
-		host:  "reproit-runtime",
-		queue: make(chan queuedCandidate, MaxQueuedCandidates),
-	}
-	go sink.worker()
-	return &unixRuntimeSink{runtimeSink: sink}, nil
-}
-
-func newtlsRuntimeSink(
-	address string,
-	serverName string,
-	caCertificatePath string,
-	authorization func() string,
-) (*tlsRuntimeSink, error) {
-	if address == "" || len(address) > 512 || serverName == "" || len(serverName) > 253 {
-		return nil, errors.New("The shared Runtime TLS endpoint is invalid.")
-	}
-	if authorization == nil {
-		return nil, errors.New("The shared Runtime authorization source is invalid.")
-	}
-	metadata, err := os.Lstat(caCertificatePath)
-	if err != nil || !metadata.Mode().IsRegular() || metadata.Mode()&os.ModeSymlink != 0 ||
-		metadata.Size() <= 0 || metadata.Size() > 1_048_576 {
-		return nil, errors.New("The shared Runtime CA certificate is invalid.")
-	}
-	certificate, err := os.ReadFile(caCertificatePath)
-	if err != nil || int64(len(certificate)) != metadata.Size() {
-		return nil, errors.New("The shared Runtime CA certificate is invalid.")
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(certificate) {
-		return nil, errors.New("The shared Runtime CA certificate is invalid.")
-	}
-	config := &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		MaxVersion: tls.VersionTLS13,
-		RootCAs:    roots,
-		ServerName: serverName,
-	}
-	sink := &runtimeSink{
-		authorization: authorization,
-		candidatePath: "/v1/candidates/{capture_id}",
-		contentType:   "application/reproit-candidate+json",
-		dial: func(timeout time.Duration) (net.Conn, error) {
-			connection, dialError := tls.DialWithDialer(
-				&net.Dialer{Timeout: timeout}, "tcp", address, config,
-			)
-			if dialError != nil {
-				return nil, dialError
-			}
-			if connection.ConnectionState().CipherSuite != tls.TLS_AES_256_GCM_SHA384 {
-				_ = connection.Close()
-				return nil, errUnexpectedTLSCipher
-			}
-			return connection, nil
-		},
-		host:  serverName,
-		queue: make(chan queuedCandidate, MaxQueuedCandidates),
-	}
-	go sink.worker()
-	return &tlsRuntimeSink{runtimeSink: sink}, nil
-}
-
-func (sink *runtimeSink) QueuedBytes() int {
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	return sink.queuedBytes
-}
-
-func (sink *runtimeSink) TrySend(captureID string, candidate []byte) bool {
-	if !validPrefixedUUIDv7(captureID, "cap_") {
-		return false
-	}
-	sink.mu.Lock()
-	if sink.queuedCount >= MaxQueuedCandidates || sink.queuedBytes+len(candidate) > MaxGlobalBytes {
-		sink.mu.Unlock()
-		return false
-	}
-	sink.queuedBytes += len(candidate)
-	sink.queuedCount++
-	sink.mu.Unlock()
-	queued := queuedCandidate{bytes: bytes.Clone(candidate), captureID: captureID, enqueued: time.Now()}
-	select {
-	case sink.queue <- queued:
-		return true
-	default:
-		sink.mu.Lock()
-		sink.queuedBytes -= len(candidate)
-		sink.queuedCount--
-		sink.mu.Unlock()
-		return false
-	}
-}
-
-func (sink *runtimeSink) worker() {
-	for candidate := range sink.queue {
-		sink.deliverCandidate(candidate)
-		sink.mu.Lock()
-		sink.queuedBytes -= len(candidate.bytes)
-		sink.queuedCount--
-		sink.mu.Unlock()
-	}
-}
-
-func (sink *runtimeSink) deliverCandidate(candidate queuedCandidate) {
-	for _, offset := range []time.Duration{0, 100 * time.Millisecond, 300 * time.Millisecond} {
-		time.Sleep(max(0, candidate.enqueued.Add(offset).Sub(time.Now())))
-		remaining := candidate.enqueued.Add(deliveryLifetime).Sub(time.Now())
-		if remaining <= 0 {
-			return
-		}
-		if sink.deliver(candidate, remaining) != "retry" {
-			return
-		}
-	}
-}
-
-func (sink *runtimeSink) deliver(candidate queuedCandidate, timeout time.Duration) string {
-	return sink.deliverBytes(candidate.captureID, candidate.bytes, timeout)
-}
-
-func (sink *runtimeSink) deliverBytes(captureID string, body []byte, timeout time.Duration) string {
-	authorization := sink.authorization()
-	if authorization == "" || len(authorization) > 4_096 || strings.ContainsAny(authorization, "\r\n") {
-		return "reject"
-	}
-	connection, err := sink.dial(timeout)
-	if err != nil {
-		var verification *tls.CertificateVerificationError
-		if errors.As(err, &verification) || errors.Is(err, errUnexpectedTLSCipher) {
-			return "reject"
-		}
-		return "retry"
-	}
-	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(timeout))
-	request := fmt.Sprintf(
-		"PUT %s HTTP/1.1\r\nHost: %s\r\nContent-Type: %s\r\nIdempotency-Key: %s\r\nReproit-Protocol: 1\r\nAuthorization: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-		strings.Replace(sink.candidatePath, "{capture_id}", captureID, 1), sink.host,
-		sink.contentType, captureID, authorization, len(body),
-	)
-	if _, err = io.WriteString(connection, request); err != nil {
-		return "retry"
-	}
-	if _, err = connection.Write(body); err != nil {
-		return "retry"
-	}
-	reader := bufio.NewReaderSize(
-		io.LimitReader(connection, maxResponseHeaderBytes+1_024),
-		maxResponseHeaderBytes,
-	)
-	response, err := http.ReadResponse(reader, nil)
-	if err != nil {
-		return "retry"
-	}
-	defer response.Body.Close()
-	switch response.StatusCode {
-	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
-		return "retry"
-	case http.StatusOK, http.StatusAccepted:
-	default:
-		return "reject"
-	}
-	if sink.candidatePath == "/v1/candidates/{capture_id}" {
-		return "accept"
-	}
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1_025))
-	if err != nil || len(responseBody) == 0 || len(responseBody) > 1_024 {
-		return "reject"
-	}
-	var envelope struct {
-		Identity struct {
-			RequestDigest string `json:"request_digest"`
-		} `json:"identity"`
-	}
-	var receipt struct {
-		CaptureID     string `json:"capture_id"`
-		RequestDigest string `json:"request_digest"`
-		State         string `json:"state"`
-	}
-	if json.Unmarshal(body, &envelope) != nil || json.Unmarshal(responseBody, &receipt) != nil ||
-		receipt.CaptureID != captureID || receipt.RequestDigest != envelope.Identity.RequestDigest {
-		return "reject"
-	}
-	if receipt.State == "CLOUD_PROTECTED" {
-		return "cloud_protected"
-	}
-	if sink.candidatePath == "/v1/staged-candidates/{capture_id}" && receipt.State == "LOCAL_ONLY" {
-		return "local_only"
-	}
-	return "reject"
 }

@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	managedMaxCaptureArtifactBytes = 274_878_824_448
+	managedMaxCaptureArtifactBytes = int64(1024 * 1024 * 1024)
+	managedMaxWorldArtifactBytes   = int64(2 * 1024 * 1024 * 1024)
 	managedMaxWorldManifestBytes   = 262_144
 	managedCopyBufferBytes         = 64 * 1024
 )
@@ -46,8 +47,9 @@ type ManagedCaptureClosure struct {
 // FrozenManagedCaptureClosure is a capture closure whose artifact bytes are
 // frozen in a private spool.
 type FrozenManagedCaptureClosure struct {
-	closure ManagedCaptureClosure
-	spool   string
+	closure       ManagedCaptureClosure
+	reservedBytes int64
+	spool         string
 }
 
 func FreezeManagedCaptureClosure(
@@ -61,6 +63,16 @@ func FreezeManagedCaptureClosure(
 	}
 	spool := ""
 	artifacts := closure.Artifacts
+	reservedBytes, err := captureArtifactBytes(artifacts)
+	if err != nil || !processResources.reserveLogical(reservedBytes) {
+		return nil, errIncompleteCandidate()
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			processResources.releaseLogical(reservedBytes)
+		}
+	}()
 	if len(artifacts) > 0 {
 		created, err := os.MkdirTemp("", "reproit-managed-world-")
 		if err != nil {
@@ -81,12 +93,14 @@ func FreezeManagedCaptureClosure(
 			return nil, err
 		}
 	}
-	return &FrozenManagedCaptureClosure{
+	result := &FrozenManagedCaptureClosure{
 		closure: ManagedCaptureClosure{
 			Artifacts: artifacts, Completion: closure.Completion, World: closure.World,
 		},
-		spool: spool,
-	}, nil
+		reservedBytes: reservedBytes, spool: spool,
+	}
+	reserved = false
+	return result, nil
 }
 
 func (frozen *FrozenManagedCaptureClosure) worldID() (string, error) {
@@ -101,6 +115,24 @@ func (frozen *FrozenManagedCaptureClosure) Close() {
 	if frozen.spool != "" {
 		_ = os.RemoveAll(frozen.spool)
 	}
+	if frozen.reservedBytes > 0 {
+		processResources.releaseLogical(frozen.reservedBytes)
+		frozen.reservedBytes = 0
+	}
+}
+
+func captureArtifactBytes(artifacts []ManagedCandidateArtifact) (int64, error) {
+	total := int64(0)
+	for _, artifact := range artifacts {
+		metadata, err := os.Lstat(artifact.Path)
+		if err != nil || !metadata.Mode().IsRegular() || metadata.Size() <= 0 ||
+			metadata.Size() > managedMaxCaptureArtifactBytes ||
+			total > managedMaxWorldArtifactBytes-metadata.Size() {
+			return 0, errIncompleteCandidate()
+		}
+		total += metadata.Size()
+	}
+	return total, nil
 }
 
 // validateWorldCheckpoint validates the bounded world checkpoint shape the

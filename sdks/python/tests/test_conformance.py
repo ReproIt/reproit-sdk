@@ -20,9 +20,7 @@ from reproit_sdk import (
     canonical_bytes,
     run_operation,
 )
-from reproit_sdk import _StagedCandidateSink as StagedCandidateSink
-from reproit_sdk import _UnixRuntimeSink as UnixRuntimeSink
-from reproit_sdk.asgi import AsgiMiddleware
+from asgi_support import AsgiMiddleware
 
 from memory_sink import MemorySink
 
@@ -46,77 +44,6 @@ class Conformance(unittest.TestCase):
 
     def test_production_package_excludes_memory_sink(self):
         self.assertFalse(hasattr(reproit_sdk, "MemorySink"))
-
-    def test_staged_delivery_encrypts_once_and_rejects_incomplete_capture(self):
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-        class RecordingTransport:
-            def __init__(self):
-                self.received = []
-
-            def _deliver(self, capture_id, candidate, timeout):
-                del capture_id, timeout
-                self.received.append(candidate)
-                return "cloud_protected"
-
-        runtime = RecordingTransport()
-        deferred = RecordingTransport()
-        key = bytes([0x63]) * 32
-        sink = StagedCandidateSink(runtime, deferred, key)
-        candidate = canonical_bytes(self.expected)
-        self.assertTrue(sink.try_send(self.expected["capture_id"], candidate))
-        deadline = time.monotonic() + 2.0
-        while (
-            not runtime.received
-            or not deferred.received
-            or sink.recall_counters["candidate_durably_accepted"] == 0
-        ) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        self.assertEqual(runtime.received, deferred.received)
-        envelope = json.loads(runtime.received[0])
-        stored = base64.urlsafe_b64decode(
-            envelope["ciphertext"] + "=" * ((4 - len(envelope["ciphertext"]) % 4) % 4)
-        )
-        opened = AESGCM(key).decrypt(
-            stored[:12],
-            stored[12:],
-            canonical_bytes(envelope["identity"]),
-        )
-        self.assertEqual(opened, candidate)
-
-        incomplete = copy.deepcopy(self.expected)
-        incomplete["records"].pop()
-        self.assertFalse(
-            sink.try_send(incomplete["capture_id"], canonical_bytes(incomplete))
-        )
-        self.assertEqual(len(runtime.received), 1)
-        self.assertEqual(len(deferred.received), 1)
-        self.assertEqual(sink.recall_counters["candidate_incomplete"], 1)
-        self.assertEqual(sink.recall_counters["candidate_durably_accepted"], 1)
-        self.assertEqual(sink.queued_bytes, 0)
-
-    def test_incomplete_candidate_makes_no_staged_request(self):
-        class RecordingTransport:
-            def __init__(self):
-                self.received = []
-
-            def _deliver(self, capture_id, candidate, timeout):
-                del capture_id, candidate, timeout
-                self.received.append(True)
-                return "cloud_protected"
-
-        runtime = RecordingTransport()
-        deferred = RecordingTransport()
-        sink = StagedCandidateSink(runtime, deferred, bytes([0x63]) * 32)
-        incomplete = copy.deepcopy(self.expected)
-        incomplete["records"].pop()
-        self.assertFalse(
-            sink.try_send(incomplete["capture_id"], canonical_bytes(incomplete))
-        )
-        self.assertEqual(runtime.received, [])
-        self.assertEqual(deferred.received, [])
-        self.assertEqual(sink.recall_counters["candidate_incomplete"], 1)
-        self.assertEqual(sink.queued_bytes, 0)
 
     def test_failure_matches_canonical_candidate(self):
         self.sdk.begin(self.start, self.positive["operation_begin_payload"]["value"])
@@ -206,80 +133,6 @@ class Conformance(unittest.TestCase):
         self.assertIs(raised.exception, original)
         self.assertEqual(self.sink.candidates, [canonical_bytes(self.expected)])
 
-    def test_authenticated_unix_delivery_uses_exact_protocol(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "runtime.sock")
-            received = []
-            complete = threading.Event()
-
-            def serve():
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-                    listener.bind(path)
-                    listener.listen(1)
-                    complete.set()
-                    connection, _ = listener.accept()
-                    with connection:
-                        request = b""
-                        while b"\r\n\r\n" not in request:
-                            request += connection.recv(4_096)
-                        header, body = request.split(b"\r\n\r\n", 1)
-                        length = next(
-                            int(line.split(b":", 1)[1])
-                            for line in header.split(b"\r\n")
-                            if line.lower().startswith(b"content-length:")
-                        )
-                        while len(body) < length:
-                            body += connection.recv(4_096)
-                        received.append((header, body))
-                        connection.sendall(
-                            b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"
-                        )
-
-            server = threading.Thread(target=serve)
-            server.start()
-            self.assertTrue(complete.wait(1.0))
-            sink = UnixRuntimeSink(path, lambda: "ReproIt workload-token")
-            sdk = Sdk(sink)
-            sdk.begin(self.start, self.positive["operation_begin_payload"]["value"])
-            sdk.record_input(
-                self.start.operation_id,
-                self.positive["operation_input_payload"]["value"],
-            )
-            sdk.fail(self.start.operation_id, self.positive["failure_payload"]["value"])
-            server.join(1.0)
-            self.assertFalse(server.is_alive())
-            deadline = time.monotonic() + 1.0
-            while sink.queued_bytes and time.monotonic() < deadline:
-                time.sleep(0.001)
-            header, body = received[0]
-            self.assertIn(b"Reproit-Protocol: 1", header)
-            self.assertIn(b"Authorization: ReproIt workload-token", header)
-            self.assertIn(self.expected["capture_id"].encode(), header)
-            self.assertEqual(body, canonical_bytes(self.expected))
-            self.assertEqual(sink.queued_bytes, 0)
-
-    def test_unix_delivery_bounds_active_and_waiting_candidates(self):
-        started = threading.Event()
-        release = threading.Event()
-
-        def authorization():
-            started.set()
-            release.wait(1.0)
-            return None
-
-        sink = UnixRuntimeSink("/tmp/reproit-missing-runtime.sock", authorization)
-        candidate = canonical_bytes(self.expected)
-        self.assertTrue(sink.try_send("capture-0", candidate))
-        self.assertTrue(started.wait(1.0))
-        for index in range(1, 16):
-            self.assertTrue(sink.try_send(f"capture-{index}", candidate))
-        self.assertFalse(sink.try_send("capture-16", candidate))
-        release.set()
-        deadline = time.monotonic() + 1.0
-        while sink.queued_bytes and time.monotonic() < deadline:
-            time.sleep(0.001)
-        self.assertEqual(sink.queued_bytes, 0)
-
     def test_asgi_boundary_preserves_exception(self):
         original = RuntimeError("customer failure")
 
@@ -301,6 +154,50 @@ class Conformance(unittest.TestCase):
             asyncio.run(middleware({"type": "http"}, None, None))
         self.assertIs(raised.exception, original)
         self.assertEqual(self.sink.candidates, [canonical_bytes(self.expected)])
+
+    def test_asgi_streams_request_body_as_ordered_input_chunks(self):
+        original = RuntimeError("customer failure")
+        messages = [
+            {"type": "http.request", "body": b"a" * (32 * 1024), "more_body": True},
+            {"type": "http.request", "body": b"tail", "more_body": False},
+        ]
+
+        async def receive():
+            return messages.pop(0)
+
+        async def application(scope, receive_body, send):
+            del scope, send
+            await receive_body()
+            await receive_body()
+            raise original
+
+        middleware = AsgiMiddleware(
+            application,
+            self.sdk,
+            lambda scope: (
+                self.start,
+                self.positive["operation_begin_payload"]["value"],
+                [],
+            ),
+            lambda error: self.positive["failure_payload"]["value"],
+        )
+        scope = {
+            "type": "http",
+            "headers": [(b"content-type", b"application/octet-stream")],
+        }
+        with self.assertRaises(RuntimeError):
+            asyncio.run(middleware(scope, receive, None))
+        records = json.loads(self.sink.candidates[0])["records"]
+        inputs = [
+            json.loads(base64.urlsafe_b64decode(record["payload"] + "=="))
+            for record in records
+            if record["kind"] == "input"
+        ]
+        self.assertEqual([value["input_index"] for value in inputs], [0, 1])
+        captured = b"".join(
+            base64.urlsafe_b64decode(value["value"] + "==") for value in inputs
+        )
+        self.assertEqual(captured, b"a" * (32 * 1024) + b"tail")
 
     def test_asgi_prepare_failure_does_not_change_application(self):
         calls = []
@@ -412,16 +309,6 @@ class Conformance(unittest.TestCase):
         self.assertEqual(sink.calls, 0)
         self.assertEqual(sdk.active_operations, 0)
         self.assertEqual(sdk.recall_counters["candidate_incomplete"], 1)
-
-    def test_private_transport_rejects_direct_managed_candidate(self):
-        sink = UnixRuntimeSink(
-            "/tmp/reproit-missing-runtime.sock", lambda: "Bearer service-one"
-        )
-        managed = copy.deepcopy(self.expected)
-        managed["processing_mode"] = "managed"
-        managed["deployment"]["processing_mode"] = "managed"
-        self.assertFalse(sink.try_send(managed["capture_id"], canonical_bytes(managed)))
-        self.assertEqual(sink.queued_bytes, 0)
 
     def test_oversized_failure_deletes_operation(self):
         self.sdk.begin(self.start, self.positive["operation_begin_payload"]["value"])

@@ -30,7 +30,8 @@ const (
 	maxSubjectArguments      = 128
 	maxSubjectDependencies   = 4_096
 	maxSubjectEnvironment    = 256
-	maxSubjectObjectBytes    = 274_878_824_448
+	maxSubjectObjectBytes    = int64(512 * 1024 * 1024)
+	maxSubjectTotalBytes     = int64(2 * 1024 * 1024 * 1024)
 	subjectWorkingDirectory  = "/reproit/subject/work"
 	subjectLaunchPath        = "/reproit/subject/launch.json"
 	subjectBuildIdentityPath = "/reproit/subject/go/build-info.json"
@@ -71,15 +72,20 @@ type PackagedSubjectObject struct {
 // GoSubjectPackage is the frozen manifest plus content-addressed object
 // files in a spool.
 type GoSubjectPackage struct {
-	Manifest map[string]any
-	Objects  []PackagedSubjectObject
-	spool    string
+	Manifest      map[string]any
+	Objects       []PackagedSubjectObject
+	reservedBytes int64
+	spool         string
 }
 
 // Close removes the private subject spool.
 func (subject *GoSubjectPackage) Close() {
 	if subject.spool != "" {
 		_ = os.RemoveAll(subject.spool)
+	}
+	if subject.reservedBytes > 0 {
+		processResources.releaseLogical(subject.reservedBytes)
+		subject.reservedBytes = 0
 	}
 }
 
@@ -88,6 +94,13 @@ func (subject *GoSubjectPackage) Close() {
 // path supports the one-explicit-subject-root case the plan allows for
 // adapters that cannot prove the default root.
 func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
+	reservedBytes := int64(0)
+	complete := false
+	defer func() {
+		if !complete && reservedBytes > 0 {
+			processResources.releaseLogical(reservedBytes)
+		}
+	}()
 	if executablePath == "" {
 		running, err := os.Executable()
 		if err != nil {
@@ -99,6 +112,15 @@ func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
 	if err != nil {
 		return nil, errSubjectUnreadable()
 	}
+	metadata, err := os.Lstat(resolved)
+	if err != nil || !metadata.Mode().IsRegular() || metadata.Size() <= 0 ||
+		metadata.Size() > maxSubjectObjectBytes {
+		return nil, errSubjectUnbounded()
+	}
+	if !processResources.reserveLogical(metadata.Size()) {
+		return nil, errSubjectUnbounded()
+	}
+	reservedBytes = metadata.Size()
 	executableBytes, err := readStableSubjectFile(resolved)
 	if err != nil {
 		return nil, err
@@ -199,6 +221,14 @@ func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
 		size, _ := integerValue(object["size"])
 		totalBytes += size
 	}
+	if totalBytes > maxSubjectTotalBytes {
+		return nil, errSubjectUnbounded()
+	}
+	additionalBytes := totalBytes - reservedBytes
+	if additionalBytes > 0 && !processResources.reserveLogical(additionalBytes) {
+		return nil, errSubjectUnbounded()
+	}
+	reservedBytes = totalBytes
 	manifest := map[string]any{
 		"architecture":     architecture,
 		"debug_artifacts":  debugArtifacts,
@@ -227,7 +257,10 @@ func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
 		_ = os.RemoveAll(spool)
 		return nil, err
 	}
-	return &GoSubjectPackage{Manifest: manifest, Objects: packaged, spool: spool}, nil
+	complete = true
+	return &GoSubjectPackage{
+		Manifest: manifest, Objects: packaged, reservedBytes: reservedBytes, spool: spool,
+	}, nil
 }
 
 func containsDwarfMarker(value []byte) bool {
@@ -565,7 +598,7 @@ func validateSubjectObjects(
 		kinds[digest] = kind
 	}
 	declaredTotal, declaredTotalOK := integerValue(totalBytes)
-	if !declaredTotalOK || total != declaredTotal {
+	if !declaredTotalOK || total != declaredTotal || total > maxSubjectTotalBytes {
 		return nil, errSchemaInvalid()
 	}
 	return kinds, nil

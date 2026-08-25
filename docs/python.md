@@ -1,6 +1,6 @@
 # Python SDK
 
-Add Repro It to a Python application.
+Use the Python SDK at one supported Backend operation boundary.
 
 ## Install
 
@@ -8,18 +8,11 @@ Add Repro It to a Python application.
 python -m pip install reproit-sdk==1.0.0
 ```
 
-```python
-from reproit_sdk import ReproIt
+Use `run_operation` with the framework-neutral SDK core. Backend v1.0 does not publish a Python
+framework adapter.
 
-reproit = ReproIt.init()
-todo = await reproit.operation_async(
-    "todos.create", input_bytes, lambda: create_todo(input)
-)
-```
-
-Run `reproit init` before you deploy. Initialize the SDK once. Call `operation` or
-`operation_async` at a top-level application boundary. The SDK records an exception as the Failure.
-It preserves the exact result. It does not import a web framework.
+The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
+incomplete, unsupported, and resource-limited operations local.
 
 ## Verify SDK source
 

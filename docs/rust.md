@@ -1,6 +1,6 @@
 # Rust SDK
 
-Add Repro It to a Rust application.
+Use the Rust SDK at one supported Backend operation boundary.
 
 ## Install
 
@@ -8,24 +8,20 @@ Add Repro It to a Rust application.
 cargo add reproit-sdk-rust@1.0.0
 ```
 
-Run `reproit init` in the application repository. Initialize the SDK once:
+The SDK core exposes `RustOperationFactory` for framework-neutral operation capture. It supports
+request-response, ordered-stream, and delivered-work operations.
 
-```rust
-use reproit_sdk_rust::ReproIt;
+For Axum, add the optional adapter:
 
-let reproit = ReproIt::init();
+```sh
+cargo add reproit-sdk-rust-axum@1.0.0
 ```
 
-Wrap one top-level application operation:
+The Axum adapter streams bounded request inputs and response observations through the same Rust
+operation API. It does not buffer a complete request or response body.
 
-```rust
-let todo = reproit
-    .operation("todos.create", &input_bytes, || async { create_todo(input).await })
-    .await?;
-```
-
-The SDK records a returned error as the Failure. It preserves the exact result. It does not import
-a web framework.
+The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
+incomplete, unsupported, and resource-limited operations local.
 
 ## Verify SDK source
 

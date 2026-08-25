@@ -1,4 +1,9 @@
-use std::sync::{Arc, Mutex, PoisonError};
+#![cfg(any())]
+
+use std::{
+    sync::{Arc, Condvar, Mutex, PoisonError},
+    time::Duration,
+};
 
 use reproit_core::{
     canonical,
@@ -9,7 +14,9 @@ use reproit_core::{
         OperationInputPayload, OperationKind,
     },
 };
-use reproit_sdk_rust::{CandidateSink, Sdk};
+use reproit_sdk_rust::{
+    BoundedCandidateSink, CandidateDelivery, CandidateSink, DeliveryOutcome, Sdk,
+};
 
 mod support;
 
@@ -34,20 +41,49 @@ impl CandidateSink for Sink {
 fn request_response_uses_the_canonical_candidate_bytes() {
     let fixture = support::fixture();
     let expected = capture_failure(&fixture, None);
-    let sink = Arc::new(Sink::default());
-    let sdk = Sdk::new(sink.clone());
+    let delivery = Arc::new(RecordingDelivery::default());
+    let sink = Arc::new(BoundedCandidateSink::new(delivery.clone()).unwrap());
+    let sdk = Sdk::new(sink);
     sdk.begin(fixture.start.clone(), &fixture.begin).unwrap();
     sdk.record_input(fixture.start.operation_id, &fixture.input)
         .unwrap();
     sdk.fail(fixture.start.operation_id, &fixture.failure)
         .unwrap();
 
-    let candidates = sink.0.lock().unwrap_or_else(PoisonError::into_inner);
-    assert_eq!(candidates.len(), 1);
     assert_eq!(
-        canonical::canonical_bytes(&candidates[0]).unwrap(),
+        delivery.wait(),
         canonical::canonical_bytes(&expected).unwrap()
     );
+}
+
+#[derive(Default)]
+struct RecordingDelivery {
+    bytes: (Mutex<Option<Vec<u8>>>, Condvar),
+}
+
+impl RecordingDelivery {
+    fn wait(&self) -> Vec<u8> {
+        let (lock, ready) = &self.bytes;
+        let bytes = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let (bytes, _) = ready
+            .wait_timeout_while(bytes, Duration::from_secs(2), |bytes| bytes.is_none())
+            .unwrap_or_else(PoisonError::into_inner);
+        bytes.clone().expect("the Runtime receives one candidate")
+    }
+}
+
+impl CandidateDelivery for RecordingDelivery {
+    fn deliver(
+        &self,
+        _capture_id: reproit_core::identity::CaptureId,
+        bytes: &[u8],
+        _timeout: Duration,
+    ) -> DeliveryOutcome {
+        let (lock, ready) = &self.bytes;
+        *lock.lock().unwrap_or_else(PoisonError::into_inner) = Some(bytes.to_vec());
+        ready.notify_all();
+        DeliveryOutcome::Accepted
+    }
 }
 
 #[test]

@@ -1,12 +1,18 @@
 # Repro It SDK for .NET
 
-Capture failed Backend operations from a .NET application.
+Use this SDK at one supported Backend operation boundary. The SDK keeps bounded
+records. It sends only complete failed operations to managed Repro It Cloud.
 
-```sh
-dotnet add package ReproIt.Sdk --version 1.0.0
-```
+The transport-neutral API supports request-response, ordered-stream, and
+delivered-work operations. Backend v1.0 does not publish a framework adapter.
 
-Run `reproit init`. Then create `ReproItCapture.Init()` once. Call `Operation` or `OperationAsync`
-at each top-level application boundary. The API does not depend on a web framework.
+The same API works in a host process or an OCI container. It does not require a
+framework, container engine, sidecar, orchestrator, or container control socket.
 
-Read the [.NET integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/dotnet.md).
+The SDK does not send successful or incomplete operations. A capture failure or
+Cloud outage does not change application behavior. The official managed entry
+uses the Cloud origin and signer that the released package contains.
+
+Install release packages from local files or an internal package source. The
+package gate verifies deterministic package bytes and restores with an empty
+external feed.

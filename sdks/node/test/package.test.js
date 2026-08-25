@@ -11,8 +11,9 @@ import test from "node:test";
 import { MemorySink } from "./memory-sink.js";
 
 const packageRoot = path.resolve(import.meta.dirname, "..");
-// The harness supplies vectors from the Core revision in core-pin.json. The
-// relative path serves direct runs after tools/with-core.sh prepares .core.
+// The portability harness copies the package outside the repository tree and
+// supplies the canonical vectors through the environment. The relative path
+// serves direct in-repository runs.
 const protocolVectors = JSON.parse(
   fs.readFileSync(
     process.env.REPROIT_PROTOCOL_VECTORS ??
@@ -40,7 +41,7 @@ test("package is deterministic, bounded, and installable from a local file", asy
       .split("\n");
     assert.ok(entries.includes("package/src/index.js"));
     assert.ok(entries.includes("package/src/candidate-validation.js"));
-    assert.ok(entries.includes("package/src/managed-transport.js"));
+    assert.ok(entries.includes("package/src/process-resources.js"));
     assert.ok(entries.every((entry) => !entry.includes("/test/")));
 
     const fixtureRoot = path.join(temporaryRoot, "fixture");
@@ -67,9 +68,9 @@ test("package is deterministic, bounded, and installable from a local file", asy
     const entry = requireFromFixture.resolve("@reproit/sdk");
     const installed = await import(pathToFileURL(entry).href);
     assert.equal(typeof installed.Sdk, "function");
-    assert.equal(typeof installed.ReproIt, "function");
     assert.equal("MemorySink" in installed, false);
     assert.equal("TlsCloudStagingSink" in installed, false);
+    assert.throws(() => requireFromFixture.resolve("@reproit/sdk/http"));
     exerciseInstalledArtifact(installed);
   } finally {
     fs.rmSync(temporaryRoot, { force: true, recursive: true });
@@ -78,6 +79,8 @@ test("package is deterministic, bounded, and installable from a local file", asy
 
 function exerciseInstalledArtifact(installed) {
   const candidate = vector("candidate");
+  candidate.processing_mode = "managed";
+  candidate.deployment.processing_mode = "managed";
   const start = {
     captureId: candidate.capture_id,
     deployment: candidate.deployment,

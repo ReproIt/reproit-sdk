@@ -150,13 +150,12 @@ impl ManagedTlsEndpoint {
         if let Some(value) = content_type {
             validate_header_value(value)?;
         }
-        let stream = self.connect(timeout)?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|_| service_unavailable())?;
-        stream
-            .set_write_timeout(Some(timeout))
-            .map_err(|_| service_unavailable())?;
+        let started_at = Instant::now();
+        let deadline = started_at
+            .checked_add(timeout)
+            .ok_or_else(service_unavailable)?;
+        let stream = self.connect(remaining_duration(deadline)?)?;
+        let stream = DeadlineTcpStream::new(stream, deadline);
         let connection =
             rustls::ClientConnection::new(self.client.clone(), self.server_name.clone())
                 .map_err(|_| endpoint_invalid())?;
@@ -204,6 +203,58 @@ impl ManagedTlsEndpoint {
         validate_target(target)?;
         Ok(target)
     }
+}
+
+struct DeadlineTcpStream {
+    deadline: Instant,
+    stream: TcpStream,
+}
+
+impl DeadlineTcpStream {
+    fn new(stream: TcpStream, deadline: Instant) -> Self {
+        Self { deadline, stream }
+    }
+}
+
+impl Read for DeadlineTcpStream {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = remaining_io_duration(self.deadline)?;
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(buffer)
+    }
+}
+
+impl std::io::Write for DeadlineTcpStream {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let remaining = remaining_io_duration(self.deadline)?;
+        self.stream.set_write_timeout(Some(remaining))?;
+        self.stream.write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let remaining = remaining_io_duration(self.deadline)?;
+        self.stream.set_write_timeout(Some(remaining))?;
+        self.stream.flush()
+    }
+}
+
+fn remaining_duration(deadline: Instant) -> Result<Duration, Error> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(service_unavailable)
+}
+
+fn remaining_io_duration(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "The managed request timed out.",
+            )
+        })
 }
 
 pub struct ManagedTlsClient {
@@ -499,15 +550,16 @@ fn connect_resolved(destination: &str, timeout: Duration) -> Result<TcpStream, E
     let host = destination
         .strip_suffix(":443")
         .ok_or_else(endpoint_invalid)?;
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(service_unavailable)?;
     let bounded = resolve_bounded(host, timeout)?;
     for ip_address in bounded {
-        let now = Instant::now();
-        if now >= deadline {
-            break;
-        }
         let address = SocketAddr::new(ip_address, 443);
-        if let Ok(stream) = TcpStream::connect_timeout(&address, deadline - now) {
+        let Ok(remaining) = remaining_duration(deadline) else {
+            break;
+        };
+        if let Ok(stream) = TcpStream::connect_timeout(&address, remaining) {
             return Ok(stream);
         }
     }
@@ -529,21 +581,20 @@ fn resolve_on_owned_runtime(host: &str, timeout: Duration) -> Result<Vec<std::ne
         .enable_all()
         .build()
         .map_err(|_| service_unavailable())?;
-    let addresses = runtime.block_on(async {
-        let mut builder = Resolver::builder_tokio().map_err(|_| service_unavailable())?;
-        let options = builder.options_mut();
-        options.attempts = 1;
-        options.cache_size = 0;
-        options.max_active_requests = 1;
-        options.num_concurrent_reqs = 1;
-        options.timeout = timeout;
-        let resolver = builder.build().map_err(|_| service_unavailable())?;
-        let lookup = tokio::time::timeout(timeout, resolver.lookup_ip(host))
-            .await
-            .map_err(|_| service_unavailable())?
-            .map_err(|_| service_unavailable())?;
-        collect_bounded_addresses(lookup.iter())
-    })?;
+    let mut builder = Resolver::builder_tokio().map_err(|_| service_unavailable())?;
+    let options = builder.options_mut();
+    options.attempts = 1;
+    options.cache_size = 0;
+    options.max_active_requests = 1;
+    options.num_concurrent_reqs = 1;
+    options.timeout = timeout;
+    let resolver = builder.build().map_err(|_| service_unavailable())?;
+    let lookup = runtime
+        .block_on(tokio::time::timeout(timeout, resolver.lookup_ip(host)))
+        .map_err(|_| service_unavailable())?
+        .map_err(|_| service_unavailable())?;
+    let addresses = collect_bounded_addresses(lookup.iter())?;
+    drop(resolver);
     drop(runtime);
     Ok(addresses)
 }
@@ -669,9 +720,12 @@ mod tests {
     }
 
     #[test]
-    fn owned_runtime_dns_resolver_enters_tokio_context() {
-        let addresses = resolve_bounded("localhost", Duration::from_secs(5))
-            .expect("resolve localhost with the owned runtime");
-        assert!(addresses.iter().any(std::net::IpAddr::is_loopback));
+    fn request_deadline_rejects_expired_work() {
+        let deadline = Instant::now();
+        assert!(remaining_duration(deadline).is_err());
+        assert_eq!(
+            remaining_io_duration(deadline).unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
     }
 }

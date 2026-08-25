@@ -164,6 +164,9 @@ func PrepareCompleteManagedCandidate(
 		plainSize, _ := integerValue(descriptor["plain_size"])
 		totalPlaintextBytes += plainSize
 	}
+	if totalPlaintextBytes > maxProcessLogicalBytes {
+		return nil, errIncompleteCandidate()
+	}
 	candidateDigest, err := canonicalDigest(candidate)
 	if err != nil {
 		return nil, errIncompleteCandidate()

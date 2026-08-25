@@ -55,6 +55,7 @@ type ManagedCandidateSink struct {
 	workloadPublicKey  []byte
 	workloadSigningKey []byte
 	deploymentDigest   string
+	operationID        string
 	// deliveryLifetime is the bounded queue-to-delivery budget. Tests may
 	// shorten it before the first send.
 	deliveryLifetime time.Duration
@@ -113,9 +114,7 @@ func (sink *ManagedCandidateSink) AllowsProcessingMode(mode string) bool {
 }
 
 func (sink *ManagedCandidateSink) QueuedBytes() int {
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	return sink.queuedBytes
+	return processResources.queuedByteCount()
 }
 
 // RecallCounters returns bounded counters that contain no customer values.
@@ -311,13 +310,13 @@ func (sink *ManagedCandidateSink) TrySend(captureID string, candidate []byte) bo
 		})
 		return false
 	}
-	sink.mu.Lock()
-	if sink.queuedCount >= MaxQueuedCandidates ||
-		sink.queuedBytes+len(candidate) > MaxGlobalBytes {
+	if !processResources.reserveCandidate(len(candidate)) {
+		sink.mu.Lock()
 		increment(&sink.recall.CandidateQueueFull)
 		sink.mu.Unlock()
 		return false
 	}
+	sink.mu.Lock()
 	sink.queuedBytes += len(candidate)
 	sink.queuedCount++
 	sink.mu.Unlock()
@@ -331,6 +330,7 @@ func (sink *ManagedCandidateSink) TrySend(captureID string, candidate []byte) bo
 		sink.queuedCount--
 		increment(&sink.recall.CandidateQueueFull)
 		sink.mu.Unlock()
+		processResources.releaseCandidate(len(candidate))
 		return false
 	}
 }
@@ -357,7 +357,8 @@ func (sink *ManagedCandidateSink) authorizedCandidate(
 	deployment, deploymentOK := value["deployment"].(map[string]any)
 	if !deploymentOK || deployment["processing_mode"] != "managed" ||
 		deployment["service_id"] != sink.configuration.ServiceID ||
-		sink.workloadKeyID == "" || deployment["signer_key_id"] != sink.workloadKeyID {
+		sink.workloadKeyID == "" || deployment["signer_key_id"] != sink.workloadKeyID ||
+		sink.operationID != "" && value["operation_id"] != sink.operationID {
 		return nil, newManagedError(
 			"AUTHORIZATION_DENIED",
 			"The managed deployment does not use the registered workload key.",
@@ -387,7 +388,7 @@ func (sink *ManagedCandidateSink) worker() {
 		sink.mu.Lock()
 		sink.active = true
 		sink.mu.Unlock()
-		err := sink.deliver(queued.value)
+		err := sink.deliver(queued.value, queued.queuedAt.Add(sink.deliveryLifetime))
 		sink.recordDeliveryResult(err)
 		sink.finishQueued(queued.size)
 	}
@@ -399,15 +400,17 @@ func (sink *ManagedCandidateSink) finishQueued(size int) {
 	sink.queuedBytes = max(0, sink.queuedBytes-size)
 	sink.queuedCount = max(0, sink.queuedCount-1)
 	sink.mu.Unlock()
+	processResources.releaseCandidate(size)
 }
 
-func (sink *ManagedCandidateSink) deliver(candidate map[string]any) error {
+func (sink *ManagedCandidateSink) deliver(candidate map[string]any, deadline time.Time) error {
 	prepared, err := PrepareCompleteManagedCandidate(candidate, sink.subject, sink.closure)
 	if err != nil {
 		return err
 	}
+	client := &deadlineManagedClient{client: sink.client, deadline: deadline}
 	grant, err := prepared.RequestEncryptionGrant(
-		sink.client, sink.workloadKeyID, sink.workloadSigningKey,
+		client, sink.workloadKeyID, sink.workloadSigningKey,
 	)
 	if err != nil {
 		return err
@@ -423,7 +426,7 @@ func (sink *ManagedCandidateSink) deliver(candidate map[string]any) error {
 	}
 	defer sealed.Close()
 	renewal, err := sealed.RequestCaptureGrantRenewal(
-		sink.client, sink.workloadKeyID, sink.workloadSigningKey,
+		client, sink.workloadKeyID, sink.workloadSigningKey,
 	)
 	if err != nil {
 		return err
@@ -437,8 +440,103 @@ func (sink *ManagedCandidateSink) deliver(candidate map[string]any) error {
 	if err != nil {
 		return err
 	}
-	_, err = sealed.Upload(sink.client)
+	_, err = sealed.Upload(client)
 	return err
+}
+
+type deadlineManagedClient struct {
+	client   ManagedCaptureClient
+	deadline time.Time
+}
+
+func (client *deadlineManagedClient) timeout(requested time.Duration) (time.Duration, error) {
+	remaining := time.Until(client.deadline)
+	if remaining <= 0 {
+		return 0, newManagedError(
+			"SERVICE_UNAVAILABLE", "The candidate delivery lifetime expired.",
+		)
+	}
+	return min(requested, remaining), nil
+}
+
+func (client *deadlineManagedClient) RequestEncryptionGrant(
+	request map[string]any, timeout time.Duration,
+) (EncryptionResponse, error) {
+	bounded, err := client.timeout(timeout)
+	if err != nil {
+		return EncryptionResponse{}, err
+	}
+	response, err := client.client.RequestEncryptionGrant(request, bounded)
+	if _, expired := client.timeout(time.Nanosecond); expired != nil {
+		return EncryptionResponse{}, expired
+	}
+	return response, err
+}
+
+func (client *deadlineManagedClient) Start(
+	request map[string]any, timeout time.Duration,
+) (map[string]any, error) {
+	bounded, err := client.timeout(timeout)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.client.Start(request, bounded)
+	if _, expired := client.timeout(time.Nanosecond); expired != nil {
+		return nil, expired
+	}
+	return response, err
+}
+
+func (client *deadlineManagedClient) Missing(
+	uploadID string, uploadToken string, cursor string, timeout time.Duration,
+) (map[string]any, error) {
+	bounded, err := client.timeout(timeout)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.client.Missing(uploadID, uploadToken, cursor, bounded)
+	if _, expired := client.timeout(time.Nanosecond); expired != nil {
+		return nil, expired
+	}
+	return response, err
+}
+
+func (client *deadlineManagedClient) UploadObject(
+	uploadURL string, digest string, value []byte, timeout time.Duration,
+) error {
+	bounded, err := client.timeout(timeout)
+	if err != nil {
+		return err
+	}
+	deliveryErr := client.client.UploadObject(uploadURL, digest, value, bounded)
+	if _, expired := client.timeout(time.Nanosecond); expired != nil {
+		return expired
+	}
+	return deliveryErr
+}
+
+func (client *deadlineManagedClient) Commit(
+	uploadID string, uploadToken string, timeout time.Duration,
+) (map[string]any, error) {
+	bounded, err := client.timeout(timeout)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.client.Commit(uploadID, uploadToken, bounded)
+	if _, expired := client.timeout(time.Nanosecond); expired != nil {
+		return nil, expired
+	}
+	return response, err
+}
+
+func (client *deadlineManagedClient) Cancel(
+	uploadID string, uploadToken string, timeout time.Duration,
+) (map[string]any, error) {
+	bounded, err := client.timeout(timeout)
+	if err != nil {
+		return nil, err
+	}
+	return client.client.Cancel(uploadID, uploadToken, bounded)
 }
 
 func (sink *ManagedCandidateSink) recordDeliveryResult(err error) {

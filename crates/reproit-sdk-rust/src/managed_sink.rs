@@ -1,4 +1,5 @@
 use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, PoisonError,
@@ -30,7 +31,8 @@ use crate::{
 };
 
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(5);
-const CANDIDATE_DELIVERY_LIFETIME: Duration = Duration::from_secs(1);
+const CANDIDATE_DELIVERY_LIFETIME: Duration =
+    Duration::from_millis(crate::CANDIDATE_DELIVERY_LIFETIME_MS);
 
 pub struct ManagedRustSinkConfiguration {
     pub capture_signer_id: String,
@@ -75,6 +77,7 @@ pub struct ManagedRustRecordedFailure {
 struct QueuedCandidate {
     bytes: usize,
     candidate: Candidate,
+    capture_id: reproit_core::identity::CaptureId,
     queued_at: Instant,
 }
 
@@ -278,21 +281,27 @@ impl ManagedRustCandidateSink {
                 while let Ok(queued) = receiver.recv() {
                     if delivery_expired(queued.queued_at, Instant::now()) {
                         record_delivery_expired(&worker_recall);
-                        finish_queued(&worker_state, &worker_idle, queued.bytes);
+                        finish_queued(&worker_state, &worker_idle, queued.capture_id, queued.bytes);
                         continue;
                     }
                     set_active(&worker_state, true);
-                    let result = deliver_candidate(
-                        &queued.candidate,
-                        subject.clone(),
-                        &closure.closure,
-                        client.as_ref(),
-                        &capture_signer_id,
-                        &capture_signer_public_key,
-                        &worker_workload_signer,
-                    );
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        deliver_candidate(
+                            &queued.candidate,
+                            subject.clone(),
+                            &closure,
+                            CandidateDeliveryContext {
+                                capture_signer_id: &capture_signer_id,
+                                capture_signer_public_key: &capture_signer_public_key,
+                                client: client.as_ref(),
+                                queued_at: queued.queued_at,
+                                workload_signer: &worker_workload_signer,
+                            },
+                        )
+                    }))
+                    .unwrap_or_else(|_| Err(local_unavailable()));
                     record_result(&worker_recall, &result);
-                    finish_queued(&worker_state, &worker_idle, queued.bytes);
+                    finish_queued(&worker_state, &worker_idle, queued.capture_id, queued.bytes);
                 }
             })
             .map_err(|_| local_unavailable())?;
@@ -394,11 +403,24 @@ impl ManagedRustLocalRecorder {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let candidate = state.candidate.take();
         state.bytes = 0;
+        drop(state);
+        if let Some(candidate) = &candidate {
+            crate::resources::release_candidate(candidate.capture_id);
+        }
         candidate.map(|candidate| ManagedRustRecordedFailure {
             candidate,
             operation_id: self.operation_id,
             subject: self.subject.clone(),
         })
+    }
+}
+
+impl Drop for ManagedRustLocalRecorder {
+    fn drop(&mut self) {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(candidate) = &state.candidate {
+            crate::resources::release_candidate(candidate.capture_id);
+        }
     }
 }
 
@@ -422,18 +444,31 @@ impl CandidateSink for ManagedRustLocalRecorder {
         }
     }
 
+    fn retains_queued_candidates(&self) -> bool {
+        true
+    }
+
     fn try_send(&self, candidate: Candidate) -> bool {
         let candidate_bytes = canonical::canonical_bytes(&candidate).map(|bytes| bytes.len());
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Ok(candidate_bytes) = candidate_bytes else {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.incomplete = state.incomplete.saturating_add(1);
             return false;
         };
+        let capture_id = candidate.capture_id;
+        if !crate::resources::claim_candidate(capture_id, candidate_bytes) {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.incomplete = state.incomplete.saturating_add(1);
+            return false;
+        }
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if candidate.operation_id != self.operation_id
             || candidate_bytes > crate::MAX_OPERATION_BYTES
             || state.candidate.is_some()
         {
             state.incomplete = state.incomplete.saturating_add(1);
+            drop(state);
+            crate::resources::release_candidate(capture_id);
             return false;
         }
         state.bytes = candidate_bytes;
@@ -506,10 +541,10 @@ impl ManagedRustRecordedFailure {
         if operation_id != self.operation_id || self.candidate.operation_id != operation_id {
             return Err(incomplete_candidate());
         }
-        let preflight = PreparedManagedRustCandidate::prepare_complete_shared(
+        let preflight = PreparedManagedRustCandidate::prepare_frozen_shared(
             &self.candidate,
             self.subject.clone(),
-            &closure.closure,
+            &closure,
         )?;
         drop(preflight);
         Ok((self, operation_id, closure))
@@ -659,6 +694,10 @@ impl CandidateSink for ManagedRustCandidateSink {
             .clone()
     }
 
+    fn retains_queued_candidates(&self) -> bool {
+        true
+    }
+
     fn try_send(&self, candidate: Candidate) -> bool {
         if self.authorize_candidate(&candidate).is_err() {
             record_incomplete(&self.recall);
@@ -668,6 +707,11 @@ impl CandidateSink for ManagedRustCandidateSink {
             record_incomplete(&self.recall);
             return false;
         };
+        let capture_id = candidate.capture_id;
+        if !crate::resources::claim_candidate(capture_id, bytes) {
+            record_queue_full(&self.recall);
+            return false;
+        }
         let full = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.candidates >= MAX_QUEUED_CANDIDATES
@@ -684,12 +728,14 @@ impl CandidateSink for ManagedRustCandidateSink {
             }
         };
         if full {
+            crate::resources::release_candidate(capture_id);
             record_queue_full(&self.recall);
             return false;
         }
         let queued = QueuedCandidate {
             bytes,
             candidate,
+            capture_id,
             queued_at: Instant::now(),
         };
         match self.queue.try_send(queued) {
@@ -699,6 +745,7 @@ impl CandidateSink for ManagedRustCandidateSink {
                 state.bytes = state.bytes.saturating_sub(queued.bytes);
                 state.candidates = state.candidates.saturating_sub(1);
                 drop(state);
+                crate::resources::release_candidate(queued.capture_id);
                 record_queue_full(&self.recall);
                 false
             }
@@ -706,35 +753,54 @@ impl CandidateSink for ManagedRustCandidateSink {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CandidateDeliveryContext<'a> {
+    capture_signer_id: &'a str,
+    capture_signer_public_key: &'a [u8; 32],
+    client: &'a ManagedTlsClient,
+    queued_at: Instant,
+    workload_signer: &'a WorkloadGrantSigner,
+}
+
 fn deliver_candidate(
     candidate: &Candidate,
     subject: Arc<RustSubjectPackage>,
-    closure: &ManagedRustCaptureClosure,
-    client: &ManagedTlsClient,
-    capture_signer_id: &str,
-    capture_signer_public_key: &[u8; 32],
-    workload_signer: &WorkloadGrantSigner,
+    closure: &FrozenManagedRustCaptureClosure,
+    context: CandidateDeliveryContext<'_>,
 ) -> Result<(), Error> {
+    let deadline = crate::managed::ManagedDeliveryDeadline::from_queued_at(context.queued_at);
+    deadline.check()?;
     let prepared =
-        PreparedManagedRustCandidate::prepare_complete_shared(candidate, subject, closure)?;
-    let grant = prepared.request_encryption_grant(
-        client,
-        &workload_signer.key_id,
-        workload_signer.signing_key.as_ref(),
+        PreparedManagedRustCandidate::prepare_frozen_shared(candidate, subject, closure)?;
+    deadline.check()?;
+    let grant = prepared.request_encryption_grant_before(
+        context.client,
+        &context.workload_signer.key_id,
+        context.workload_signer.signing_key.as_ref(),
+        deadline,
     )?;
-    let mut sealed = prepared.seal(grant, &now()?, capture_signer_id, capture_signer_public_key)?;
-    let renewal = sealed.request_capture_grant_renewal(
-        client,
-        &workload_signer.key_id,
-        workload_signer.signing_key.as_ref(),
+    deadline.check()?;
+    let mut sealed = prepared.seal(
+        grant,
+        &now()?,
+        context.capture_signer_id,
+        context.capture_signer_public_key,
+    )?;
+    deadline.check()?;
+    let renewal = sealed.request_capture_grant_renewal_before(
+        context.client,
+        &context.workload_signer.key_id,
+        context.workload_signer.signing_key.as_ref(),
+        deadline,
     )?;
     sealed.apply_renewed_capture_grant(
         renewal,
         &now()?,
-        capture_signer_id,
-        capture_signer_public_key,
+        context.capture_signer_id,
+        context.capture_signer_public_key,
     )?;
-    sealed.upload(client)?;
+    deadline.check()?;
+    sealed.upload_before(context.client, deadline)?;
     Ok(())
 }
 
@@ -753,7 +819,13 @@ fn delivery_expired(queued_at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(queued_at) >= CANDIDATE_DELIVERY_LIFETIME
 }
 
-fn finish_queued(state: &Mutex<QueueState>, idle: &Condvar, bytes: usize) {
+fn finish_queued(
+    state: &Mutex<QueueState>,
+    idle: &Condvar,
+    capture_id: reproit_core::identity::CaptureId,
+    bytes: usize,
+) {
+    crate::resources::release_candidate(capture_id);
     let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
     state.active = false;
     state.bytes = state.bytes.saturating_sub(bytes);
@@ -837,10 +909,10 @@ mod tests {
     #[test]
     fn candidate_delivery_lifetime_has_an_exact_boundary() {
         let queued_at = Instant::now();
-        assert!(!delivery_expired(
-            queued_at,
-            queued_at + Duration::from_millis(999)
-        ));
+        let almost_expired = (queued_at + CANDIDATE_DELIVERY_LIFETIME)
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
+        assert!(!delivery_expired(queued_at, almost_expired));
         assert!(delivery_expired(
             queued_at,
             queued_at + CANDIDATE_DELIVERY_LIFETIME

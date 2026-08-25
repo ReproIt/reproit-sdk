@@ -1,6 +1,6 @@
 # Go SDK
 
-Add Repro It to a Go application.
+Use the Go SDK at one supported Backend operation boundary.
 
 ## Install
 
@@ -8,18 +8,11 @@ Add Repro It to a Go application.
 go get reproit.dev/sdk-go@v1.0.0
 ```
 
-```go
-import "reproit.dev/sdk-go/reproit"
+Use `RunOperation`, `RunStreamOperation`, or `RunDeliveredWork` with the framework-neutral SDK
+core. Backend v1.0 does not publish a Go framework adapter.
 
-capture := reproit.Init()
-todo, err := reproit.Operation(capture, "todos.create", inputBytes, func() (Todo, error) {
-	return createTodo(input)
-})
-```
-
-Run `reproit init` before you deploy. Initialize the SDK once. Call `Operation` at a top-level
-application boundary. Use `capture.Operation` when the operation returns only an error. The SDK
-preserves the exact result and error. It does not import a web framework.
+The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
+incomplete, unsupported, and resource-limited operations local.
 
 ## Verify SDK source
 
