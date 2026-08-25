@@ -486,6 +486,9 @@ def run_operation(
 ) -> _Result | Awaitable[_Result]:
     """Run one framework-neutral boundary without changing its outcome."""
     context = project._begin(preparation.begin)
+    from .sqlite_adapter import _mark_unsupported_operation
+
+    _mark_unsupported_operation(context)
     for value in preparation.inputs:
         context.record_input(value)
     token = _ACTIVE_OPERATION.set(context)

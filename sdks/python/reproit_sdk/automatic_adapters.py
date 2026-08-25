@@ -28,6 +28,11 @@ from .observation_adapters import (
     _activate_observation_adapters,
     _deactivate_observation_adapters,
 )
+from .sqlite_adapter import (
+    _hooks_are_original as _sqlite_hooks_are_original,
+    _install_sqlite_adapter,
+    _restore_sqlite_adapter,
+)
 from .subject_protocol import digest_bytes
 
 _Result = TypeVar("_Result")
@@ -100,10 +105,23 @@ class _RecordedError(Exception):
 
 def _implementation_digest() -> str:
     try:
-        content = Path(__file__).read_bytes()
+        files = tuple(
+            Path(__file__).with_name(name)
+            for name in (
+                "automatic_adapters.py",
+                "engine_operation.py",
+                "semantic_dependency.py",
+                "sqlite_adapter.py",
+            )
+        )
+        hasher = hashlib.sha256()
+        for file in files:
+            hasher.update(file.name.encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(file.read_bytes())
     except OSError:
-        content = b"reproit-python-semantic-adapters-v1"
-    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+        return f"sha256:{hashlib.sha256(b'reproit-python-adapters-v1').hexdigest()}"
+    return f"sha256:{hasher.hexdigest()}"
 
 
 _IMPLEMENTATION_DIGEST = _implementation_digest()
@@ -114,7 +132,13 @@ _REGISTRATIONS = tuple(
         observation_class=observation_class,
         implementation_digest=_IMPLEMENTATION_DIGEST,
     )
-    for observation_class in ("clock", "environment", "filesystem", "randomness")
+    for observation_class in (
+        "clock",
+        "database",
+        "environment",
+        "filesystem",
+        "randomness",
+    )
 )
 
 
@@ -169,6 +193,7 @@ def _hooks_are_original() -> bool:
         and _ENVIRONMENT_TYPE.__getitem__ is _ORIGINAL_ENVIRONMENT_GET
         and _ENVIRONMENT_TYPE.__iter__ is _ORIGINAL_ENVIRONMENT_ITER
         and _ENVIRONMENT_TYPE.__len__ is _ORIGINAL_ENVIRONMENT_LEN
+        and _sqlite_hooks_are_original()
     )
 
 
@@ -190,9 +215,11 @@ def _install_hooks() -> None:
     _ENVIRONMENT_TYPE.__getitem__ = _environment_get
     _ENVIRONMENT_TYPE.__iter__ = _unsupported_environment_iter
     _ENVIRONMENT_TYPE.__len__ = _unsupported_environment_len
+    _install_sqlite_adapter()
 
 
 def _restore_hooks() -> None:
+    _restore_sqlite_adapter()
     if time.time_ns is _time_ns:
         time.time_ns = _ORIGINAL_TIME_NS
     if time.time is _unsupported_time:
