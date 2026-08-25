@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter, errorMonitor } from "node:events";
 import { createRequire } from "node:module";
 import test from "node:test";
 
@@ -19,6 +20,7 @@ class HttpBridge {
   requests = [];
   responses = [];
   unowned = [];
+  abandons = 0;
   #action;
   #offset = 0;
   #replay;
@@ -60,7 +62,9 @@ class HttpBridge {
   }
 
   operationSucceed() {}
-  operationAbandon() {}
+  operationAbandon() {
+    this.abandons += 1;
+  }
   engineClose() {}
 }
 
@@ -142,6 +146,60 @@ test("HTTP capture keeps live objects and replay performs no live request", asyn
   assert.equal(replayBridge.responses.length, 0);
 });
 
+test("a built-in HTTP error keeps its live identity and stays local", async () => {
+  const target = await closedLocalTarget();
+  const bridge = new HttpBridge("capture");
+  let monitoredError;
+  let deliveredError;
+  await withAdapters(() => run(bridge, () => new Promise((resolve) => {
+    const request = httpModule.get(target);
+    request.once(errorMonitor, (error) => {
+      monitoredError = error;
+    });
+    request.once("error", (error) => {
+      deliveredError = error;
+      resolve();
+    });
+  })));
+
+  assert.equal(deliveredError, monitoredError);
+  assert.equal(deliveredError instanceof Error, true);
+  assert.equal(bridge.requests.length, 1);
+  assert.equal(bridge.responses.length, 0);
+  assert.equal(bridge.unowned.includes("outbound-http"), true);
+  assert.equal(bridge.abandons, 1);
+});
+
+test("an HTTPS error keeps the exact built-in error object and stays local", async () => {
+  const sourceError = await builtInConnectionError();
+  const { bridge, deliveredError } = await captureSyntheticError(
+    sourceError,
+    httpsModule,
+    "https://127.0.0.1:1/synthetic-error",
+  );
+  assert.equal(deliveredError, sourceError);
+  assert.equal(bridge.requests.length, 1);
+  assert.equal(bridge.responses.length, 0);
+  assert.equal(bridge.unowned.includes("outbound-http"), true);
+  assert.equal(bridge.abandons, 1);
+});
+
+test("subclasses, added fields, and oversized HTTP errors stay local", async () => {
+  const addedField = new Error("added field");
+  addedField.code = "ECUSTOM";
+  for (const error of [
+    new TypeError("subclass"),
+    addedField,
+    new Error("x".repeat(16 * 1_024 + 1)),
+  ]) {
+    const { bridge, deliveredError, sourceError } = await captureSyntheticError(error);
+    assert.equal(deliveredError, sourceError);
+    assert.equal(bridge.responses.length, 0);
+    assert.equal(bridge.unowned.includes("outbound-http"), true);
+    assert.equal(bridge.abandons, 1);
+  }
+});
+
 test("unsupported streaming, credentials, agents, and request API become unowned", async () => {
   const server = httpModule.createServer((_request, response) => {
     response.writeHead(200, { "Content-Length": "1" });
@@ -201,6 +259,37 @@ test("noncanonical replay bytes stop without a live request", async () => {
   })));
 });
 
+test("recorded HTTP errors are rejected without a live request", async () => {
+  const replay = {
+    error_code: "other",
+    error_number: null,
+    metadata: [],
+    outcome: "error",
+    payload: Buffer.from(JSON.stringify({
+      format: "reproit.node-http-empty-response.v1",
+      message: "not replayable",
+    })).toString("base64url"),
+    status: null,
+    status_code: null,
+  };
+  let liveCalls = 0;
+  await withFakeModuleGet(httpModule, () => {
+    liveCalls += 1;
+    throw new Error("A live HTTP request was attempted.");
+  }, async () => {
+    const bridge = new HttpBridge("replay", replay);
+    await withAdapters(() => run(bridge, () => new Promise((resolve, reject) => {
+      const request = httpModule.get("http://127.0.0.1:1/no-live-error-request");
+      request.once("response", () => reject(new Error("Replay used a response.")));
+      request.once("error", (error) => {
+        assert.equal(error.code, "ERR_REPROIT_HTTP_REPLAY");
+        resolve();
+      });
+    })));
+  });
+  assert.equal(liveCalls, 0);
+});
+
 function run(bridge, operation) {
   const project = createManagedEngineProjectForTest(bridge, 1, () => "unused");
   return runOperation(
@@ -221,6 +310,52 @@ function withAdapters(action) {
     throw error;
   }
   return Promise.resolve(result).finally(release);
+}
+
+async function closedLocalTarget() {
+  const server = httpModule.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return `http://127.0.0.1:${port}/closed`;
+}
+
+async function builtInConnectionError() {
+  const target = await closedLocalTarget();
+  return new Promise((resolve) => {
+    httpModule.get(target).once("error", resolve);
+  });
+}
+
+async function captureSyntheticError(
+  sourceError,
+  module = httpModule,
+  target = "http://127.0.0.1:1/synthetic-error",
+) {
+  let deliveredError;
+  const bridge = new HttpBridge("capture");
+  await withFakeModuleGet(module, () => {
+    const request = new EventEmitter();
+    process.nextTick(() => request.emit("error", sourceError));
+    return request;
+  }, () => withAdapters(() => run(bridge, () => new Promise((resolve) => {
+    const request = module.get(target);
+    request.once("error", (error) => {
+      deliveredError = error;
+      resolve();
+    });
+  }))));
+  return { bridge, deliveredError, sourceError };
+}
+
+async function withFakeModuleGet(module, replacement, action) {
+  const descriptor = Object.getOwnPropertyDescriptor(module, "get");
+  Object.defineProperty(module, "get", { ...descriptor, value: replacement });
+  try {
+    return await action();
+  } finally {
+    Object.defineProperty(module, "get", descriptor);
+  }
 }
 
 function responseRecord(value) {

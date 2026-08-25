@@ -89,14 +89,10 @@ function managedGet(call, requiredProtocol) {
     }
     if (dependency.finish(encoded) === null) markUnowned();
   });
-  liveRequest.once(errorMonitor, (error) => {
-    const encoded = captureError(error);
-    if (encoded === null) {
-      markUnowned();
-      dependency.abandon();
-      return;
-    }
-    if (dependency.finish(encoded) === null) markUnowned();
+  liveRequest.once(errorMonitor, () => {
+    // Node.js uses private error prototypes that public APIs cannot reproduce exactly.
+    markUnowned();
+    dependency.abandon();
   });
   liveRequest.once("upgrade", () => markUnowned());
   liveRequest.once("connect", () => markUnowned());
@@ -203,29 +199,6 @@ function captureResponse(response) {
   });
 }
 
-function captureError(error) {
-  if (!(error instanceof Error)) return null;
-  const values = {};
-  for (const name of ["address", "code", "errno", "message", "name", "port", "syscall"]) {
-    const value = error[name];
-    if (value !== undefined && typeof value !== "string" && !Number.isSafeInteger(value)) {
-      return null;
-    }
-    values[name] = value ?? null;
-  }
-  const payload = canonicalBytes({ format: PAYLOAD_FORMAT, ...values });
-  if (payload.length > MAX_BODY_BYTES) return null;
-  return dependencyResponse({
-    errorCode: "other",
-    errorNumber: Number.isInteger(error.errno) && error.errno >= 0
-      ? error.errno
-      : null,
-    metadata: [],
-    outcome: "error",
-    payload,
-  });
-}
-
 function replayRequest(callback, response) {
   const request = new EventEmitter();
   Object.assign(request, {
@@ -251,9 +224,6 @@ function replayRequest(callback, response) {
     if (response.outcome === "response") {
       event = "response";
       value = replayResponse(response);
-    } else if (response.outcome === "error") {
-      event = "error";
-      value = replayError(response);
     } else {
       throw replayInvalid();
     }
@@ -318,27 +288,6 @@ function replayResponse(response) {
   Object.setPrototypeOf(stream, httpModule.IncomingMessage.prototype);
   markUnsupportedResponseUse(stream);
   return stream;
-}
-
-function replayError(response) {
-  const payload = parsePayload(response.payload, [
-    "address", "code", "errno", "format", "message", "name", "port", "syscall",
-  ]);
-  for (const name of ["address", "code", "message", "name", "syscall"]) {
-    if (payload[name] !== null && typeof payload[name] !== "string") {
-      throw replayInvalid();
-    }
-  }
-  for (const name of ["errno", "port"]) {
-    if (payload[name] !== null && !Number.isSafeInteger(payload[name])) {
-      throw replayInvalid();
-    }
-  }
-  const error = new Error(payload.message);
-  for (const name of ["address", "code", "errno", "name", "port", "syscall"]) {
-    if (payload[name] !== null) error[name] = payload[name];
-  }
-  return error;
 }
 
 function parsePayload(bytes, keys) {
