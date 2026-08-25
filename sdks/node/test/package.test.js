@@ -34,6 +34,7 @@ test("package is deterministic, bounded, and installable from a local file", asy
     assert.ok(entries.includes("package/src/native-engine.js"));
     assert.ok(entries.includes("package/src/observation-adapters.js"));
     assert.ok(entries.includes("package/src/runtime-observation-adapters.js"));
+    assert.ok(entries.includes("package/src/semantic-dependency.js"));
     assert.ok(entries.includes("package/src/semantic-observation.js"));
     assert.ok(entries.includes("package/native/reproit-sdk-engine-loader.c"));
     assert.equal(entries.includes("package/src/index.js"), false);
@@ -74,6 +75,9 @@ test("package is deterministic, bounded, and installable from a local file", asy
     assert.equal("MemorySink" in installed, false);
     assert.equal("TlsCloudStagingSink" in installed, false);
     assert.throws(() => requireFromFixture.resolve("@reproit/sdk/http"));
+    assert.throws(
+      () => requireFromFixture.resolve("@reproit/sdk/semantic-dependency"),
+    );
     assert.throws(
       () => new installed.ManagedEngineProject(null, 1, () => "not-used"),
       /Use ManagedEngineProject\.open\(\)\./,

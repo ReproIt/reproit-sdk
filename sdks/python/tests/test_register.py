@@ -183,6 +183,10 @@ class RegisterLaunchTests(unittest.TestCase):
             wheel = next(output.glob("*.whl"))
             with zipfile.ZipFile(wheel) as archive:
                 self.assertIn("reproit_sdk/register.py", archive.namelist())
+                self.assertIn(
+                    "reproit_sdk/semantic_dependency.py",
+                    archive.namelist(),
+                )
 
     @staticmethod
     def _run(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
