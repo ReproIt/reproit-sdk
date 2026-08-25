@@ -177,6 +177,20 @@ func TestSemanticDependencyReplayReadsChunksAfterEngineValidation(t *testing.T) 
 	}
 }
 
+func TestSemanticDependencyUsesEngineValidatedOutcome(t *testing.T) {
+	record := semanticPublishedResponse(t, "semantic_dependency_response_outbound_http")
+	var wire map[string]any
+	if json.Unmarshal(record, &wire) != nil {
+		t.Fatal("The published dependency response could not be decoded.")
+	}
+	wire["outcome"] = "error"
+	record, _ = json.Marshal(wire)
+	response, err := reconstructSemanticDependencyResponse(record, "response")
+	if err != nil || response.Outcome != observationResponse {
+		t.Fatal("The language bridge duplicated the engine outcome validation.")
+	}
+}
+
 func TestSemanticDependencyReplayNeverFallsBackToLive(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -188,7 +202,6 @@ func TestSemanticDependencyReplayNeverFallsBackToLive(t *testing.T) {
 			make([]byte, sdkEngineMaxSemanticDependencyRecordBytes), {1},
 		}},
 		{name: "finish rejection", reads: [][]byte{[]byte(`{}`)}, finishFailure: true},
-		{name: "invalid validated record", reads: [][]byte{[]byte(`{}`)}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

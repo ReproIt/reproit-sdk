@@ -90,8 +90,8 @@ internal static class SemanticDependencyTranslator
                 SemanticDependencyLiveResult result = live();
                 try
                 {
-                    string outcome = connection.Finish(MakeResponse(result.Response));
-                    finished = outcome == Outcome(result.Response.Outcome);
+                    _ = connection.Finish(MakeResponse(result.Response));
+                    finished = true;
                 }
                 catch (Exception)
                 {
@@ -234,11 +234,6 @@ internal static class SemanticDependencyTranslator
         {
             throw AutomaticProject.CaptureError();
         }
-        string? outcome = value["outcome"]?.GetValue<string>();
-        if (outcome != validatedOutcome)
-        {
-            throw AutomaticProject.CaptureError();
-        }
         List<SemanticDependencyMetadata> metadata = [];
         try
         {
@@ -252,7 +247,9 @@ internal static class SemanticDependencyTranslator
                 OptionalText(value["error_code"]),
                 OptionalUInt32(value["error_number"]),
                 metadata,
-                outcome == "response" ? ObservationOutcome.Response : ObservationOutcome.Error,
+                validatedOutcome == "response"
+                    ? ObservationOutcome.Response
+                    : ObservationOutcome.Error,
                 value["payload"] is null ? null : DecodeBase64Url(value["payload"]),
                 OptionalText(value["status"]),
                 OptionalUInt16(value["status_code"]));

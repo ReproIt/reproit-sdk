@@ -12,6 +12,7 @@ internal static class SemanticDependencyConformance
         CapturePreservesLiveSuccessAndError();
         CaptureFailuresPreserveLiveResult();
         ReplayReadsChunksAfterEngineValidation();
+        ReplayUsesEngineValidatedOutcome();
         ReplayNeverFallsBackToLive();
     }
 
@@ -235,7 +236,6 @@ internal static class SemanticDependencyConformance
             ("record over bound",
                 [new byte[SdkEngineBridge.MaxSemanticDependencyRecordBytes], [1]], false),
             ("finish rejection", [Encoding.UTF8.GetBytes("{}")], true),
-            ("invalid validated record", [Encoding.UTF8.GetBytes("{}")], false),
         ];
         foreach ((string name, byte[][] reads, bool finishFailure) in cases)
         {
@@ -257,6 +257,24 @@ internal static class SemanticDependencyConformance
                 }));
             Require(!liveCalled, $"Strict replay fell back to live for {name}.");
         }
+    }
+
+    private static void ReplayUsesEngineValidatedOutcome()
+    {
+        JsonObject record = JsonNode.Parse(
+            PublishedResponse("semantic_dependency_response_outbound_http"))!.AsObject();
+        record["outcome"] = "error";
+        FakeNative native = DependencyNative(
+            "replay", [Encoding.UTF8.GetBytes(record.ToJsonString())], null);
+        using OperationFixture fixture = new(native);
+        SemanticDependencyResponse response = SemanticDependencyTranslator.Translate(
+            fixture.Operation,
+            TestRequest(),
+            null,
+            () => throw new InvalidOperationException("Replay called the live dependency."));
+        Require(
+            response.Outcome == ObservationOutcome.Response,
+            "The language bridge duplicated the engine outcome validation.");
     }
 
     private static FakeNative DependencyNative(

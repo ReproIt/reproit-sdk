@@ -84,10 +84,10 @@ func translateSemanticDependency(
 		response, liveErr := live()
 		responseInput, convertErr := makeSDKEngineDependencyResponse(response)
 		if convertErr == nil {
-			outcome, finishErr := operation.project.bridge.finishDependency(
+			_, finishErr := operation.project.bridge.finishDependency(
 				started.Handle, &responseInput,
 			)
-			finished = finishErr == nil && outcome == string(response.Outcome)
+			finished = finishErr == nil
 		}
 		if !finished {
 			_ = operation.markUnowned(request.ObservationClass, causalParentID, nil)
@@ -225,7 +225,7 @@ func reconstructSemanticDependencyResponse(
 	validatedOutcome string,
 ) (semanticDependencyResponse, error) {
 	var wire sdkEngineDependencyResponse
-	if json.Unmarshal(record, &wire) != nil || wire.Outcome != validatedOutcome {
+	if json.Unmarshal(record, &wire) != nil {
 		return semanticDependencyResponse{}, ErrAutomaticCapture
 	}
 	metadata := make([]semanticDependencyMetadata, 0, len(wire.Metadata))
@@ -241,7 +241,7 @@ func reconstructSemanticDependencyResponse(
 		ErrorCode:   wire.ErrorCode,
 		ErrorNumber: wire.ErrorNumber,
 		Metadata:    metadata,
-		Outcome:     observationOutcome(wire.Outcome),
+		Outcome:     observationOutcome(validatedOutcome),
 		Status:      wire.Status,
 		StatusCode:  wire.StatusCode,
 	}
