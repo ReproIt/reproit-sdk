@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { types as utilTypes } from "node:util";
 
 import {
   createManagedEngineProjectForTest,
@@ -205,6 +206,123 @@ test("exec, prepare, get, all, and run replay without live SQLite", () => {
   );
 });
 
+test("noncanonical SQLite response bytes stop without live SQLite", () => {
+  const capture = withAdapters(() => {
+    const database = new sqliteModule.DatabaseSync(":memory:");
+    const bridge = new SqliteBridge("capture");
+    try {
+      run(bridge, () => database.exec("CREATE TABLE fixed (id INTEGER)"));
+      return bridge.responses[0];
+    } finally {
+      database.close();
+    }
+  });
+  const noncanonical = {
+    ...capture,
+    payload: Buffer.concat([
+      Buffer.from(capture.payload, "base64url"),
+      Buffer.from(" ", "utf8"),
+    ]).toString("base64url"),
+  };
+  const database = new sqliteModule.DatabaseSync(":memory:");
+  database.close();
+  const bridge = new SqliteBridge("replay", [noncanonical]);
+  assert.throws(
+    () => withAdapters(() => run(
+      bridge,
+      () => database.exec("CREATE TABLE fixed (id INTEGER)"),
+    )),
+    { code: "ERR_REPROIT_SQLITE_REPLAY" },
+  );
+  assert.equal(bridge.requests.length, 1);
+  assert.equal(bridge.responses.length, 0);
+});
+
+test("a built-in SQLite error replays its exact public shape without live SQLite", () => {
+  const sourceError = builtInSqliteError();
+  const capture = captureExecError(sourceError);
+  assert.equal(capture.deliveredError, sourceError);
+  assert.equal(capture.bridge.responses.length, 1);
+  assert.equal(capture.bridge.responses[0].outcome, "error");
+  assert.equal(capture.bridge.responses[0].error_code, "other");
+  assert.equal(capture.bridge.responses[0].error_number, sourceError.errcode);
+
+  const database = new sqliteModule.DatabaseSync(":memory:");
+  database.close();
+  const bridge = new SqliteBridge("replay", [...capture.bridge.responses]);
+  let replayError;
+  assert.throws(
+    () => withAdapters(() => run(bridge, () => database.exec("NOT VALID SQL"))),
+    (error) => {
+      replayError = error;
+      return true;
+    },
+  );
+  assert.notEqual(replayError, sourceError);
+  assert.equal(replayError instanceof Error, true);
+  assert.equal(utilTypes.isNativeError(replayError), true);
+  assert.equal(Object.getPrototypeOf(replayError), Object.getPrototypeOf(sourceError));
+  assert.deepEqual(Reflect.ownKeys(replayError), Reflect.ownKeys(sourceError));
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptors(replayError),
+    Object.getOwnPropertyDescriptors(sourceError),
+  );
+  assert.equal(String(replayError), String(sourceError));
+  assert.equal(replayError.stack, sourceError.stack);
+  assert.equal(bridge.requests.length, 1);
+  assert.equal(bridge.responses.length, 0);
+});
+
+test("unsupported and oversized SQLite error shapes stay local", () => {
+  const addedField = builtInSqliteError();
+  addedField.detail = "unsupported";
+  const oversized = builtInSqliteError();
+  oversized.stack = "x".repeat(16 * 1_024 + 1);
+  for (const sourceError of [
+    new TypeError("unsupported subclass"),
+    addedField,
+    oversized,
+  ]) {
+    const capture = captureExecError(sourceError);
+    assert.equal(capture.deliveredError, sourceError);
+    assert.equal(capture.bridge.responses.length, 0);
+    assert.deepEqual(
+      capture.bridge.unowned.map((entry) => entry.observationClass),
+      ["database"],
+    );
+    assert.equal(capture.bridge.abandoned, 1);
+  }
+});
+
+test("corrupt SQLite error records stop without live SQLite", () => {
+  const response = captureExecError(builtInSqliteError()).bridge.responses[0];
+  const corruptResponses = [
+    { ...response, error_number: response.error_number + 1 },
+    {
+      ...response,
+      payload: Buffer.concat([
+        Buffer.from(response.payload, "base64url"),
+        Buffer.from(" ", "utf8"),
+      ]).toString("base64url"),
+    },
+    {
+      ...response,
+      payload: Buffer.alloc(16 * 1_024 + 1, 0x20).toString("base64url"),
+    },
+  ];
+  for (const corrupt of corruptResponses) {
+    const database = new sqliteModule.DatabaseSync(":memory:");
+    database.close();
+    const bridge = new SqliteBridge("replay", [corrupt]);
+    assert.throws(
+      () => withAdapters(() => run(bridge, () => database.exec("NOT VALID SQL"))),
+      { code: "ERR_REPROIT_SQLITE_REPLAY" },
+    );
+    assert.equal(bridge.requests.length, 1);
+    assert.equal(bridge.responses.length, 0);
+  }
+});
+
 test("capture preserves exact results and exceptions", () => {
   const descriptor = Object.getOwnPropertyDescriptor(
     sqliteModule.StatementSync.prototype,
@@ -367,18 +485,51 @@ test("parallel operation contexts keep dependency ordering separate", async () =
 
 function responseRecord(value) {
   if (value === undefined) return Buffer.from("null");
-  return Buffer.from(JSON.stringify({
-    error_code: value.errorCode,
-    error_number: value.errorNumber,
-    metadata: value.metadata.map((field) => ({
-      name: Buffer.from(field.name).toString("base64url"),
-      value: field.value.toString("base64url"),
-    })),
-    outcome: value.outcome,
-    payload: value.payload === null ? null : value.payload.toString("base64url"),
-    status: value.status,
-    status_code: value.statusCode,
-  }));
+  return Buffer.from(JSON.stringify(value));
+}
+
+function builtInSqliteError() {
+  const database = new sqliteModule.DatabaseSync(":memory:");
+  try {
+    database.exec("NOT VALID SQL");
+  } catch (error) {
+    return error;
+  } finally {
+    database.close();
+  }
+  throw new Error("The fixed SQLite statement did not fail.");
+}
+
+function captureExecError(sourceError) {
+  const owner = sqliteModule.DatabaseSync.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(owner, "exec");
+  Object.defineProperty(owner, "exec", {
+    ...descriptor,
+    value() {
+      throw sourceError;
+    },
+  });
+  try {
+    return withAdapters(() => {
+      const database = new sqliteModule.DatabaseSync(":memory:");
+      const bridge = new SqliteBridge("capture");
+      let deliveredError;
+      try {
+        assert.throws(
+          () => run(bridge, () => database.exec("NOT VALID SQL")),
+          (error) => {
+            deliveredError = error;
+            return true;
+          },
+        );
+        return { bridge, deliveredError };
+      } finally {
+        database.close();
+      }
+    });
+  } finally {
+    Object.defineProperty(owner, "exec", descriptor);
+  }
 }
 
 function requestPayload(request) {

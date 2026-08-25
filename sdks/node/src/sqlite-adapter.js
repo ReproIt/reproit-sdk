@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 
+import { canonicalBytes } from "./encoding.js";
 import {
   currentOperationContext,
   markOperationUnowned,
@@ -20,7 +21,15 @@ const MAX_OBJECT_FIELDS = 256;
 const MAX_RESULT_ROWS = 256;
 const MAX_STATEMENTS_PER_DATABASE = 65_536;
 const PAYLOAD_FORMAT = "reproit.node-sqlite.v1";
+const SQLITE_ERROR_CODE = "ERR_SQLITE_ERROR";
+const SQLITE_ERROR_KEYS = Object.freeze([
+  "stack", "message", "code", "errcode", "errstr",
+]);
 const UNSUPPORTED_EVIDENCE = Buffer.from("node-sqlite-unsupported-v1", "utf8");
+const STANDARD_STACK_DESCRIPTOR = Object.getOwnPropertyDescriptor(
+  new Error("reproit-sqlite-stack-shape"),
+  "stack",
+);
 
 export function installSqliteAdapter() {
   const databaseStates = new WeakMap();
@@ -217,6 +226,9 @@ function executeDependency(request, live, encode, decode) {
       } catch (error) {
         liveThrew = true;
         liveError = error;
+        const response = captureSqliteError(error);
+        if (response !== null) return response;
+        markDatabaseUnowned();
         throw error;
       }
       return dependencyResponse({
@@ -226,16 +238,144 @@ function executeDependency(request, live, encode, decode) {
         status: "complete",
       });
     });
-    if (liveCalled) return liveResult;
-    if (translated?.outcome !== "response" || !Buffer.isBuffer(translated.payload)) {
+    if (liveCalled) {
+      if (liveThrew) throw liveError;
+      return liveResult;
+    }
+    if (!Buffer.isBuffer(translated?.payload)) {
       throw invalidReplay();
     }
+    if (translated.outcome === "error") throw replaySqliteError(translated);
+    if (translated.outcome !== "response") throw invalidReplay();
     return decode(decodePayload(translated.payload));
   } catch (error) {
     if (liveThrew) throw liveError;
     if (liveCalled) return liveResult;
     throw error;
   }
+}
+
+function captureSqliteError(error) {
+  try {
+    if (
+      Object.getPrototypeOf(error) !== Error.prototype ||
+      !sameKeys(Reflect.ownKeys(error), SQLITE_ERROR_KEYS)
+    ) {
+      return null;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(error);
+    if (
+      !standardStackDescriptor(descriptors.stack) ||
+      !standardDataDescriptor(descriptors.message, false, "string") ||
+      !standardDataDescriptor(descriptors.code, true, "string") ||
+      !standardDataDescriptor(descriptors.errcode, true, "number") ||
+      !standardDataDescriptor(descriptors.errstr, true, "string") ||
+      descriptors.code.value !== SQLITE_ERROR_CODE ||
+      !unsigned32(descriptors.errcode.value)
+    ) {
+      return null;
+    }
+    const budget = createBudget();
+    const stack = boundedString(error.stack, budget);
+    const message = boundedString(descriptors.message.value, budget);
+    const code = boundedString(descriptors.code.value, budget);
+    const errstr = boundedString(descriptors.errstr.value, budget);
+    const payload = encodePayload([
+      PAYLOAD_FORMAT,
+      "error",
+      stack,
+      message,
+      code,
+      descriptors.errcode.value,
+      errstr,
+    ]);
+    return dependencyResponse({
+      errorCode: "other",
+      errorNumber: descriptors.errcode.value,
+      metadata: [],
+      outcome: "error",
+      payload,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function replaySqliteError(response) {
+  if (
+    response.errorCode !== "other" ||
+    !Array.isArray(response.metadata) ||
+    response.metadata.length !== 0 ||
+    response.status !== null ||
+    response.statusCode !== null
+  ) {
+    throw invalidReplay();
+  }
+  const payload = decodePayload(response.payload);
+  requirePayload(payload, "error", 7);
+  const [, , stack, message, code, errcode, errstr] = payload;
+  if (
+    typeof stack !== "string" ||
+    typeof message !== "string" ||
+    code !== SQLITE_ERROR_CODE ||
+    !unsigned32(errcode) ||
+    typeof errstr !== "string" ||
+    response.errorNumber !== errcode
+  ) {
+    throw invalidReplay();
+  }
+  const error = new Error(message);
+  if (!standardStackDescriptor(Object.getOwnPropertyDescriptor(error, "stack"))) {
+    throw invalidReplay();
+  }
+  error.stack = stack;
+  for (const [name, value] of [
+    ["code", code],
+    ["errcode", errcode],
+    ["errstr", errstr],
+  ]) {
+    Object.defineProperty(error, name, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    });
+  }
+  if (
+    !sameKeys(Reflect.ownKeys(error), SQLITE_ERROR_KEYS) ||
+    error.stack !== stack
+  ) {
+    throw invalidReplay();
+  }
+  return error;
+}
+
+function standardStackDescriptor(descriptor) {
+  return descriptor !== undefined &&
+    typeof STANDARD_STACK_DESCRIPTOR?.get === "function" &&
+    typeof STANDARD_STACK_DESCRIPTOR?.set === "function" &&
+    descriptor.configurable === true &&
+    descriptor.enumerable === false &&
+    descriptor.get === STANDARD_STACK_DESCRIPTOR?.get &&
+    descriptor.set === STANDARD_STACK_DESCRIPTOR?.set;
+}
+
+function standardDataDescriptor(descriptor, enumerable, type) {
+  return descriptor !== undefined &&
+    descriptor.configurable === true &&
+    descriptor.enumerable === enumerable &&
+    descriptor.writable === true &&
+    Object.hasOwn(descriptor, "value") &&
+    typeof descriptor.value === type;
+}
+
+function unsigned32(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 0xffff_ffff;
+}
+
+function sameKeys(actual, expected) {
+  return actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index]);
 }
 
 function allocateStatementId(database) {
@@ -420,7 +560,7 @@ function decodeSqliteValue(value) {
 function encodePayload(value) {
   let bytes;
   try {
-    bytes = Buffer.from(JSON.stringify(value), "utf8");
+    bytes = canonicalBytes(value);
   } catch {
     throw adapterInvalid();
   }
@@ -436,7 +576,9 @@ function decodePayload(bytes) {
   }
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return JSON.parse(text);
+    const value = JSON.parse(text);
+    if (!bytes.equals(canonicalBytes(value))) throw invalidReplay();
+    return value;
   } catch {
     throw invalidReplay();
   }
