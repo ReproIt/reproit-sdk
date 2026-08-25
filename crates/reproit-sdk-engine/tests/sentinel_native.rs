@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(clippy::duplicate_mod, dead_code, unused_imports)]
 
 #[cfg(target_os = "linux")]
 #[path = "../src/sentinel_linux.rs"]
