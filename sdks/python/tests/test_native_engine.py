@@ -19,6 +19,7 @@ from reproit_sdk.native_engine import (
     RESPONSE_CAPACITY,
     NativeEngineBridge,
     NativeEngineCallError,
+    NativeDependencyHandle,
     NativeEngineError,
     NativeEngineHandle,
     NativeObservationHandle,
@@ -231,6 +232,8 @@ class NativeEngineBridgeTests(unittest.TestCase):
 
     def test_typed_calls_cover_the_shared_engine_lifecycle(self):
         results = {
+            "dependency-open": {"action": "capture", "dependency_handle": 15},
+            "dependency-finish": {"outcome": "response"},
             "engine-open": {"engine_handle": 11},
             "engine-close": {},
             "observation-open": {
@@ -272,6 +275,18 @@ class NativeEngineBridgeTests(unittest.TestCase):
             operation.handle,
             {"format": "reproit.operation-input.v1"},
         )
+        dependency = bridge.dependency_open(
+            operation.handle,
+            {"observation_class": "database"},
+            "dependency-parent",
+        )
+        self.assertEqual(
+            bridge.dependency_finish(
+                dependency.handle,
+                {"outcome": "response"},
+            ),
+            "response",
+        )
         observation = bridge.observation_open(
             operation.handle,
             "outbound-http",
@@ -311,6 +326,8 @@ class NativeEngineBridgeTests(unittest.TestCase):
         self.assertEqual(engine, NativeEngineHandle(11))
         self.assertEqual(operation.handle, NativeOperationHandle(12))
         self.assertEqual(operation.operation_id, "operation-id")
+        self.assertEqual(dependency.handle, NativeDependencyHandle(15))
+        self.assertEqual(dependency.action, "capture")
         self.assertEqual(observation.handle, NativeObservationHandle(14))
         self.assertEqual(observation.session_position, 0)
         self.assertEqual(sink, NativeSinkHandle(13))
@@ -333,6 +350,25 @@ class NativeEngineBridgeTests(unittest.TestCase):
         self.assertEqual(
             library.requests[3],
             {
+                "causal_parent_id": "dependency-parent",
+                "format": "reproit.sdk-engine-call.v1",
+                "operation": "dependency-open",
+                "operation_handle": 12,
+                "request": {"observation_class": "database"},
+            },
+        )
+        self.assertEqual(
+            library.requests[4],
+            {
+                "dependency_handle": 15,
+                "format": "reproit.sdk-engine-call.v1",
+                "operation": "dependency-finish",
+                "response": {"outcome": "response"},
+            },
+        )
+        self.assertEqual(
+            library.requests[5],
+            {
                 "causal_parent_id": "parent-id",
                 "class": "outbound-http",
                 "format": "reproit.sdk-engine-call.v1",
@@ -341,7 +377,7 @@ class NativeEngineBridgeTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            library.requests[4],
+            library.requests[6],
             {
                 "chunk": base64.urlsafe_b64encode(b"request")
                 .rstrip(b"=")
@@ -353,7 +389,7 @@ class NativeEngineBridgeTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            library.requests[7],
+            library.requests[9],
             {
                 "format": "reproit.sdk-engine-call.v1",
                 "observation_handle": 14,
@@ -368,6 +404,8 @@ class NativeEngineBridgeTests(unittest.TestCase):
                 "engine-open",
                 "operation-begin",
                 "operation-input",
+                "dependency-open",
+                "dependency-finish",
                 "observation-open",
                 "observation-write",
                 "observation-dispatch",

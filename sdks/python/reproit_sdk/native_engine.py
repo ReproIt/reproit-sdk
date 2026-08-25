@@ -29,11 +29,12 @@ MAX_OBSERVATION_CHUNK_BYTES = 32_768
 MAX_OBSERVATION_RESPONSE_READ_BYTES = 8_192
 MAX_OBSERVATION_SESSIONS = 1_024
 MAX_OBSERVATION_SESSIONS_PER_OPERATION = 64
+MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES = 65_536
 MAX_SINK_WAIT_MS = 1_800_000
 MAX_SINK_WAITERS = 16
 MAX_ARTIFACT_MANIFEST_BYTES = 16_384
 ABI_CONTRACT_DIGEST = (
-    "sha256:35ea88f10ce9284ae85bd9a35e8b1e78e8c292a843ebe3d349dbed6a3b4113b3"
+    "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3"
 )
 ARTIFACT_MANIFEST_FORMAT = "reproit.sdk-engine-artifacts.v1"
 ARTIFACT_MANIFEST_NAME = "sdk-engine-artifacts.json"
@@ -54,6 +55,7 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 NativeEngineHandle = NewType("NativeEngineHandle", int)
 NativeOperationHandle = NewType("NativeOperationHandle", int)
 NativeObservationHandle = NewType("NativeObservationHandle", int)
+NativeDependencyHandle = NewType("NativeDependencyHandle", int)
 NativeSinkHandle = NewType("NativeSinkHandle", int)
 NativeObservationClass = Literal[
     "clock",
@@ -75,6 +77,32 @@ NativeObservationOutcome = Literal["error", "response"]
 NativeObservationStream = Literal["request", "response"]
 
 _OBSERVATION_ACTIONS = ("capture", "replay")
+_DEPENDENCY_CONTRACT = {
+    "finish_fields": ["dependency_handle", "response"],
+    "finish_result_fields": ["outcome"],
+    "open_fields": ["causal_parent_id", "operation_handle", "request"],
+    "open_result_fields": ["action", "dependency_handle"],
+    "replay_read_operation": "observation-read",
+    "request_fields": [
+        "encoding",
+        "metadata",
+        "method",
+        "observation_class",
+        "operation",
+        "payload",
+        "protocol",
+        "target",
+    ],
+    "response_fields": [
+        "error_code",
+        "error_number",
+        "metadata",
+        "outcome",
+        "payload",
+        "status",
+        "status_code",
+    ],
+}
 _ERROR_BEHAVIOR = {
     "json_error": {
         "error_code_source": "reproit-core-v1",
@@ -124,6 +152,8 @@ _OBSERVATION_CONTRACT = {
 
 class _EngineOperation(StrEnum):
     CONTRACT = "contract"
+    DEPENDENCY_FINISH = "dependency-finish"
+    DEPENDENCY_OPEN = "dependency-open"
     ENGINE_CLOSE = "engine-close"
     ENGINE_OPEN = "engine-open"
     OBSERVATION_ABANDON = "observation-abandon"
@@ -161,6 +191,14 @@ class NativeObservation:
 
     handle: NativeObservationHandle
     session_position: int
+
+
+@dataclass(frozen=True)
+class NativeDependency:
+    """A semantic dependency handle and the engine-selected action."""
+
+    handle: NativeDependencyHandle
+    action: NativeObservationAction
 
 
 class NativeEngineError(RuntimeError):
@@ -319,6 +357,54 @@ class NativeEngineBridge:
             input=_copy_mapping(input_payload),
             operation_handle=_request_handle(operation_handle),
         )
+
+    def dependency_open(
+        self,
+        operation_handle: NativeOperationHandle,
+        request: Mapping[str, Any],
+        causal_parent_id: str | None = None,
+    ) -> NativeDependency:
+        """Validate and open one semantic dependency in the shared engine."""
+        result = self._call_result(
+            {
+                "causal_parent_id": causal_parent_id,
+                "format": CALL_FORMAT,
+                "operation": _EngineOperation.DEPENDENCY_OPEN,
+                "operation_handle": _request_handle(operation_handle),
+                "request": _copy_mapping(request),
+            }
+        )
+        if (
+            set(result) != {"action", "dependency_handle"}
+            or result.get("action") not in _OBSERVATION_ACTIONS
+        ):
+            raise _response_invalid()
+        return NativeDependency(
+            NativeDependencyHandle(
+                _result_handle(result, "dependency_handle", exact=False)
+            ),
+            result["action"],
+        )
+
+    def dependency_finish(
+        self,
+        dependency_handle: NativeDependencyHandle,
+        response: Mapping[str, Any] | None,
+    ) -> NativeObservationOutcome:
+        """Validate and finish one semantic dependency in the shared engine."""
+        response_value = None if response is None else _copy_mapping(response)
+        result = self._call_result(
+            {
+                "dependency_handle": _request_handle(dependency_handle),
+                "format": CALL_FORMAT,
+                "operation": _EngineOperation.DEPENDENCY_FINISH,
+                "response": response_value,
+            }
+        )
+        outcome = result.get("outcome")
+        if set(result) != {"outcome"} or outcome not in ("error", "response"):
+            raise _response_invalid()
+        return outcome
 
     def observation_open(
         self,
@@ -567,6 +653,7 @@ class NativeEngineBridge:
 def _valid_contract(value: object) -> bool:
     if not isinstance(value, dict) or set(value) != {
         "abi_version",
+        "dependency_contract",
         "error_behavior",
         "format",
         "libraries",
@@ -598,6 +685,7 @@ def _valid_contract(value: object) -> bool:
         value.get("abi_version") == ABI_VERSION
         and value.get("format") == "reproit.sdk-engine-abi.v1"
         and value.get("error_behavior") == _ERROR_BEHAVIOR
+        and value.get("dependency_contract") == _DEPENDENCY_CONTRACT
         and actual_libraries == _PLATFORM_LIBRARY_NAMES
         and value.get("limits")
         == {
@@ -613,6 +701,9 @@ def _valid_contract(value: object) -> bool:
                 MAX_OBSERVATION_SESSIONS_PER_OPERATION
             ),
             "operations": 512,
+            "semantic_dependency_record_bytes": (
+                MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES
+            ),
             "sink_wait_ms": MAX_SINK_WAIT_MS,
             "sinks": MAX_SINK_WAITERS,
         }

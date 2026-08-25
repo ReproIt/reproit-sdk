@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
 
 import {
@@ -8,90 +6,97 @@ import {
   runOperation,
 } from "../src/engine-operation.js";
 import {
-  decodeDependencyRequest,
-  decodeDependencyResponse,
+  dependencyRequest,
   dependencyResponse,
-  encodeDependencyRequest,
-  encodeDependencyResponse,
   runDependency,
 } from "../src/semantic-dependency.js";
 
-const vectorPath = path.resolve(
-  import.meta.dirname,
-  "../../../.core/specs/v1/protocol-vectors.json",
-);
-const vectors = JSON.parse(fs.readFileSync(vectorPath, "utf8"));
-const positive = vectors.positive;
+function request(changes = {}) {
+  return dependencyRequest({
+    encoding: "http-1.1-message",
+    metadata: [
+      { name: "x-tag", value: Buffer.from("first") },
+      { name: "x-tag", value: Buffer.from("second") },
+    ],
+    method: "POST",
+    observationClass: "outbound-http",
+    operation: "outbound-http-request",
+    payload: Buffer.from("request"),
+    protocol: "http-1.1",
+    target: "https://inventory.example/item",
+    ...changes,
+  });
+}
+
+function response(changes = {}) {
+  return dependencyResponse({
+    metadata: [
+      { name: "x-tag", value: Buffer.from("first") },
+      { name: "x-tag", value: Buffer.from("second") },
+    ],
+    outcome: "response",
+    payload: Buffer.from("response"),
+    statusCode: 200,
+    ...changes,
+  });
+}
+
+function responseRecord(value) {
+  return Buffer.from(JSON.stringify({
+    error_code: value.errorCode,
+    error_number: value.errorNumber,
+    metadata: value.metadata.map((field) => ({
+      name: Buffer.from(field.name).toString("base64url"),
+      value: field.value.toString("base64url"),
+    })),
+    outcome: value.outcome,
+    payload: value.payload === null ? null : value.payload.toString("base64url"),
+    status: value.status,
+    status_code: value.statusCode,
+  }));
+}
 
 class DependencyBridge {
   calls = [];
-  failDispatch = false;
   failFinish = false;
   failOpen = false;
-  failRequestWrite = false;
-  failResponseWrite = false;
-  requestChunks = [];
-  responseChunks = [];
+  failRead = false;
   #action;
   #offset = 0;
+  #readBytes;
   #response;
 
-  constructor(action, response = null) {
+  constructor(action, responseBytes = Buffer.alloc(0), readBytes = 17) {
     this.#action = action;
-    this.#response = response === null
-      ? Buffer.alloc(0)
-      : Buffer.from(JSON.stringify(response), "utf8");
+    this.#readBytes = readBytes;
+    this.#response = responseBytes;
   }
 
   operationBegin() {
-    return { operationHandle: 2, operationId: "op_dependency_fixture" };
+    return { operationHandle: 2, operationId: "op_dependency" };
   }
 
   operationInput() {}
 
-  observationOpen(handle, observationClass, parent) {
+  dependencyOpen(handle, dependencyRequestValue, parent) {
     if (this.failOpen) throw new Error("private bridge failure");
-    this.calls.push(["observation-open", handle, observationClass, parent]);
-    return { observationHandle: 4, sessionPosition: 0 };
+    this.calls.push(["dependency-open", handle, dependencyRequestValue, parent]);
+    return { action: this.#action, dependencyHandle: 4 };
   }
 
-  observationWrite(handle, stream, chunk) {
-    if (
-      (stream === "request" && this.failRequestWrite) ||
-      (stream === "response" && this.failResponseWrite)
-    ) {
-      throw new Error("private bridge failure");
-    }
-    this.calls.push(["observation-write", handle, stream, chunk.length]);
-    const destination = stream === "request"
-      ? this.requestChunks
-      : this.responseChunks;
-    destination.push(Buffer.from(chunk));
-  }
-
-  observationDispatch() {
-    if (this.failDispatch) throw new Error("private bridge failure");
-    return this.#action;
-  }
-
-  observationRead() {
-    const end = Math.min(this.#offset + 8_192, this.#response.length);
+  observationRead(handle) {
+    if (this.failRead) throw new Error("private bridge failure");
+    const end = Math.min(this.#offset + this.#readBytes, this.#response.length);
     const chunk = this.#response.subarray(this.#offset, end);
     this.#offset = end;
+    this.calls.push(["observation-read", handle, chunk.length]);
     return { chunk, eof: this.#offset === this.#response.length };
   }
 
-  observationFinish(handle, outcome, position) {
+  dependencyFinish(handle, dependencyResponseValue) {
     if (this.failFinish) throw new Error("private bridge failure");
-    this.calls.push(["observation-finish", handle, outcome, position]);
-  }
-
-  observationAbandon(handle) {
-    this.calls.push(["observation-abandon", handle]);
-  }
-
-  operationUnowned(handle, observationClass, evidence) {
-    this.calls.push(["operation-unowned", handle, observationClass, evidence]);
+    this.calls.push(["dependency-finish", handle, dependencyResponseValue]);
+    return dependencyResponseValue?.outcome ?? "response";
   }
 
   operationSucceed() {}
@@ -103,220 +108,111 @@ class DependencyBridge {
   engineClose() {}
 }
 
-test("all positive Core dependency vectors round trip exactly", () => {
-  for (const suffix of ["database", "outbound_http", "queue"]) {
-    const requestValue = positive[`semantic_dependency_request_${suffix}`].value;
-    const responseValue = positive[`semantic_dependency_response_${suffix}`].value;
-    const requestRecord = canonicalBytes(requestValue);
-    const responseRecord = canonicalBytes(responseValue);
-    const request = decodeDependencyRequest(requestRecord);
-    const response = decodeDependencyResponse(requestRecord, responseRecord);
-    assert.deepEqual(encodeDependencyRequest(request), requestRecord);
-    assert.deepEqual(
-      encodeDependencyResponse(requestRecord, response),
-      responseRecord,
-    );
-  }
-  const http = decodeDependencyRequest(canonicalBytes(
-    positive.semantic_dependency_request_outbound_http.value,
-  ));
-  assert.deepEqual(
-    http.metadata.map((field) => [field.name, field.value.toString("utf8")]),
-    [["x-tag", "capture"], ["x-tag", "second"]],
-  );
-});
-
-test("all negative Core dependency vectors are rejected", () => {
-  const negatives = vectors.negative.filter((vector) =>
-    vector.name.startsWith("semantic-dependency-"));
-  assert.equal(negatives.length, 9);
-  for (const vector of negatives) {
-    const mutated = structuredClone(positive[vector.base].value);
-    applyVectorChange(mutated, vector);
-    const record = canonicalBytes(mutated);
-    assert.throws(() => {
-      if (vector.schema === "semantic_dependency_request") {
-        decodeDependencyRequest(record);
-        return;
-      }
-      const suffix = vector.base.replace("semantic_dependency_response_", "");
-      const request = canonicalBytes(
-        positive[`semantic_dependency_request_${suffix}`].value,
-      );
-      decodeDependencyResponse(request, record);
-    }, { code: "ERR_REPROIT_SEMANTIC_DEPENDENCY" }, vector.name);
-  }
-});
-
-test("capture and replay use only the generic observation session", async () => {
-  const requestRecord = canonicalBytes(
-    positive.semantic_dependency_request_outbound_http.value,
-  );
-  const responseRecord = canonicalBytes(
-    positive.semantic_dependency_response_outbound_http.value,
-  );
-  const request = decodeDependencyRequest(requestRecord);
-  const response = decodeDependencyResponse(requestRecord, responseRecord);
-
-  const captureBridge = new DependencyBridge("capture");
-  const captured = await run(captureBridge, () =>
-    runDependency(request, async () => response));
-  assert.deepEqual(captured, response);
-  assert.deepEqual(Buffer.concat(captureBridge.requestChunks), requestRecord);
-  assert.deepEqual(Buffer.concat(captureBridge.responseChunks), responseRecord);
-  assert.deepEqual(captureBridge.calls.at(-1), [
-    "observation-finish", 4, "response", 0,
-  ]);
-
-  const replayBridge = new DependencyBridge(
-    "replay",
-    positive.semantic_dependency_response_outbound_http.value,
-  );
-  const replayed = run(replayBridge, () => runDependency(request, () => {
-    throw new Error("Replay called the live dependency.");
-  }));
-  assert.deepEqual(replayed, response);
-});
-
-test("bounds apply before a session and corrupt replay has no live fallback", () => {
-  const invalid = {
-    encoding: "postgresql-wire-v3",
-    metadata: [],
-    method: null,
-    observationClass: "database",
-    operation: "database-execute",
-    payload: Buffer.alloc(24 * 1_024 + 1),
-    protocol: "postgresql",
-    target: "primary",
-  };
-  const boundBridge = new DependencyBridge("capture");
-  const sentinel = dependencyResponse({
-    metadata: [],
-    outcome: "response",
-    payload: Buffer.alloc(0),
-    status: "complete",
-  });
-  assert.equal(
-    run(boundBridge, () => runDependency(invalid, () => sentinel)),
-    sentinel,
-  );
-  assert.equal(
-    boundBridge.calls.some((call) => call[0] === "observation-open"),
-    false,
-  );
-  assert.equal(
-    boundBridge.calls.some((call) => call[0] === "operation-unowned"),
-    true,
-  );
-
-  const request = decodeDependencyRequest(canonicalBytes(
-    positive.semantic_dependency_request_outbound_http.value,
-  ));
-  const replayBridge = new DependencyBridge("replay", {});
-  assert.throws(
-    () => run(replayBridge, () => runDependency(request, () => {
-      throw new Error("Replay called the live dependency.");
-    })),
-    { code: "ERR_REPROIT_SEMANTIC_DEPENDENCY" },
-  );
-  assert.equal(
-    replayBridge.calls.some((call) => call[0] === "observation-abandon"),
-    true,
-  );
-});
-
-test("request infrastructure failures preserve one exact live result or error", () => {
-  const request = decodeDependencyRequest(canonicalBytes(
-    positive.semantic_dependency_request_outbound_http.value,
-  ));
-  const response = decodeDependencyResponse(
-    encodeDependencyRequest(request),
-    canonicalBytes(positive.semantic_dependency_response_outbound_http.value),
-  );
-  for (const mode of [
-    "invalid", "open", "write", "dispatch", "action", "live",
+test("capture uses the exact native call shape for response and error", () => {
+  for (const captured of [
+    response(),
+    response({
+      errorCode: "not-found",
+      errorNumber: 2,
+      metadata: [],
+      outcome: "error",
+      payload: null,
+      statusCode: null,
+    }),
   ]) {
-    const selected = mode === "invalid"
-      ? { ...request, payload: Buffer.alloc(24 * 1_024 + 1) }
-      : request;
-    const resultBridge = failedRequestBridge(mode);
+    const bridge = new DependencyBridge("capture");
+    assert.equal(run(bridge, () => captured), captured);
+    const [open, finish] = bridge.calls;
+    assert.deepEqual(open.slice(0, 2), ["dependency-open", 2]);
+    assert.equal(open[2].payload, "cmVxdWVzdA");
+    assert.deepEqual(open[2].metadata, [
+      { name: "eC10YWc", value: "Zmlyc3Q" },
+      { name: "eC10YWc", value: "c2Vjb25k" },
+    ]);
+    assert.deepEqual(finish.slice(0, 2), ["dependency-finish", 4]);
+    assert.equal(finish[2].outcome, captured.outcome);
+  }
+});
+
+test("replay reads chunks, finishes validation, then reconstructs", () => {
+  const expected = response();
+  const bridge = new DependencyBridge("replay", responseRecord(expected), 7);
+  let calls = 0;
+  const actual = run(bridge, () => {
+    calls += 1;
+    return expected;
+  });
+  assert.deepEqual(actual, expected);
+  assert.equal(calls, 0);
+  assert.deepEqual(bridge.calls.at(-1), ["dependency-finish", 4, null]);
+});
+
+test("capture failures preserve one exact result or exception", () => {
+  for (const mode of ["conversion", "open", "finish"]) {
+    const selected = mode === "conversion"
+      ? request({ payload: Buffer.alloc(65_537) })
+      : request();
+    const resultBridge = new DependencyBridge("capture");
+    resultBridge.failOpen = mode === "open";
+    resultBridge.failFinish = mode === "finish";
+    const expected = response();
     let resultCalls = 0;
-    const result = run(resultBridge, () => runDependency(selected, () => {
+    const actual = run(resultBridge, () => {
       resultCalls += 1;
-      return response;
-    }));
-    assert.equal(result, response, `${mode} result identity`);
+      return expected;
+    }, selected);
+    assert.equal(actual, expected, `${mode} result identity`);
     assert.equal(resultCalls, 1, `${mode} result calls`);
 
-    const errorBridge = failedRequestBridge(mode);
+    const errorBridge = new DependencyBridge("capture");
+    errorBridge.failOpen = mode === "open";
+    errorBridge.failFinish = mode === "finish";
     const sentinel = new Error("application sentinel");
     let errorCalls = 0;
-    let raised;
-    try {
-      run(errorBridge, () => runDependency(selected, () => {
-        errorCalls += 1;
-        throw sentinel;
-      }));
-    } catch (error) {
-      raised = error;
-    }
-    assert.equal(raised, sentinel, `${mode} error identity`);
+    assert.throws(() => run(errorBridge, () => {
+      errorCalls += 1;
+      throw sentinel;
+    }, selected), (error) => error === sentinel);
     assert.equal(errorCalls, 1, `${mode} error calls`);
   }
 });
 
-test("response infrastructure failures preserve the exact live result", () => {
-  const request = decodeDependencyRequest(canonicalBytes(
-    positive.semantic_dependency_request_outbound_http.value,
-  ));
-  const response = decodeDependencyResponse(
-    encodeDependencyRequest(request),
-    canonicalBytes(positive.semantic_dependency_response_outbound_http.value),
-  );
-  for (const mode of ["encode", "write", "finish"]) {
-    const bridge = new DependencyBridge("capture");
-    bridge.failResponseWrite = mode === "write";
+test("async capture preserves the exact result", async () => {
+  const bridge = new DependencyBridge("capture");
+  const expected = response();
+  assert.equal(await run(bridge, async () => expected), expected);
+});
+
+test("metadata conversion is bounded before engine open", () => {
+  const bridge = new DependencyBridge("capture");
+  const expected = response();
+  const selected = request({
+    metadata: [{ name: "name", value: Buffer.alloc(65_537) }],
+  });
+  assert.equal(run(bridge, () => expected, selected), expected);
+  assert.equal(bridge.calls.some((call) => call[0] === "dependency-open"), false);
+});
+
+test("replay failures never call the live dependency", () => {
+  for (const mode of ["read", "finish", "record"]) {
+    const bridge = new DependencyBridge("replay", Buffer.from("not-json"));
+    bridge.failRead = mode === "read";
     bridge.failFinish = mode === "finish";
-    const sentinel = mode === "encode" ? { application: "result" } : response;
     let calls = 0;
-    const result = run(bridge, () => runDependency(request, () => {
+    assert.throws(() => run(bridge, () => {
       calls += 1;
-      return sentinel;
-    }));
-    assert.equal(result, sentinel, `${mode} result identity`);
-    assert.equal(calls, 1, `${mode} result calls`);
+      return response();
+    }), { code: "ERR_REPROIT_SEMANTIC_DEPENDENCY" });
+    assert.equal(calls, 0);
   }
 });
 
-function run(bridge, call) {
+function run(bridge, live, selected = request()) {
   const project = createManagedEngineProjectForTest(bridge, 1, () => "unused");
   return runOperation(
     project,
     { begin: {}, completion: "return", inputs: [] },
-    call,
+    () => runDependency(selected, live),
     () => null,
   );
-}
-
-function canonicalBytes(value) {
-  return Buffer.from(JSON.stringify(value), "utf8");
-}
-
-function failedRequestBridge(mode) {
-  const bridge = new DependencyBridge(mode === "action" ? "unknown" : "capture");
-  bridge.failOpen = mode === "open";
-  bridge.failRequestWrite = mode === "write";
-  bridge.failDispatch = mode === "dispatch";
-  return bridge;
-}
-
-function applyVectorChange(value, vector) {
-  const parts = vector.path.replace(/^\//u, "").split("/");
-  let parent = value;
-  for (const part of parts.slice(0, -1)) {
-    parent = Array.isArray(parent) ? parent[Number(part)] : parent[part];
-  }
-  const key = parts.at(-1);
-  if (Array.isArray(parent)) parent[Number(key)] = vector.value;
-  else parent[key] = vector.value;
 }

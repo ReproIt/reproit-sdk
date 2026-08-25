@@ -1,374 +1,288 @@
 from __future__ import annotations
 
 import asyncio
-import copy
+import base64
 import json
 import unittest
-from pathlib import Path
-from unittest import mock
 
-from reproit_sdk.encoding import canonical_bytes
+from reproit_sdk.engine_operation import (
+    _PROJECT_CONSTRUCTOR,
+    ManagedEngineProject,
+    OperationPreparation,
+    run_operation,
+)
 from reproit_sdk.semantic_dependency import (
     _DependencyRequest,
     _DependencyResponse,
-    _SemanticDependencyError,
-    _decode_dependency_request,
-    _decode_dependency_response,
-    _encode_dependency_request,
-    _encode_dependency_response,
     _run_dependency,
+    _SemanticDependencyError,
 )
 
 
-class FakeSession:
-    def __init__(self, action: str, replay: bytes = b"") -> None:
+def _request(**changes: object) -> _DependencyRequest:
+    values = {
+        "observation_class": "outbound-http",
+        "operation": "outbound-http-request",
+        "protocol": "http-1.1",
+        "encoding": "http-1.1-message",
+        "target": "https://inventory.example/item",
+        "method": "POST",
+        "payload": b"request",
+        "metadata": (("x-tag", b"first"), ("x-tag", b"second")),
+    }
+    values.update(changes)
+    return _DependencyRequest(**values)
+
+
+def _response(**changes: object) -> _DependencyResponse:
+    values = {
+        "outcome": "response",
+        "payload": b"response",
+        "metadata": (("x-tag", b"first"), ("x-tag", b"second")),
+        "status_code": 200,
+    }
+    values.update(changes)
+    return _DependencyResponse(**values)
+
+
+def _response_record(response: _DependencyResponse) -> bytes:
+    def encode(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+    return json.dumps(
+        {
+            "error_code": response.error_code,
+            "error_number": response.error_number,
+            "metadata": [
+                {
+                    "name": encode(name.encode()),
+                    "value": encode(value),
+                }
+                for name, value in response.metadata
+            ],
+            "outcome": response.outcome,
+            "payload": None if response.payload is None else encode(response.payload),
+            "status": response.status,
+            "status_code": response.status_code,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+class DependencyBridge:
+    def __init__(
+        self,
+        action: str,
+        response: bytes = b"",
+        *,
+        read_bytes: int = 17,
+    ) -> None:
         self.action = action
-        self.replay = replay
-        self.request_chunks: list[bytes] = []
-        self.response_chunks: list[bytes] = []
-        self.finished: str | None = None
-        self.abandoned = False
-        self.fail_request_write = False
-        self.fail_response_write = False
+        self.calls: list[tuple[object, ...]] = []
         self.fail_finish = False
-        self.fail_dispatch = False
-
-    def _write_request(self, chunk: bytes) -> bool:
-        self.request_chunks.append(chunk)
-        return not self.fail_request_write
-
-    def _write_response(self, chunk: bytes) -> bool:
-        self.response_chunks.append(chunk)
-        return not self.fail_response_write
-
-    def _dispatch(self) -> str:
-        if self.fail_dispatch:
-            raise RuntimeError("private bridge failure")
-        return self.action
-
-    def _read_response(self) -> tuple[bytes, bool]:
-        value = self.replay
-        self.replay = b""
-        return value, True
-
-    def _finish(self, outcome: str) -> bool:
-        self.finished = outcome
-        return not self.fail_finish
-
-    def _abandon(self) -> None:
-        self.abandoned = True
-
-
-class FakeContext:
-    def __init__(self, session: FakeSession) -> None:
-        self.session = session
-        self.opened: list[str] = []
-        self.unowned: list[tuple[str, bytes]] = []
-        self.abandoned = False
         self.fail_open = False
+        self.fail_read = False
+        self.offset = 0
+        self.read_bytes = read_bytes
+        self.response = response
 
-    def _open_observation(self, observation_class: str) -> FakeSession:
+    def operation_begin(self, _engine: int, _begin: object) -> object:
+        return type("Native", (), {"handle": 2, "operation_id": "op_dependency"})()
+
+    def operation_input(self, *_arguments: object) -> None:
+        pass
+
+    def dependency_open(
+        self,
+        handle: int,
+        request: dict[str, object],
+        parent: str | None,
+    ) -> object:
         if self.fail_open:
             raise RuntimeError("private bridge failure")
-        self.opened.append(observation_class)
-        return self.session
+        self.calls.append(("dependency-open", handle, request, parent))
+        return type(
+            "Dependency",
+            (),
+            {"handle": 4, "action": self.action},
+        )()
 
-    def _mark_unowned(self, observation_class: str, evidence: bytes) -> None:
-        self.unowned.append((observation_class, evidence))
+    def observation_read(self, handle: int) -> tuple[bytes, bool]:
+        if self.fail_read:
+            raise RuntimeError("private bridge failure")
+        end = min(self.offset + self.read_bytes, len(self.response))
+        chunk = self.response[self.offset : end]
+        self.offset = end
+        self.calls.append(("observation-read", handle, len(chunk)))
+        return chunk, self.offset == len(self.response)
 
-    def _abandon(self) -> None:
-        self.abandoned = True
+    def dependency_finish(
+        self,
+        handle: int,
+        response: dict[str, object] | None,
+    ) -> str:
+        if self.fail_finish:
+            raise RuntimeError("private bridge failure")
+        self.calls.append(("dependency-finish", handle, response))
+        if response is None:
+            return "response"
+        return str(response["outcome"])
+
+    def operation_succeed(self, *_arguments: object) -> None:
+        pass
+
+    def operation_abandon(self, handle: int) -> None:
+        self.calls.append(("operation-abandon", handle))
+
+    def engine_close(self, _handle: int) -> None:
+        pass
 
 
 class SemanticDependencyTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        vector_path = (
-            Path(__file__).parents[3]
-            / ".core"
-            / "specs/v1/protocol-vectors.json"
-        )
-        cls.vectors = json.loads(vector_path.read_bytes())
-        cls.positive = cls.vectors["positive"]
-
-    def test_positive_core_vectors_round_trip_exactly(self) -> None:
-        for suffix in ("database", "outbound_http", "queue"):
-            request_value = self.positive[
-                f"semantic_dependency_request_{suffix}"
-            ]["value"]
-            response_value = self.positive[
-                f"semantic_dependency_response_{suffix}"
-            ]["value"]
-            request_record = canonical_bytes(request_value)
-            response_record = canonical_bytes(response_value)
-            with self.subTest(suffix=suffix):
-                request = _decode_dependency_request(request_record)
-                response = _decode_dependency_response(
-                    request_record, response_record
-                )
-                self.assertEqual(
-                    _encode_dependency_request(request), request_record
-                )
-                self.assertEqual(
-                    _encode_dependency_response(request_record, response),
-                    response_record,
-                )
-        http = _decode_dependency_request(
-            canonical_bytes(
-                self.positive[
-                    "semantic_dependency_request_outbound_http"
-                ]["value"]
-            )
-        )
-        self.assertEqual(
-            http.metadata,
-            (("x-tag", b"capture"), ("x-tag", b"second")),
-        )
-
-    def test_all_core_negative_vectors_are_rejected(self) -> None:
-        negatives = [
-            value
-            for value in self.vectors["negative"]
-            if value["name"].startswith("semantic-dependency-")
-        ]
-        self.assertEqual(len(negatives), 9)
-        for vector in negatives:
-            mutated = copy.deepcopy(self.positive[vector["base"]]["value"])
-            self._apply_vector_change(mutated, vector)
-            record = canonical_bytes(mutated)
-            with (
-                self.subTest(name=vector["name"]),
-                self.assertRaises(_SemanticDependencyError),
-            ):
-                if vector["schema"] == "semantic_dependency_request":
-                    _decode_dependency_request(record)
-                else:
-                    suffix = vector["base"].removeprefix(
-                        "semantic_dependency_response_"
-                    )
-                    request = canonical_bytes(
-                        self.positive[
-                            f"semantic_dependency_request_{suffix}"
-                        ]["value"]
-                    )
-                    _decode_dependency_response(request, record)
-
-    def test_capture_uses_one_generic_session_and_exact_records(self) -> None:
-        request_record, request, response_record, response = self._http_pair()
-        session = FakeSession("capture")
-        context = FakeContext(session)
-        with mock.patch(
-            "reproit_sdk.semantic_dependency._active_context",
-            return_value=context,
-        ):
-            result = _run_dependency(request, lambda: response)
-        self.assertEqual(result, response)
-        self.assertEqual(context.opened, ["outbound-http"])
-        self.assertEqual(b"".join(session.request_chunks), request_record)
-        self.assertEqual(b"".join(session.response_chunks), response_record)
-        self.assertEqual(session.finished, "response")
-
-    def test_replay_returns_only_the_recorded_response(self) -> None:
-        _, request, response_record, response = self._http_pair()
-        session = FakeSession("replay", response_record)
-        context = FakeContext(session)
-
-        def live_call() -> _DependencyResponse:
-            raise AssertionError("Replay called the live dependency.")
-
-        with mock.patch(
-            "reproit_sdk.semantic_dependency._active_context",
-            return_value=context,
-        ):
-            result = _run_dependency(request, live_call)
-        self.assertEqual(result, response)
-        self.assertEqual(session.finished, "response")
-
-    def test_async_capture_keeps_the_same_generic_session(self) -> None:
-        _, request, _, response = self._http_pair()
-        session = FakeSession("capture")
-
-        async def capture() -> _DependencyResponse:
-            return response
-
-        with mock.patch(
-            "reproit_sdk.semantic_dependency._active_context",
-            return_value=FakeContext(session),
-        ):
-            result = asyncio.run(_run_dependency(request, capture))
-        self.assertEqual(result, response)
-        self.assertEqual(session.finished, "response")
-
-    def test_bounds_apply_before_a_session_and_large_records_are_chunked(self) -> None:
-        invalid = _DependencyRequest(
-            "database",
-            "database-execute",
-            "postgresql",
-            "postgresql-wire-v3",
-            "primary",
-            None,
-            bytes(24 * 1_024 + 1),
-        )
-        context = FakeContext(FakeSession("capture"))
-        sentinel = _DependencyResponse("response", b"")
-        with mock.patch(
-            "reproit_sdk.semantic_dependency._active_context",
-            return_value=context,
-        ):
-            self.assertIs(_run_dependency(invalid, lambda: sentinel), sentinel)
-        self.assertEqual(context.opened, [])
-        self.assertEqual(len(context.unowned), 1)
-
-        request = _DependencyRequest(
-            "database",
-            "database-execute",
-            "postgresql",
-            "postgresql-wire-v3",
-            "primary",
-            None,
-            bytes(24 * 1_024),
-        )
-        response = _DependencyResponse("response", b"", status="complete")
-        session = FakeSession("capture")
-        with mock.patch(
-            "reproit_sdk.semantic_dependency._active_context",
-            return_value=FakeContext(session),
-        ):
-            _run_dependency(request, lambda: response)
-        self.assertEqual(len(session.request_chunks), 2)
-        self.assertTrue(all(len(value) <= 32_768 for value in session.request_chunks))
-
-    def test_corrupt_replay_is_incomplete_without_a_live_fallback(self) -> None:
-        _, request, _, _ = self._http_pair()
-        session = FakeSession("replay", b"{}")
-        with (
-            mock.patch(
-                "reproit_sdk.semantic_dependency._active_context",
-                return_value=FakeContext(session),
+    def test_capture_uses_exact_native_call_shape_for_response_and_error(self) -> None:
+        for response in (
+            _response(),
+            _response(
+                outcome="error",
+                payload=None,
+                metadata=(),
+                status_code=None,
+                error_code="not-found",
+                error_number=2,
             ),
-            self.assertRaises(_SemanticDependencyError),
         ):
-            _run_dependency(
-                request,
-                lambda: (_ for _ in ()).throw(
-                    AssertionError("Replay called the live dependency.")
-                ),
-            )
-        self.assertTrue(session.abandoned)
+            with self.subTest(outcome=response.outcome):
+                bridge = DependencyBridge("capture")
+                self.assertIs(
+                    self._run(bridge, lambda response=response: response),
+                    response,
+                )
+                opened = bridge.calls[0]
+                self.assertEqual(opened[:2], ("dependency-open", 2))
+                request = opened[2]
+                self.assertEqual(request["payload"], "cmVxdWVzdA")
+                self.assertEqual(
+                    request["metadata"],
+                    [
+                        {"name": "eC10YWc", "value": "Zmlyc3Q"},
+                        {"name": "eC10YWc", "value": "c2Vjb25k"},
+                    ],
+                )
+                finished = bridge.calls[1]
+                self.assertEqual(finished[:2], ("dependency-finish", 4))
+                self.assertEqual(finished[2]["outcome"], response.outcome)
 
-    def test_request_infrastructure_failures_preserve_live_result_and_error(self) -> None:
-        _, request, _, response = self._http_pair()
-        invalid = _DependencyRequest(
-            "outbound-http",
-            "outbound-http-request",
-            "http-1.1",
-            "http-1.1-message",
-            "https://inventory.example/item",
-            "POST",
-            bytes(24 * 1_024 + 1),
-        )
-        for mode in ("invalid", "open", "write", "dispatch", "action", "live"):
-            with self.subTest(mode=mode, outcome="result"):
-                selected = invalid if mode == "invalid" else request
-                session, context = self._failed_request_context(mode)
+    def test_replay_reads_chunks_finishes_validation_then_reconstructs(self) -> None:
+        expected = _response()
+        bridge = DependencyBridge("replay", _response_record(expected), read_bytes=7)
+        live_calls = 0
+
+        def live() -> _DependencyResponse:
+            nonlocal live_calls
+            live_calls += 1
+            return expected
+
+        actual = self._run(bridge, live)
+        self.assertEqual(actual, expected)
+        self.assertEqual(live_calls, 0)
+        self.assertEqual(bridge.calls[-1], ("dependency-finish", 4, None))
+
+    def test_capture_failures_preserve_one_exact_result_or_exception(self) -> None:
+        for mode in ("conversion", "open", "finish"):
+            with self.subTest(mode=mode, result=True):
+                bridge = DependencyBridge("capture")
+                bridge.fail_open = mode == "open"
+                bridge.fail_finish = mode == "finish"
+                request = (
+                    _request(payload=b"x" * 65_537)
+                    if mode == "conversion"
+                    else _request()
+                )
+                result = _response()
                 calls = 0
 
-                def live() -> _DependencyResponse:
+                def live(result=result) -> _DependencyResponse:
                     nonlocal calls
                     calls += 1
-                    return response
+                    return result
 
-                with mock.patch(
-                    "reproit_sdk.semantic_dependency._active_context",
-                    return_value=context,
-                ):
-                    self.assertIs(_run_dependency(selected, live), response)
+                self.assertIs(self._run(bridge, live, request), result)
                 self.assertEqual(calls, 1)
-                if mode == "invalid":
-                    self.assertEqual(len(context.unowned), 1)
-            with self.subTest(mode=mode, outcome="error"):
-                selected = invalid if mode == "invalid" else request
-                session, context = self._failed_request_context(mode)
+            with self.subTest(mode=mode, exception=True):
+                bridge = DependencyBridge("capture")
+                bridge.fail_open = mode == "open"
+                bridge.fail_finish = mode == "finish"
+                request = (
+                    _request(payload=b"x" * 65_537)
+                    if mode == "conversion"
+                    else _request()
+                )
                 sentinel = RuntimeError("application sentinel")
                 calls = 0
 
-                def failing() -> _DependencyResponse:
+                def failing(sentinel=sentinel) -> _DependencyResponse:
                     nonlocal calls
                     calls += 1
                     raise sentinel
 
-                with (
-                    mock.patch(
-                        "reproit_sdk.semantic_dependency._active_context",
-                        return_value=context,
-                    ),
-                    self.assertRaises(RuntimeError) as raised,
-                ):
-                    _run_dependency(selected, failing)
+                with self.assertRaises(RuntimeError) as raised:
+                    self._run(bridge, failing, request)
                 self.assertIs(raised.exception, sentinel)
                 self.assertEqual(calls, 1)
 
-    def test_response_infrastructure_failures_preserve_live_result(self) -> None:
-        _, request, _, response = self._http_pair()
-        invalid_response = object()
-        for mode in ("encode", "write", "finish"):
-            with self.subTest(mode=mode):
-                session = FakeSession("capture")
-                if mode == "write":
-                    session.fail_response_write = True
-                if mode == "finish":
-                    session.fail_finish = True
-                sentinel = invalid_response if mode == "encode" else response
-                calls = 0
+    def test_async_capture_preserves_the_exact_result(self) -> None:
+        bridge = DependencyBridge("capture")
+        expected = _response()
 
-                def live() -> object:
-                    nonlocal calls
-                    calls += 1
-                    return sentinel
+        async def live() -> _DependencyResponse:
+            return expected
 
-                with mock.patch(
-                    "reproit_sdk.semantic_dependency._active_context",
-                    return_value=FakeContext(session),
-                ):
-                    self.assertIs(_run_dependency(request, live), sentinel)
-                self.assertEqual(calls, 1)
+        result = self._run(bridge, lambda: _run_dependency(_request(), live))
+        self.assertIs(asyncio.run(result), expected)
 
-    @staticmethod
-    def _failed_request_context(mode: str) -> tuple[FakeSession, FakeContext]:
-        session = FakeSession("unknown" if mode == "action" else "capture")
-        context = FakeContext(session)
-        context.fail_open = mode == "open"
-        session.fail_request_write = mode == "write"
-        session.fail_dispatch = mode == "dispatch"
-        return session, context
+    def test_metadata_conversion_is_bounded_before_engine_open(self) -> None:
+        bridge = DependencyBridge("capture")
+        expected = _response()
+        request = _request(metadata=(("name", b"x" * 65_537),))
+        self.assertIs(self._run(bridge, lambda: expected, request), expected)
+        self.assertFalse(any(call[0] == "dependency-open" for call in bridge.calls))
 
-    def _http_pair(
-        self,
-    ) -> tuple[bytes, _DependencyRequest, bytes, _DependencyResponse]:
-        request_record = canonical_bytes(
-            self.positive["semantic_dependency_request_outbound_http"]["value"]
-        )
-        response_record = canonical_bytes(
-            self.positive["semantic_dependency_response_outbound_http"]["value"]
-        )
-        return (
-            request_record,
-            _decode_dependency_request(request_record),
-            response_record,
-            _decode_dependency_response(request_record, response_record),
-        )
+    def test_replay_failure_never_calls_the_live_dependency(self) -> None:
+        for mode in ("read", "finish", "record"):
+            bridge = DependencyBridge("replay", b"not-json")
+            bridge.fail_read = mode == "read"
+            bridge.fail_finish = mode == "finish"
+            calls = 0
+
+            def live() -> _DependencyResponse:
+                nonlocal calls
+                calls += 1
+                return _response()
+
+            with self.subTest(mode=mode), self.assertRaises(_SemanticDependencyError):
+                self._run(bridge, live)
+            self.assertEqual(calls, 0)
 
     @staticmethod
-    def _apply_vector_change(value: object, vector: dict[str, object]) -> None:
-        parts = str(vector["path"]).removeprefix("/").split("/")
-        parent = value
-        for part in parts[:-1]:
-            parent = parent[int(part)] if isinstance(parent, list) else parent[part]
-        key = parts[-1]
-        if isinstance(parent, list):
-            parent[int(key)] = vector["value"]
-        else:
-            parent[key] = vector["value"]
+    def _run(
+        bridge: DependencyBridge,
+        live,
+        request: _DependencyRequest | None = None,
+    ):
+        project = ManagedEngineProject(
+            _PROJECT_CONSTRUCTOR,
+            bridge,
+            1,
+            lambda: "unused",
+            False,
+        )
+        preparation = OperationPreparation({}, (), "return")
+        operation = live if request is None else lambda: _run_dependency(request, live)
+        if request is None:
+            operation = lambda: _run_dependency(_request(), live)
+        return run_operation(
+            project, preparation, lambda _context: operation(), lambda _: None
+        )
 
 
 if __name__ == "__main__":

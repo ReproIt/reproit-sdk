@@ -9,6 +9,7 @@ import {
 import { acquireRuntimeObservationAdapters } from "./runtime-observation-adapters.js";
 
 const POLL_MILLISECONDS = 50;
+const OPEN_DEPENDENCY = Symbol("open-dependency");
 const OPEN_OBSERVATION = Symbol("open-observation");
 const MARK_UNOWNED = Symbol("mark-unowned");
 const ACTIVE_OPERATION = new AsyncLocalStorage();
@@ -215,6 +216,23 @@ export class OperationContext {
     return new ObservationSession(this, this.#project, observation);
   }
 
+  [OPEN_DEPENDENCY](request, causalParentId = null) {
+    if (this.#project === null || this.#native === null) return null;
+    let dependency;
+    try {
+      dependency = this.#project.call(
+        "dependencyOpen",
+        this.#native.operationHandle,
+        request,
+        causalParentId,
+      );
+    } catch {
+      this.abandon();
+      return null;
+    }
+    return new DependencySession(this, this.#project, dependency);
+  }
+
   [MARK_UNOWNED](observationClass, evidence, causalParentId = null) {
     this.#call(
       "operationUnowned",
@@ -397,6 +415,62 @@ class ObservationSession {
   }
 }
 
+class DependencySession {
+  #context;
+  #native;
+  #project;
+
+  constructor(context, project, native) {
+    this.#context = context;
+    this.#project = project;
+    this.#native = native;
+  }
+
+  get action() {
+    return this.#native?.action ?? null;
+  }
+
+  readResponse() {
+    if (this.#native === null) return null;
+    try {
+      return this.#project.call(
+        "observationRead",
+        this.#native.dependencyHandle,
+      );
+    } catch {
+      this.#fail();
+      return null;
+    }
+  }
+
+  finish(response) {
+    if (this.#native === null) return null;
+    const native = this.#native;
+    try {
+      const outcome = this.#project.call(
+        "dependencyFinish",
+        native.dependencyHandle,
+        response,
+      );
+      this.#native = null;
+      return outcome;
+    } catch {
+      this.#fail();
+      return null;
+    }
+  }
+
+  abandon() {
+    this.#native = null;
+    this.#context.abandon();
+  }
+
+  #fail() {
+    this.#native = null;
+    this.#context.abandon();
+  }
+}
+
 // These seams are for package-owned semantic adapters. They are not exported
 // from the public package entry point.
 export function openObservation(
@@ -405,6 +479,10 @@ export function openObservation(
   causalParentId = null,
 ) {
   return context[OPEN_OBSERVATION](observationClass, causalParentId);
+}
+
+export function openDependency(context, request, causalParentId = null) {
+  return context[OPEN_DEPENDENCY](request, causalParentId);
 }
 
 export function markOperationUnowned(

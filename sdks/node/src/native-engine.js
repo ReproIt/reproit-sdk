@@ -25,10 +25,11 @@ export const NATIVE_ENGINE_MAX_OBSERVATION_CHUNK_BYTES = 32_768;
 export const NATIVE_ENGINE_MAX_OBSERVATION_RESPONSE_READ_BYTES = 8_192;
 export const NATIVE_ENGINE_MAX_OBSERVATION_SESSIONS = 1_024;
 export const NATIVE_ENGINE_MAX_OBSERVATION_SESSIONS_PER_OPERATION = 64;
+export const NATIVE_ENGINE_MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES = 65_536;
 export const NATIVE_ENGINE_MAX_SINK_WAIT_MS = 1_800_000;
 export const NATIVE_ENGINE_MAX_SINK_WAITERS = 16;
 export const NATIVE_ENGINE_ABI_CONTRACT_DIGEST =
-  "sha256:35ea88f10ce9284ae85bd9a35e8b1e78e8c292a843ebe3d349dbed6a3b4113b3";
+  "sha256:ff608fb795814594fef391607020f8a31fcfb90faba0ff84dcfa72bc8d42afc3";
 export const NATIVE_ENGINE_LIBRARIES = Object.freeze({
   "linux-arm64": "libreproit_sdk_engine.so",
   "linux-x86_64": "libreproit_sdk_engine.so",
@@ -41,6 +42,8 @@ export const NATIVE_ENGINE_SYMBOLS = Object.freeze({
 });
 const ENGINE_OPERATION = Object.freeze({
   CONTRACT: "contract",
+  DEPENDENCY_FINISH: "dependency-finish",
+  DEPENDENCY_OPEN: "dependency-open",
   ENGINE_CLOSE: "engine-close",
   ENGINE_OPEN: "engine-open",
   OBSERVATION_ABANDON: "observation-abandon",
@@ -65,6 +68,32 @@ export const NATIVE_ENGINE_OBSERVATION_ACTIONS = Object.freeze([
   "capture",
   "replay",
 ]);
+export const NATIVE_ENGINE_DEPENDENCY_CONTRACT = Object.freeze({
+  finish_fields: ["dependency_handle", "response"],
+  finish_result_fields: ["outcome"],
+  open_fields: ["causal_parent_id", "operation_handle", "request"],
+  open_result_fields: ["action", "dependency_handle"],
+  replay_read_operation: "observation-read",
+  request_fields: [
+    "encoding",
+    "metadata",
+    "method",
+    "observation_class",
+    "operation",
+    "payload",
+    "protocol",
+    "target",
+  ],
+  response_fields: [
+    "error_code",
+    "error_number",
+    "metadata",
+    "outcome",
+    "payload",
+    "status",
+    "status_code",
+  ],
+});
 export const NATIVE_ENGINE_ERROR_BEHAVIOR = Object.freeze({
   json_error: {
     error_code_source: "reproit-core-v1",
@@ -237,6 +266,42 @@ export class NativeEngineBridge {
       input,
       operation_handle: requestHandle(operationHandle),
     });
+  }
+
+  dependencyOpen(operationHandle, request, causalParentId = null) {
+    const result = this.#callResult({
+      causal_parent_id: causalParentId,
+      format: NATIVE_ENGINE_CALL_FORMAT,
+      operation: ENGINE_OPERATION.DEPENDENCY_OPEN,
+      operation_handle: requestHandle(operationHandle),
+      request,
+    });
+    if (
+      !sameKeys(result, ["action", "dependency_handle"]) ||
+      !NATIVE_ENGINE_OBSERVATION_ACTIONS.includes(result.action)
+    ) {
+      throw responseInvalid();
+    }
+    return {
+      action: result.action,
+      dependencyHandle: resultHandle(result, "dependency_handle", false),
+    };
+  }
+
+  dependencyFinish(dependencyHandle, response) {
+    const result = this.#callResult({
+      dependency_handle: requestHandle(dependencyHandle),
+      format: NATIVE_ENGINE_CALL_FORMAT,
+      operation: ENGINE_OPERATION.DEPENDENCY_FINISH,
+      response,
+    });
+    if (
+      !sameKeys(result, ["outcome"]) ||
+      !["error", "response"].includes(result.outcome)
+    ) {
+      throw responseInvalid();
+    }
+    return result.outcome;
   }
 
   observationOpen(operationHandle, observationClass, causalParentId = null) {
@@ -461,6 +526,7 @@ function validContract(value) {
   return (
     sameKeys(value, [
       "abi_version",
+      "dependency_contract",
       "error_behavior",
       "format",
       "libraries",
@@ -473,6 +539,8 @@ function validContract(value) {
       "symbols",
     ]) &&
     value.abi_version === NATIVE_ENGINE_ABI_VERSION &&
+    JSON.stringify(value.dependency_contract) ===
+      JSON.stringify(NATIVE_ENGINE_DEPENDENCY_CONTRACT) &&
     value.format === "reproit.sdk-engine-abi.v1" &&
     JSON.stringify(value.error_behavior) ===
       JSON.stringify(NATIVE_ENGINE_ERROR_BEHAVIOR) &&
@@ -488,6 +556,8 @@ function validContract(value) {
       observation_sessions_per_operation:
         NATIVE_ENGINE_MAX_OBSERVATION_SESSIONS_PER_OPERATION,
       operations: 512,
+      semantic_dependency_record_bytes:
+        NATIVE_ENGINE_MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES,
       sink_wait_ms: NATIVE_ENGINE_MAX_SINK_WAIT_MS,
       sinks: NATIVE_ENGINE_MAX_SINK_WAITERS,
     }) &&

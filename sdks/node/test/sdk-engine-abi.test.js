@@ -8,6 +8,7 @@ import {
   NATIVE_ENGINE_ABI_VERSION,
   NATIVE_ENGINE_CALL_FORMAT,
   NATIVE_ENGINE_LIBRARIES,
+  NATIVE_ENGINE_DEPENDENCY_CONTRACT,
   NATIVE_ENGINE_MAX_CALL_BYTES,
   NATIVE_ENGINE_MAX_EVIDENCE_BYTES,
   NATIVE_ENGINE_MAX_OBSERVATION_ADAPTERS,
@@ -15,6 +16,7 @@ import {
   NATIVE_ENGINE_MAX_OBSERVATION_RESPONSE_READ_BYTES,
   NATIVE_ENGINE_MAX_OBSERVATION_SESSIONS,
   NATIVE_ENGINE_MAX_OBSERVATION_SESSIONS_PER_OPERATION,
+  NATIVE_ENGINE_MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES,
   NATIVE_ENGINE_MAX_SINK_WAIT_MS,
   NATIVE_ENGINE_MAX_SINK_WAITERS,
   NATIVE_ENGINE_OPERATIONS,
@@ -64,6 +66,10 @@ test("native bridge constants match the canonical ABI", () => {
     NATIVE_ENGINE_MAX_OBSERVATION_SESSIONS_PER_OPERATION,
     abi.limits.observation_sessions_per_operation,
   );
+  assert.equal(
+    NATIVE_ENGINE_MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES,
+    abi.limits.semantic_dependency_record_bytes,
+  );
   assert.equal(NATIVE_ENGINE_MAX_SINK_WAIT_MS, abi.limits.sink_wait_ms);
   assert.equal(NATIVE_ENGINE_MAX_SINK_WAITERS, abi.limits.sinks);
   assert.equal(NATIVE_ENGINE_RESPONSE_FORMAT, abi.response.format);
@@ -85,6 +91,7 @@ test("native bridge constants match the canonical ABI", () => {
     NATIVE_ENGINE_OBSERVATION_CONTRACT,
     abi.observation_contract,
   );
+  assert.deepEqual(NATIVE_ENGINE_DEPENDENCY_CONTRACT, abi.dependency_contract);
   assert.equal(
     NATIVE_ENGINE_ABI_CONTRACT_DIGEST,
     `sha256:${createHash("sha256").update(abiBytes).digest("hex")}`,

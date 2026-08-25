@@ -14,6 +14,7 @@ from .managed_subject import package_running_python_subject
 from .native_engine import (
     MAX_SINK_WAITERS,
     MAX_SINK_WAIT_MS,
+    NativeDependency,
     NativeEngineBridge,
     NativeEngineHandle,
     NativeObservation,
@@ -231,6 +232,27 @@ class OperationContext:
             return None
         return _ObservationSession(self, project, observation)
 
+    def _open_dependency(
+        self,
+        request: Mapping[str, Any],
+        causal_parent_id: str | None = None,
+    ) -> _DependencySession | None:
+        """Open one engine-owned semantic dependency session."""
+        project = self._project
+        native = self._native
+        if project is None or native is None:
+            return None
+        try:
+            dependency = project._bridge.dependency_open(
+                native.handle,
+                request,
+                causal_parent_id,
+            )
+        except Exception:
+            self._abandon()
+            return None
+        return _DependencySession(self, project, dependency)
+
     def _mark_unowned(
         self,
         observation_class: NativeObservationClass,
@@ -391,6 +413,61 @@ class _ObservationSession:
         native = self._native
         self._native = None
         return native
+
+
+class _DependencySession:
+    """Keep one engine-owned semantic dependency fail-open and bounded."""
+
+    def __init__(
+        self,
+        context: OperationContext,
+        project: ManagedEngineProject,
+        native: NativeDependency,
+    ) -> None:
+        self._context = context
+        self._project = project
+        self._native: NativeDependency | None = native
+
+    @property
+    def action(self) -> NativeObservationAction | None:
+        native = self._native
+        return None if native is None else native.action
+
+    def _read_response(self) -> tuple[bytes, bool] | None:
+        native = self._native
+        if native is None:
+            return None
+        try:
+            return self._project._bridge.observation_read(native.handle)
+        except Exception:
+            self._fail()
+            return None
+
+    def _finish(
+        self,
+        response: Mapping[str, Any] | None,
+    ) -> NativeObservationOutcome | None:
+        native = self._native
+        if native is None:
+            return None
+        try:
+            outcome = self._project._bridge.dependency_finish(
+                native.handle,
+                response,
+            )
+        except Exception:
+            self._fail()
+            return None
+        self._native = None
+        return outcome
+
+    def _abandon(self) -> None:
+        self._native = None
+        self._context._abandon()
+
+    def _fail(self) -> None:
+        self._native = None
+        self._context._abandon()
 
 
 def _current_operation_context() -> OperationContext | None:

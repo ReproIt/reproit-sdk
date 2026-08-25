@@ -45,6 +45,10 @@ def test_native_bridge_constants_match_the_canonical_abi() -> None:
         native_engine.MAX_OBSERVATION_SESSIONS_PER_OPERATION
         == abi["limits"]["observation_sessions_per_operation"]
     )
+    assert (
+        native_engine.MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES
+        == abi["limits"]["semantic_dependency_record_bytes"]
+    )
     assert native_engine.MAX_SINK_WAIT_MS == abi["limits"]["sink_wait_ms"]
     assert native_engine.MAX_SINK_WAITERS == abi["limits"]["sinks"]
     assert native_engine.RESPONSE_FORMAT == abi["response"]["format"]
@@ -59,6 +63,7 @@ def test_native_bridge_constants_match_the_canonical_abi() -> None:
     )
     assert list(native_engine._OBSERVATION_ACTIONS) == abi["observation_actions"]
     assert native_engine._OBSERVATION_CONTRACT == abi["observation_contract"]
+    assert native_engine._DEPENDENCY_CONTRACT == abi["dependency_contract"]
     assert native_engine.ABI_CONTRACT_DIGEST == (
         f"sha256:{hashlib.sha256(abi_bytes).hexdigest()}"
     )

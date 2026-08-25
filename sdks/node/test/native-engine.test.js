@@ -224,6 +224,8 @@ test("native failure does not echo request values", () => {
 
 test("typed calls cover the shared engine lifecycle", () => {
   const results = {
+    "dependency-open": { action: "capture", dependency_handle: 15 },
+    "dependency-finish": { outcome: "response" },
     "engine-open": { engine_handle: 11 },
     "engine-close": {},
     "observation-open": {
@@ -263,6 +265,15 @@ test("typed calls cover the shared engine lifecycle", () => {
   bridge.operationInput(operation.operationHandle, {
     format: "reproit.operation-input.v1",
   });
+  const dependency = bridge.dependencyOpen(
+    operation.operationHandle,
+    { observation_class: "database" },
+    "dependency-parent",
+  );
+  assert.equal(
+    bridge.dependencyFinish(dependency.dependencyHandle, { outcome: "response" }),
+    "response",
+  );
   const observation = bridge.observationOpen(
     operation.operationHandle,
     "outbound-http",
@@ -305,6 +316,7 @@ test("typed calls cover the shared engine lifecycle", () => {
     operationHandle: 12,
     operationId: "operation-id",
   });
+  assert.deepEqual(dependency, { action: "capture", dependencyHandle: 15 });
   assert.deepEqual(observation, {
     observationHandle: 14,
     sessionPosition: 0,
@@ -322,20 +334,33 @@ test("typed calls cover the shared engine lifecycle", () => {
     subject_objects: [{ digest: "sha256:00", path: "subject", size: 1 }],
   });
   assert.deepEqual(native.requests[3], {
+    causal_parent_id: "dependency-parent",
+    format: "reproit.sdk-engine-call.v1",
+    operation: "dependency-open",
+    operation_handle: 12,
+    request: { observation_class: "database" },
+  });
+  assert.deepEqual(native.requests[4], {
+    dependency_handle: 15,
+    format: "reproit.sdk-engine-call.v1",
+    operation: "dependency-finish",
+    response: { outcome: "response" },
+  });
+  assert.deepEqual(native.requests[5], {
     causal_parent_id: "parent-id",
     class: "outbound-http",
     format: "reproit.sdk-engine-call.v1",
     operation: "observation-open",
     operation_handle: 12,
   });
-  assert.deepEqual(native.requests[4], {
+  assert.deepEqual(native.requests[6], {
     chunk: Buffer.from("request").toString("base64url"),
     format: "reproit.sdk-engine-call.v1",
     observation_handle: 14,
     operation: "observation-write",
     stream: "request",
   });
-  assert.deepEqual(native.requests[7], {
+  assert.deepEqual(native.requests[9], {
     format: "reproit.sdk-engine-call.v1",
     observation_handle: 14,
     operation: "observation-finish",
@@ -348,6 +373,8 @@ test("typed calls cover the shared engine lifecycle", () => {
       "engine-open",
       "operation-begin",
       "operation-input",
+      "dependency-open",
+      "dependency-finish",
       "observation-open",
       "observation-write",
       "observation-dispatch",
