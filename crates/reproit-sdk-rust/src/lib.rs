@@ -26,6 +26,7 @@ pub use reproit_core::{
     },
 };
 
+mod automatic_context;
 mod automatic_engine;
 mod automatic_world;
 mod managed;
@@ -40,6 +41,10 @@ mod request_response;
 mod resources;
 mod subject;
 
+#[doc(hidden)]
+pub use automatic_context::{
+    AutomaticObservationSession, AutomaticOperationContext, AutomaticOperationScope,
+};
 #[doc(hidden)]
 pub use automatic_engine::{
     AutomaticManagedEngine, AutomaticManagedOperation, AutomaticManagedRustOperationFactory,

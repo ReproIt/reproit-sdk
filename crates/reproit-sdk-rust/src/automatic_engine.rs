@@ -17,6 +17,7 @@ use crate::{
     AutomaticCandidateStart, ManagedProjectToken, ManagedRustCandidateSink,
     ManagedRustCaptureClosure, ManagedRustLocalRecorder, ManagedRustOperationClosure,
     OfficialManagedProject, Sdk, SubjectPackage,
+    automatic_context::{AutomaticOperationContext, AutomaticOperationShared},
     automatic_world::{
         AutomaticObservationRegistration, AutomaticObservationStream, AutomaticWorldCapture,
         AutomaticWorldCoordinator, MAX_AUTOMATIC_OBSERVATION_CHUNK_BYTES,
@@ -104,28 +105,35 @@ impl AutomaticManagedEngine {
             sdk.abandon_incomplete(operation_id);
             return Err(error);
         }
+        let shared = match AutomaticOperationShared::new(operation_id, coordinator) {
+            Ok(shared) => shared,
+            Err(error) => {
+                sdk.abandon_incomplete(operation_id);
+                return Err(error);
+            }
+        };
         Ok(AutomaticManagedOperation {
             closure: None,
-            coordinator: Some(coordinator),
             finished: false,
             operation_id,
             operation_kind: begin.operation_kind,
             operation_name: begin.operation_name.clone(),
             recorder,
             sdk,
+            shared,
         })
     }
 }
 
 pub struct AutomaticManagedOperation {
     closure: Option<ManagedRustOperationClosure>,
-    coordinator: Option<AutomaticWorldCoordinator>,
     finished: bool,
     operation_id: OperationId,
     operation_kind: reproit_core::model::OperationKind,
     operation_name: String,
     recorder: Arc<ManagedRustLocalRecorder>,
     sdk: Sdk,
+    shared: Arc<AutomaticOperationShared>,
 }
 
 impl AutomaticManagedOperation {
@@ -140,6 +148,12 @@ impl AutomaticManagedOperation {
         self.operation_id
     }
 
+    #[doc(hidden)]
+    #[must_use]
+    pub fn ambient_context(&self) -> AutomaticOperationContext {
+        AutomaticOperationContext::new(self.operation_id, self.shared.clone())
+    }
+
     pub fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error> {
         self.sdk.record_input(self.operation_id, input)
     }
@@ -150,10 +164,9 @@ impl AutomaticManagedOperation {
         class: AutomaticObservationClass,
         causal_parent_id: Option<OperationId>,
     ) -> Result<u64, Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .open_observation(session_id, class, causal_parent_id)
+        self.shared.with_coordinator(|coordinator| {
+            coordinator.open_observation(session_id, class, causal_parent_id)
+        })
     }
 
     pub fn write_observation_request(
@@ -173,18 +186,16 @@ impl AutomaticManagedOperation {
     }
 
     pub fn dispatch_observation(&mut self, session_id: u64) -> Result<&'static str, Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .dispatch_observation(session_id)
-            .map(super::automatic_world::AutomaticObservationAction::as_str)
+        self.shared.with_coordinator(|coordinator| {
+            coordinator
+                .dispatch_observation(session_id)
+                .map(super::automatic_world::AutomaticObservationAction::as_str)
+        })
     }
 
     pub fn read_observation_response(&mut self, session_id: u64) -> Result<(Vec<u8>, bool), Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .read_observation_response(session_id)
+        self.shared
+            .with_coordinator(|coordinator| coordinator.read_observation_response(session_id))
     }
 
     pub fn finish_observation(
@@ -193,17 +204,14 @@ impl AutomaticManagedOperation {
         outcome: DependencyOutcome,
         session_position: u64,
     ) -> Result<(), Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .finish_observation(session_id, outcome, session_position)
+        self.shared.with_coordinator(|coordinator| {
+            coordinator.finish_observation(session_id, outcome, session_position)
+        })
     }
 
     pub fn abandon_observation(&mut self, session_id: u64) -> Result<(), Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .abandon_observation(session_id)
+        self.shared
+            .with_coordinator(|coordinator| coordinator.abandon_observation(session_id))
     }
 
     pub fn mark_unowned(
@@ -212,18 +220,15 @@ impl AutomaticManagedOperation {
         causal_parent_id: Option<OperationId>,
         evidence: &[u8],
     ) -> Result<(), Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .mark_unowned(class, causal_parent_id, evidence)
+        self.shared.with_coordinator(|coordinator| {
+            coordinator.mark_unowned(class, causal_parent_id, evidence)
+        })
     }
 
     #[doc(hidden)]
     pub fn bind_native_sentinel_coverage(&mut self, evidence: &[u8]) -> Result<(), Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .bind_native_sentinel_coverage(evidence)
+        self.shared
+            .with_coordinator(|coordinator| coordinator.bind_native_sentinel_coverage(evidence))
     }
 
     fn write_observation(
@@ -232,25 +237,21 @@ impl AutomaticManagedOperation {
         stream: AutomaticObservationStream,
         chunk: &[u8],
     ) -> Result<(), Error> {
-        self.coordinator
-            .as_mut()
-            .ok_or_else(incomplete_operation)?
-            .write_observation(session_id, stream, chunk)
+        self.shared.with_coordinator(|coordinator| {
+            coordinator.write_observation(session_id, stream, chunk)
+        })
     }
 
     pub fn close_world(
         &mut self,
         completion: reproit_core::model::TriggerCompletion,
     ) -> Result<(), Error> {
-        let coordinator = self.coordinator.take().ok_or_else(incomplete_operation)?;
+        let coordinator = self.shared.take_for_close()?;
         let capture = coordinator.close(completion)?;
         self.bind_automatic_world(capture)
     }
 
     fn bind_automatic_world(&mut self, capture: AutomaticWorldCapture) -> Result<(), Error> {
-        if self.coordinator.is_some() {
-            return Err(Error::schema_invalid());
-        }
         self.sdk
             .record_observation_fence(self.operation_id, &capture.fence)?;
         self.bind_world(capture.closure)
@@ -276,11 +277,13 @@ impl AutomaticManagedOperation {
     }
 
     pub fn succeed(mut self) {
+        self.shared.deactivate();
         self.sdk.succeed(self.operation_id);
         self.finished = true;
     }
 
     pub fn abandon_incomplete(mut self) {
+        self.shared.deactivate();
         self.sdk.abandon_incomplete(self.operation_id);
         self.finished = true;
     }
@@ -338,6 +341,10 @@ impl RustOperation for AutomaticFactoryOperation {
         self.operation.operation_id()
     }
 
+    fn automatic_context(&self) -> Option<AutomaticOperationContext> {
+        Some(self.operation.ambient_context())
+    }
+
     fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error> {
         self.operation.record_input(input)
     }
@@ -367,6 +374,7 @@ impl RustOperation for AutomaticFactoryOperation {
 impl Drop for AutomaticManagedOperation {
     fn drop(&mut self) {
         if !self.finished {
+            self.shared.deactivate();
             self.sdk.abandon_incomplete(self.operation_id);
         }
     }

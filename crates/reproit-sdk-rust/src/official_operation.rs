@@ -12,13 +12,16 @@ use reproit_core::{
 use uuid::Uuid;
 
 use crate::{
-    CandidateStart, ManagedProjectToken, ManagedRustCandidateSink, ManagedRustCaptureClosure,
-    ManagedRustCaptureClosureProvider, ManagedRustLocalRecorder, ManagedRustOperationClosure,
-    OfficialManagedProject, Sdk, SdkRecallCounters,
+    AutomaticOperationContext, CandidateStart, ManagedProjectToken, ManagedRustCandidateSink,
+    ManagedRustCaptureClosure, ManagedRustCaptureClosureProvider, ManagedRustLocalRecorder,
+    ManagedRustOperationClosure, OfficialManagedProject, Sdk, SdkRecallCounters,
 };
 
 pub trait RustOperation: Send {
     fn operation_id(&self) -> OperationId;
+    fn automatic_context(&self) -> Option<AutomaticOperationContext> {
+        None
+    }
     fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error>;
     fn succeed(self: Box<Self>);
     fn abandon_incomplete(self: Box<Self>);

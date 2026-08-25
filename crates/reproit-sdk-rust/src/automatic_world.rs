@@ -328,6 +328,10 @@ impl AutomaticWorldCoordinator {
         Ok(())
     }
 
+    pub(crate) fn invalidate_ambient_context(&mut self) {
+        self.incomplete_session = true;
+    }
+
     pub(crate) fn open_observation(
         &mut self,
         session_id: u64,
