@@ -3,7 +3,7 @@
 import path from "node:path";
 import { realpathSync } from "node:fs";
 
-import { ManagedError } from "./managed-protocol.js";
+import { ManagedError } from "./subject-protocol.js";
 import {
   MAX_SUBJECT_FILES,
   compareText,

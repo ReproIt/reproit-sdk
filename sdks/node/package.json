@@ -6,12 +6,24 @@
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
-      "default": "./src/index.js"
+      "default": "./src/public.js"
     }
   },
   "types": "./src/index.d.ts",
   "files": [
-    "src"
+    "src/encoding.js",
+    "src/engine-operation.js",
+    "src/index.d.ts",
+    "src/managed-json.js",
+    "src/managed-subject-files.js",
+    "src/managed-subject-runtime.js",
+    "src/managed-subject.js",
+    "src/native-engine.js",
+    "src/observation-adapters.js",
+    "src/process-resources.js",
+    "src/public.js",
+    "src/subject-protocol.js",
+    "native"
   ],
   "engines": {
     "node": ">=24 <25"

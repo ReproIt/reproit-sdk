@@ -1,0 +1,21 @@
+[package]
+name = "reproit-sdk-engine"
+description = "Shared native capture engine for Repro It SDKs"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+reproit-backend.workspace = true
+reproit-core.workspace = true
+reproit-sdk-rust = { path = "../reproit-sdk-rust" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

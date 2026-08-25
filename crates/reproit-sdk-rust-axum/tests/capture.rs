@@ -18,7 +18,7 @@ use reproit_core::{
     identity::OperationId,
     model::{
         ExceptionCategory, ExceptionFailureIdentity, FailureFrame, FailureIdentity,
-        OperationBeginPayload, OperationInputPayload, OperationKind,
+        OperationBeginPayload, OperationInputPayload, OperationKind, TriggerCompletion,
     },
 };
 use reproit_sdk_rust::{
@@ -111,7 +111,12 @@ impl RustOperation for RecordingOperation {
             .push(OperationEvent::Abandoned);
     }
 
-    fn fail(self: Box<Self>, identity: FailureIdentity) -> Result<(), Error> {
+    fn fail(
+        self: Box<Self>,
+        identity: FailureIdentity,
+        completion: TriggerCompletion,
+    ) -> Result<(), Error> {
+        assert_eq!(completion, TriggerCompletion::Return);
         self.events
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

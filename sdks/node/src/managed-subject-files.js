@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-import { ManagedError } from "./managed-protocol.js";
+import { ManagedError } from "./subject-protocol.js";
 import { reserveLogical } from "./process-resources.js";
 
 export const MAX_SUBJECT_OBJECT_BYTES = 512 * 1024 * 1024;

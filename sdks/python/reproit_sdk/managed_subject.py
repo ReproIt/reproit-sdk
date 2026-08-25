@@ -9,9 +9,9 @@ import tempfile
 import weakref
 from dataclasses import dataclass, field
 
-from reproit_sdk import _PROCESS_RESOURCES, canonical_bytes
-
-from .managed_protocol import (
+from .encoding import canonical_bytes
+from .process_resources import PROCESS_RESOURCES
+from .subject_protocol import (
     ManagedError,
     canonical_digest,
     digest_bytes,
@@ -104,7 +104,7 @@ def package_running_python_subject(
         spool.cleanup()
         raise
     reservation_finalizer = weakref.finalize(
-        spool, _PROCESS_RESOURCES.release_logical, captured.reserved_bytes
+        spool, PROCESS_RESOURCES.release_logical, captured.reserved_bytes
     )
     script_file = next(
         (file for file in captured.files if file.path == captured.entry_path),

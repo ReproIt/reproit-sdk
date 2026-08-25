@@ -9,7 +9,7 @@ import {
   runtimeEvidence,
   subjectFixture,
 } from "./managed-subject-fixtures.js";
-import { ManagedError } from "../src/managed-protocol.js";
+import { ManagedError } from "../src/subject-protocol.js";
 import {
   packageNodeSubjectWithRuntimeEvidence,
   validateNodeRuntimeArguments,

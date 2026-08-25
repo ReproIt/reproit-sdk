@@ -32,6 +32,7 @@ exec docker run --rm --platform "$native_oci_platform" --network none --read-onl
   --tmpfs /tmp:rw,noexec,nosuid,size=32m \
   --tmpfs /work:rw,exec,nosuid,size=512m \
   --env DOTNET_CLI_HOME=/work/dotnet \
+  --env REPROIT_SDK_ENGINE_ABI=/source/crates/reproit-sdk-engine/sdk-engine-abi.json \
   --env REPROIT_PROTOCOL_VECTORS=/source/.core/specs/v1/protocol-vectors.json \
   --env REPROIT_CLOUD_API_VECTORS=/source/.core/specs/v1/cloud-api-vectors.json \
   --volume "$repository_root:/source:ro" \

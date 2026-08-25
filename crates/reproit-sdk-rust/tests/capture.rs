@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use reproit_core::model::{Candidate, Validate};
-use reproit_sdk_rust::{CandidateSink, CandidateStart, MAX_ACTIVE_OPERATIONS, Sdk};
+use reproit_sdk_rust::{
+    AutomaticCandidateStart, CandidateSink, CandidateStart, MAX_ACTIVE_OPERATIONS, Sdk,
+};
 
 mod support;
 
@@ -59,6 +61,40 @@ fn failure_sends_one_complete_candidate() {
     assert_eq!(candidates[0].failure, fixture.failure.failure);
     candidates[0].validate().unwrap();
     assert_eq!(sdk.active_operations(), 0);
+}
+
+#[test]
+fn automatic_operation_requires_one_world_binding_before_failure() {
+    let _process = process_test();
+    let fixture = fixture("orders.automatic-world");
+    let sink = Arc::new(Sink::default());
+    let sdk = Sdk::new(sink.clone());
+    sdk.begin_automatic(
+        AutomaticCandidateStart {
+            capture_id: fixture.start.capture_id,
+            deployment: fixture.start.deployment,
+            operation_id: fixture.start.operation_id,
+        },
+        &fixture.begin,
+    )
+    .unwrap();
+
+    assert!(
+        sdk.fail(fixture.start.operation_id, &fixture.failure)
+            .is_err()
+    );
+    sdk.bind_automatic_world(fixture.start.operation_id, fixture.start.world_id)
+        .unwrap();
+    assert!(
+        sdk.bind_automatic_world(fixture.start.operation_id, fixture.start.world_id)
+            .is_err()
+    );
+    sdk.fail(fixture.start.operation_id, &fixture.failure)
+        .unwrap();
+
+    let candidates = sink.candidates.lock().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].world_id, fixture.start.world_id);
 }
 
 #[test]

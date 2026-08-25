@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/reproit-sdk-engine",
     "crates/reproit-sdk-rust",
     "crates/reproit-sdk-rust-axum",
 ]
@@ -19,9 +20,9 @@ ed25519-dalek = "=3.0.0"
 getrandom = "=0.4.3"
 hickory-resolver = { version = "=0.26.1", default-features = false, features = ["system-config", "tokio"] }
 proptest = "=1.11.0"
-reproit-backend = { git = "https://github.com/ReproIt/reproit-core", rev = "86652d2083626ea4ee0217f80c3524c6ae0fe25e", version = "=1.0.0" }
-reproit-cloud-api = { git = "https://github.com/ReproIt/reproit-core", rev = "86652d2083626ea4ee0217f80c3524c6ae0fe25e", version = "=1.0.0" }
-reproit-core = { git = "https://github.com/ReproIt/reproit-core", rev = "86652d2083626ea4ee0217f80c3524c6ae0fe25e", version = "=1.0.0" }
+reproit-backend = { git = "https://github.com/ReproIt/reproit-core", rev = "6f8c7642c7dcd91014f7e1687a146118c16f6f6a", version = "=1.0.0" }
+reproit-cloud-api = { git = "https://github.com/ReproIt/reproit-core", rev = "6f8c7642c7dcd91014f7e1687a146118c16f6f6a", version = "=1.0.0" }
+reproit-core = { git = "https://github.com/ReproIt/reproit-core", rev = "6f8c7642c7dcd91014f7e1687a146118c16f6f6a", version = "=1.0.0" }
 rustls = { version = "=0.23.40", default-features = false, features = ["aws_lc_rs", "std"] }
 rustls-platform-verifier = "=0.7.0"
 serde = { version = "=1.0.229", features = ["derive"] }

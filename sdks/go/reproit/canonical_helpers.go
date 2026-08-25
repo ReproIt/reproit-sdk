@@ -26,3 +26,11 @@ func digestValue(value any) string {
 func digestBytes(value []byte) string {
 	return fmt.Sprintf("sha256:%x", sha256.Sum256(value))
 }
+
+func canonicalDigest(value any) (string, error) {
+	encoded, err := CanonicalBytes(value)
+	if err != nil {
+		return "", errSchemaInvalid()
+	}
+	return digestBytes(encoded), nil
+}

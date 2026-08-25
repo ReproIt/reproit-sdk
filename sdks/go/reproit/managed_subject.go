@@ -26,7 +26,9 @@ import (
 const (
 	subjectFileMediaType     = "application/vnd.reproit.subject-file.v1"
 	subjectLaunchMediaType   = "application/vnd.reproit.subject-launch.v1+json"
+	subjectManifestMediaType = "application/vnd.reproit.subject-closure.v1+json"
 	moduleIdentityMediaType  = "application/vnd.reproit.subject-module-identity.v1+json"
+	managedCopyBufferBytes   = 64 * 1024
 	maxSubjectArguments      = 128
 	maxSubjectDependencies   = 4_096
 	maxSubjectEnvironment    = 256
@@ -84,7 +86,7 @@ func (subject *GoSubjectPackage) Close() {
 		_ = os.RemoveAll(subject.spool)
 	}
 	if subject.reservedBytes > 0 {
-		processResources.releaseLogical(subject.reservedBytes)
+		subjectResources.release(subject.reservedBytes)
 		subject.reservedBytes = 0
 	}
 }
@@ -98,7 +100,7 @@ func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
 	complete := false
 	defer func() {
 		if !complete && reservedBytes > 0 {
-			processResources.releaseLogical(reservedBytes)
+			subjectResources.release(reservedBytes)
 		}
 	}()
 	if executablePath == "" {
@@ -117,7 +119,7 @@ func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
 		metadata.Size() > maxSubjectObjectBytes {
 		return nil, errSubjectUnbounded()
 	}
-	if !processResources.reserveLogical(metadata.Size()) {
+	if !subjectResources.reserve(metadata.Size()) {
 		return nil, errSubjectUnbounded()
 	}
 	reservedBytes = metadata.Size()
@@ -225,7 +227,7 @@ func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
 		return nil, errSubjectUnbounded()
 	}
 	additionalBytes := totalBytes - reservedBytes
-	if additionalBytes > 0 && !processResources.reserveLogical(additionalBytes) {
+	if additionalBytes > 0 && !subjectResources.reserve(additionalBytes) {
 		return nil, errSubjectUnbounded()
 	}
 	reservedBytes = totalBytes
@@ -742,6 +744,29 @@ func subjectBinding(manifest map[string]any) (map[string]any, error) {
 
 func validUTF8String(value string) bool {
 	return utf8.ValidString(value)
+}
+
+func digestName(digest string) string {
+	return strings.TrimPrefix(digest, "sha256:")
+}
+
+func candidateRecords(value any) ([]map[string]any, bool) {
+	switch records := value.(type) {
+	case []map[string]any:
+		return records, true
+	case []any:
+		result := make([]map[string]any, len(records))
+		for index, record := range records {
+			mapped, ok := record.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			result[index] = mapped
+		}
+		return result, true
+	default:
+		return nil, false
+	}
 }
 
 func errSubjectUnreadable() *ManagedError {

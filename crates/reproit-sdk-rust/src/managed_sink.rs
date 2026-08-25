@@ -15,8 +15,8 @@ use reproit_core::{
     crypto::{SecretKey, encode_base64url, sign_bytes, verification_key, verify_signed_value},
     identity::{OperationId, ServiceId, Timestamp},
     model::{
-        Candidate, Deployment, ProcessingMode, Subject, SubjectClosureManifest, SubjectFormat,
-        Validate as _,
+        Candidate, Deployment, EventKind, NativeObservationFenceReceipt, ProcessingMode, Subject,
+        SubjectClosureManifest, SubjectFormat, Validate as _,
     },
 };
 use time::OffsetDateTime;
@@ -53,6 +53,7 @@ pub struct ManagedRustCandidateSink {
     world_id: reproit_core::identity::Digest,
     workload_key_id: String,
     workload_public_key: [u8; 32],
+    workload_signing_key: Arc<SecretKey>,
 }
 
 pub struct ManagedRustLocalRecorder {
@@ -260,6 +261,7 @@ impl ManagedRustCandidateSink {
         )?;
         let workload_key_id = registered.key_id;
         let workload_public_key = registered.public_key;
+        let workload_signing_key = registered.signing_key.clone();
         let worker_workload_signer = WorkloadGrantSigner {
             key_id: workload_key_id.clone(),
             signing_key: registered.signing_key,
@@ -319,6 +321,7 @@ impl ManagedRustCandidateSink {
             world_id,
             workload_key_id,
             workload_public_key,
+            workload_signing_key,
         })
     }
 
@@ -340,6 +343,37 @@ impl ManagedRustCandidateSink {
     #[must_use]
     pub const fn world_id(&self) -> reproit_core::identity::Digest {
         self.world_id
+    }
+
+    fn finalize_automatic_fence(&self, candidate: &mut Candidate) -> Result<(), Error> {
+        let fence_records = candidate
+            .records
+            .iter_mut()
+            .filter(|record| record.kind == EventKind::ObservationFence)
+            .collect::<Vec<_>>();
+        if fence_records.is_empty() {
+            return Ok(());
+        }
+        if fence_records.len() != 1 {
+            return Err(incomplete_candidate());
+        }
+        let record = fence_records
+            .into_iter()
+            .next()
+            .ok_or_else(incomplete_candidate)?;
+        let bytes = reproit_core::crypto::decode_base64url_bytes(&record.payload)?;
+        let mut fence: NativeObservationFenceReceipt = canonical::parse_strict(&bytes)?;
+        fence.deployment_digest = canonical::digest(&candidate.deployment)?;
+        fence.subject_digest = canonical::digest(&candidate.deployment.subject)?;
+        self.workload_key_id.clone_into(&mut fence.signer_key_id);
+        fence.signature.clear();
+        fence.signature = sign_bytes(
+            &canonical::canonical_bytes(&fence)?,
+            &self.workload_signing_key,
+        );
+        fence.validate()?;
+        record.payload = encode_base64url(&canonical::canonical_bytes(&fence)?);
+        candidate.validate()
     }
 
     pub fn wait_until_idle(&self, timeout: Duration) -> bool {
@@ -385,10 +419,18 @@ impl ManagedRustLocalRecorder {
                 "Repro It could not package the complete running Rust application.",
             )
         })?;
+        Self::new_with_shared_subject(operation_id, Arc::new(subject))
+    }
+
+    pub fn new_with_shared_subject(
+        operation_id: OperationId,
+        subject: Arc<RustSubjectPackage>,
+    ) -> Result<Self, Error> {
+        subject.manifest.validate()?;
         Ok(Self {
             operation_id,
             state: Mutex::new(LocalRecorderState::default()),
-            subject: Arc::new(subject),
+            subject,
         })
     }
 
@@ -503,6 +545,7 @@ impl ManagedRustRecordedFailure {
             recorded.subject,
             &mut recorded.candidate.deployment,
         )?;
+        sink.finalize_automatic_fence(&mut recorded.candidate)?;
         recorded.candidate.processing_mode = recorded.candidate.deployment.processing_mode;
         if !sink.try_send(recorded.candidate) {
             return Err(incomplete_candidate());
@@ -526,6 +569,7 @@ impl ManagedRustRecordedFailure {
             recorded.subject,
             &mut recorded.candidate.deployment,
         )?;
+        sink.finalize_automatic_fence(&mut recorded.candidate)?;
         recorded.candidate.processing_mode = recorded.candidate.deployment.processing_mode;
         if !sink.try_send(recorded.candidate) {
             return Err(incomplete_candidate());

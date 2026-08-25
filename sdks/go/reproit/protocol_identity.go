@@ -2,6 +2,21 @@ package reproit
 
 import "strings"
 
+func validCapability(value any) bool {
+	text, ok := value.(string)
+	if !ok || text == "" || len(text) > 128 || text[0] < 'a' || text[0] > 'z' {
+		return false
+	}
+	for index := 1; index < len(text); index++ {
+		character := text[index]
+		if (character < 'a' || character > 'z') &&
+			(character < '0' || character > '9') && character != '.' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 func validAdapterID(value any) bool {
 	if !validBoundedString(value, 128) {
 		return false

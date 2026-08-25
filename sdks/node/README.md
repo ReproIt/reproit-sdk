@@ -1,13 +1,16 @@
 # Repro It SDK for Node.js
 
-Use this SDK at one supported Backend operation boundary. The SDK keeps bounded records. It sends
-only complete failed operations to managed Repro It Cloud.
+Use `ManagedEngineProject` and `runOperation` at a framework-neutral Backend
+operation boundary. The same boundary supports request-response, stream, and
+delivered-work operations. A framework adapter can delegate to it.
 
 ```sh
 npm install @reproit/sdk@1.0.0
 ```
 
-The framework-neutral API supports request-response, ordered-stream, and delivered-work
-operations. Backend v1.0 does not publish a Node.js framework adapter.
+The Node.js layer owns subject discovery, operation context, and Failure translation.
+The packaged shared engine owns candidate policy, World closure, encryption,
+delivery, and cleanup. It deletes successful operations locally.
 
-Read the [Node.js integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/node.md).
+Read the
+[Node.js integration guide](https://github.com/ReproIt/reproit-sdk/blob/main/docs/node.md).

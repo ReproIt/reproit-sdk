@@ -6,7 +6,7 @@ use reproit_core::{
     identity::{Digest, OperationId},
     model::{
         FailureIdentity, InputChannel, OperationBeginPayload, OperationInputFormat,
-        OperationInputPayload, OperationKind,
+        OperationInputPayload, OperationKind, TriggerCompletion,
     },
 };
 
@@ -228,7 +228,7 @@ impl RequestResponseOperation {
             .ok_or_else(incomplete_operation)?;
         let operation = self.operation.take().ok_or_else(incomplete_operation)?;
         if let Some(identity) = classification.finish() {
-            operation.fail(identity)
+            operation.fail(identity, TriggerCompletion::Return)
         } else {
             operation.succeed();
             Ok(())

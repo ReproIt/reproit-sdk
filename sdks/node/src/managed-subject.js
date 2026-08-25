@@ -16,7 +16,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 
-import { canonicalBytes } from "./index.js";
+import { canonicalBytes } from "./encoding.js";
 import {
   ManagedError,
   canonicalDigest,
@@ -24,7 +24,7 @@ import {
   sameKeys,
   schemaInvalid,
   validCapability,
-} from "./managed-protocol.js";
+} from "./subject-protocol.js";
 import {
   MAX_SUBJECT_FILES,
   MAX_SUBJECT_OBJECT_BYTES,

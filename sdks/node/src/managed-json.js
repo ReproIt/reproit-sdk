@@ -7,7 +7,7 @@
 
 import { Buffer } from "node:buffer";
 
-import { schemaInvalid } from "./managed-protocol.js";
+import { schemaInvalid } from "./subject-protocol.js";
 
 const MAX_JSON_DEPTH = 128;
 

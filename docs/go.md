@@ -8,11 +8,23 @@ Use the Go SDK at one supported Backend operation boundary.
 go get reproit.dev/sdk-go@v1.0.0
 ```
 
-Use `RunOperation`, `RunStreamOperation`, or `RunDeliveredWork` with the framework-neutral SDK
-core. Backend v1.0 does not publish a Go framework adapter.
+## Integrate
 
-The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
-incomplete, unsupported, and resource-limited operations local.
+Open one project with `OpenAutomaticProject`. Start an operation with
+`StartOperation` or `StartOperationContext`.
+
+The generic operation boundary supports request-response, stream, and
+delivered-work operations. A framework adapter can translate framework events
+into this boundary.
+
+Record Trigger chunks with `RecordInput`. Finish the operation with `Succeed`,
+`Cancel`, or `Fail`. `Fail` closes the World before delivery starts.
+
+The Go layer owns subject discovery, operation context, and Failure translation.
+The packaged shared engine owns candidate policy, closure, encryption, delivery,
+and cleanup.
+
+Close each unfinished operation and the project.
 
 ## Verify SDK source
 

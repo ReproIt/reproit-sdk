@@ -1,6 +1,7 @@
 # Node.js SDK
 
-Use the Node.js SDK at one supported Backend operation boundary.
+Use the framework-neutral operation boundary for request-response, stream, and
+delivered-work operations. A framework adapter can delegate to the same boundary.
 
 ## Install
 
@@ -8,11 +9,36 @@ Use the Node.js SDK at one supported Backend operation boundary.
 npm install @reproit/sdk@1.0.0
 ```
 
-Use `runOperation`, `runStreamOperation`, or `runDeliveredWork` with the framework-neutral SDK
-core. Backend v1.0 does not publish a Node.js framework adapter.
+Open one project, prepare the operation, and run the application callback:
 
-The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
-incomplete, unsupported, and resource-limited operations local.
+```js
+import { ManagedEngineProject, runOperation } from "@reproit/sdk";
+
+const project = ManagedEngineProject.open({
+  projectToml,
+  buildRepositoryId,
+  sourceRevision,
+  projectTokenProvider: loadProjectToken,
+});
+const preparation = {
+  begin: beginPayload,
+  inputs: inputPayloads,
+  completion: "return",
+};
+const result = runOperation(
+  project,
+  preparation,
+  (operation) => applicationCall(),
+  classifyFailure,
+);
+```
+
+Use `return` for request-response, `stream-end` for stream, and `acknowledgment`
+or `task-end` for delivered work.
+
+The Node.js layer owns subject discovery, operation context, and Failure translation.
+The packaged shared engine owns candidate policy, World closure, encryption,
+delivery, and cleanup. A successful operation is deleted locally.
 
 ## Verify SDK source
 

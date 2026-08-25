@@ -1,0 +1,132 @@
+{
+  "abi_version": 1,
+  "error_behavior": {
+    "json_error": {
+      "error_code_source": "reproit-core-v1",
+      "includes_message": false,
+      "includes_request": false,
+      "maximum_bytes": 256,
+      "result": {}
+    },
+    "native_failures": [
+      {
+        "code": -4,
+        "condition": "response-length-overflow",
+        "output_written": false
+      },
+      {
+        "code": -3,
+        "condition": "output-capacity-exceeded",
+        "output_written": false
+      },
+      {
+        "code": -2,
+        "condition": "engine-panic",
+        "output_written": false
+      },
+      {
+        "code": -1,
+        "condition": "invalid-call-boundary",
+        "output_written": false
+      }
+    ],
+    "success": "response-byte-count"
+  },
+  "format": "reproit.sdk-engine-abi.v1",
+  "libraries": [
+    {
+      "name": "libreproit_sdk_engine.so",
+      "platform": "linux-arm64"
+    },
+    {
+      "name": "libreproit_sdk_engine.so",
+      "platform": "linux-x86_64"
+    },
+    {
+      "name": "libreproit_sdk_engine.dylib",
+      "platform": "macos-arm64"
+    },
+    {
+      "name": "reproit_sdk_engine.dll",
+      "platform": "windows-x86_64"
+    }
+  ],
+  "limits": {
+    "engines": 64,
+    "evidence_bytes": 785408,
+    "observation_adapters": 7,
+    "observation_chunk_bytes": 32768,
+    "observation_response_read_bytes": 8192,
+    "observation_sessions": 1024,
+    "observation_sessions_per_operation": 64,
+    "operations": 512,
+    "sink_wait_ms": 1800000,
+    "sinks": 16
+  },
+  "operations": [
+    "contract",
+    "engine-close",
+    "engine-open",
+    "observation-abandon",
+    "observation-dispatch",
+    "observation-finish",
+    "observation-open",
+    "observation-read",
+    "observation-write",
+    "operation-abandon",
+    "operation-begin",
+    "operation-close-world",
+    "operation-fail",
+    "operation-input",
+    "operation-succeed",
+    "operation-unowned",
+    "sink-wait"
+  ],
+  "observation_actions": [
+    "capture",
+    "replay"
+  ],
+  "observation_contract": {
+    "adapter_registration_fields": [
+      "adapter_id",
+      "adapter_version",
+      "class",
+      "implementation_digest"
+    ],
+    "finish_fields": [
+      "observation_handle",
+      "outcome",
+      "session_position"
+    ],
+    "open_fields": [
+      "causal_parent_id",
+      "class",
+      "operation_handle"
+    ],
+    "open_result_fields": [
+      "observation_handle",
+      "session_position"
+    ],
+    "read_result_fields": [
+      "chunk",
+      "eof"
+    ],
+    "write_fields": [
+      "chunk",
+      "observation_handle",
+      "stream"
+    ]
+  },
+  "request": {
+    "format": "reproit.sdk-engine-call.v1",
+    "maximum_bytes": 1048576
+  },
+  "response": {
+    "format": "reproit.sdk-engine-response.v1",
+    "output_capacity_bytes": 16384
+  },
+  "symbols": {
+    "abi_version": "reproit_sdk_engine_abi_version",
+    "call": "reproit_sdk_engine_call"
+  }
+}

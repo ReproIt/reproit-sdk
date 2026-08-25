@@ -93,7 +93,7 @@ public static class ManagedSubject
         }
         assemblyPath = Path.GetFullPath(assemblyPath);
         byte[] assemblyBytes = ReadStableFile(assemblyPath);
-        string assemblyDigest = ManagedProtocol.DigestBytes(assemblyBytes);
+        string assemblyDigest = SubjectProtocol.DigestBytes(assemblyBytes);
         string assemblyName = Path.GetFileName(assemblyPath);
         if (assemblyName.Length == 0)
         {
@@ -110,17 +110,17 @@ public static class ManagedSubject
                 "The running .NET subject does not carry its portable PDB artifact.");
         }
         byte[] pdbBytes = ReadStableFile(pdbPath);
-        string pdbDigest = ManagedProtocol.DigestBytes(pdbBytes);
+        string pdbDigest = SubjectProtocol.DigestBytes(pdbBytes);
         string pdbName = Path.GetFileName(pdbPath);
         string pdbSubjectPath =
             $"/reproit/subject/application/{DigestName(pdbDigest)}/{pdbName}";
 
         JsonObject runtimeIdentity = RuntimeIdentity();
         byte[] runtimeBytes = CanonicalJson.Bytes(runtimeIdentity);
-        string runtimeDigest = ManagedProtocol.DigestBytes(runtimeBytes);
+        string runtimeDigest = SubjectProtocol.DigestBytes(runtimeBytes);
         JsonObject dependencies = DependencyClosure();
         byte[] dependencyBytes = CanonicalJson.Bytes(dependencies);
-        string dependencyDigest = ManagedProtocol.DigestBytes(dependencyBytes);
+        string dependencyDigest = SubjectProtocol.DigestBytes(dependencyBytes);
 
         JsonObject launch = new()
         {
@@ -130,7 +130,7 @@ public static class ManagedSubject
             ["working_directory"] = "/reproit/subject/work",
         };
         byte[] launchBytes = CanonicalJson.Bytes(launch);
-        string launchDigest = ManagedProtocol.DigestBytes(launchBytes);
+        string launchDigest = SubjectProtocol.DigestBytes(launchBytes);
 
         JsonArray objects = AssembleObjects(
         [
@@ -143,7 +143,7 @@ public static class ManagedSubject
             (launchDigest, "launch-data", SubjectLaunchMediaType, launchBytes.Length),
         ]);
         long totalBytes = objects
-            .Sum(entry => ManagedProtocol.Count(entry!["size"])!.Value);
+            .Sum(entry => SubjectProtocol.Count(entry!["size"])!.Value);
         JsonArray files = SortedByKey(
         [
             new JsonObject
@@ -187,7 +187,7 @@ public static class ManagedSubject
             },
             new JsonObject
             {
-                ["identity"] = ManagedProtocol.Text(runtimeIdentity["identity"]),
+                ["identity"] = SubjectProtocol.Text(runtimeIdentity["identity"]),
                 ["module_digest"] = runtimeDigest,
                 ["path"] = "/reproit/subject/dotnet/runtime.json",
             },
@@ -232,13 +232,13 @@ public static class ManagedSubject
     public static JsonObject SubjectBinding(JsonObject manifest)
     {
         JsonObject launch = (JsonObject)manifest["launch"]!;
-        string manifestDigest = ManagedProtocol.CanonicalDigest(manifest);
+        string manifestDigest = SubjectProtocol.CanonicalDigest(manifest);
         return new JsonObject
         {
             ["architecture"] = manifest["architecture"]!.DeepClone(),
             ["arguments"] = launch["arguments"]!.DeepClone(),
             ["artifact_digest"] = manifestDigest,
-            ["artifact_media_type"] = ManagedProtocol.SubjectManifestMediaType,
+            ["artifact_media_type"] = SubjectProtocol.SubjectManifestMediaType,
             ["artifact_uri"] = $"reproit-managed://{manifestDigest}",
             ["environment_names"] = launch["environment_names"]!.DeepClone(),
             ["executable"] = launch["executable"]!.DeepClone(),
@@ -251,19 +251,19 @@ public static class ManagedSubject
     /// <summary>Mirrors reproit-core SubjectClosureManifest::validate.</summary>
     public static void ValidateSubjectClosureManifest(JsonNode? value)
     {
-        if (value is not JsonObject manifest || !ManagedProtocol.HasExactly(
+        if (value is not JsonObject manifest || !SubjectProtocol.HasExactly(
             manifest, "architecture", "debug_artifacts", "files", "format", "launch",
             "modules", "objects", "operating_system", "runtime_family", "total_bytes"))
         {
-            throw ManagedProtocol.SchemaInvalid();
+            throw SubjectProtocol.SchemaInvalid();
         }
-        if (ManagedProtocol.Text(manifest["format"]) != "reproit.subject-closure.v1" ||
-            ManagedProtocol.Text(manifest["runtime_family"]) is not string family ||
+        if (SubjectProtocol.Text(manifest["format"]) != "reproit.subject-closure.v1" ||
+            SubjectProtocol.Text(manifest["runtime_family"]) is not string family ||
             !RuntimeFamilies.Contains(family) ||
-            !ManagedProtocol.ValidCapability(manifest["architecture"]) ||
-            !ManagedProtocol.ValidCapability(manifest["operating_system"]))
+            !SubjectProtocol.ValidCapability(manifest["architecture"]) ||
+            !SubjectProtocol.ValidCapability(manifest["operating_system"]))
         {
-            throw ManagedProtocol.SchemaInvalid();
+            throw SubjectProtocol.SchemaInvalid();
         }
         if (manifest["objects"] is not JsonArray objects ||
             objects.Count is < 1 or > 32_767 ||
@@ -274,7 +274,7 @@ public static class ManagedSubject
             manifest["debug_artifacts"] is not JsonArray debugArtifacts ||
             debugArtifacts.Count is < 1 or > 4_096)
         {
-            throw ManagedProtocol.SchemaInvalid();
+            throw SubjectProtocol.SchemaInvalid();
         }
         ValidateLaunch(manifest["launch"]);
         Dictionary<string, string> objectKinds =
@@ -284,42 +284,42 @@ public static class ManagedSubject
             ValidateModules(modules, fileDigests, objectKinds);
         ValidateDebugArtifacts(debugArtifacts, fileDigests, objectKinds, moduleDigests);
         JsonObject launch = (JsonObject)manifest["launch"]!;
-        string executable = ManagedProtocol.Text(launch["executable"])!;
+        string executable = SubjectProtocol.Text(launch["executable"])!;
         if (!files.Any(file =>
-            ManagedProtocol.Text(file!["path"]) == executable &&
+            SubjectProtocol.Text(file!["path"]) == executable &&
             file["executable"]?.GetValueKind() == System.Text.Json.JsonValueKind.True))
         {
-            throw ManagedProtocol.SchemaInvalid();
+            throw SubjectProtocol.SchemaInvalid();
         }
     }
 
     private static void ValidateLaunch(JsonNode? value)
     {
-        if (value is not JsonObject launch || !ManagedProtocol.HasExactly(
+        if (value is not JsonObject launch || !SubjectProtocol.HasExactly(
             launch, "arguments", "environment_names", "executable", "working_directory"))
         {
-            throw ManagedProtocol.SchemaInvalid();
+            throw SubjectProtocol.SchemaInvalid();
         }
         if (launch["arguments"] is not JsonArray arguments ||
             arguments.Count > MaxArguments ||
-            arguments.Any(argument => ManagedProtocol.Text(argument) is not string text ||
+            arguments.Any(argument => SubjectProtocol.Text(argument) is not string text ||
                 text.Length > 4_096) ||
             launch["environment_names"] is not JsonArray names ||
             names.Count > MaxEnvironmentNames ||
-            !ValidSubjectPath(ManagedProtocol.Text(launch["executable"])) ||
-            !ValidSubjectPath(ManagedProtocol.Text(launch["working_directory"])))
+            !ValidSubjectPath(SubjectProtocol.Text(launch["executable"])) ||
+            !ValidSubjectPath(SubjectProtocol.Text(launch["working_directory"])))
         {
-            throw ManagedProtocol.SchemaInvalid();
+            throw SubjectProtocol.SchemaInvalid();
         }
         string? previous = null;
         foreach (JsonNode? nameNode in names)
         {
-            string? name = ManagedProtocol.Text(nameNode);
+            string? name = SubjectProtocol.Text(nameNode);
             if (name is null || name.Length is 0 or > 256 || name.Contains('=') ||
                 name.Any(character => character is < '!' or > '~') ||
                 (previous is not null && string.CompareOrdinal(previous, name) >= 0))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
             previous = name;
         }
@@ -333,33 +333,33 @@ public static class ManagedSubject
         string? previous = null;
         foreach (JsonNode? entryNode in objects)
         {
-            if (entryNode is not JsonObject entry || !ManagedProtocol.HasExactly(
+            if (entryNode is not JsonObject entry || !SubjectProtocol.HasExactly(
                 entry, "digest", "kind", "media_type", "size"))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
-            long? size = ManagedProtocol.Count(entry["size"]);
-            string? mediaType = ManagedProtocol.Text(entry["media_type"]);
-            string? kind = ManagedProtocol.Text(entry["kind"]);
-            string? digest = ManagedProtocol.Text(entry["digest"]);
+            long? size = SubjectProtocol.Count(entry["size"]);
+            string? mediaType = SubjectProtocol.Text(entry["media_type"]);
+            string? kind = SubjectProtocol.Text(entry["kind"]);
+            string? digest = SubjectProtocol.Text(entry["digest"]);
             if (size is null or <= 0 or > MaxSubjectObjectBytes ||
                 mediaType is null || mediaType.Length is 0 or > 128 ||
                 kind is null || !ObjectKinds.Contains(kind) || digest is null ||
                 (previous is not null && string.CompareOrdinal(previous, digest) >= 0))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
             previous = digest;
             total = checked(total + size.Value);
             if (total > MaxSubjectBytes)
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
             kinds[digest] = kind;
         }
-        if (ManagedProtocol.Count(totalBytes) != total)
+        if (SubjectProtocol.Count(totalBytes) != total)
         {
-            throw ManagedProtocol.SchemaInvalid();
+            throw SubjectProtocol.SchemaInvalid();
         }
         return kinds;
     }
@@ -371,13 +371,13 @@ public static class ManagedSubject
         string? previous = null;
         foreach (JsonNode? entryNode in files)
         {
-            if (entryNode is not JsonObject entry || !ManagedProtocol.HasExactly(
+            if (entryNode is not JsonObject entry || !SubjectProtocol.HasExactly(
                 entry, "executable", "object_digest", "path"))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
-            string? path = ManagedProtocol.Text(entry["path"]);
-            string? objectDigest = ManagedProtocol.Text(entry["object_digest"]);
+            string? path = SubjectProtocol.Text(entry["path"]);
+            string? objectDigest = SubjectProtocol.Text(entry["object_digest"]);
             if (entry["executable"]?.GetValueKind() is not
                     (System.Text.Json.JsonValueKind.True or
                         System.Text.Json.JsonValueKind.False) ||
@@ -385,7 +385,7 @@ public static class ManagedSubject
                 !objectKinds.ContainsKey(objectDigest) ||
                 (previous is not null && string.CompareOrdinal(previous, path) >= 0))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
             previous = path;
             digests[path!] = objectDigest;
@@ -402,21 +402,21 @@ public static class ManagedSubject
         string? previous = null;
         foreach (JsonNode? entryNode in modules)
         {
-            if (entryNode is not JsonObject entry || !ManagedProtocol.HasExactly(
+            if (entryNode is not JsonObject entry || !SubjectProtocol.HasExactly(
                 entry, "identity", "module_digest", "path"))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
-            string? identity = ManagedProtocol.Text(entry["identity"]);
-            string? path = ManagedProtocol.Text(entry["path"]);
-            string? moduleDigest = ManagedProtocol.Text(entry["module_digest"]);
+            string? identity = SubjectProtocol.Text(entry["identity"]);
+            string? path = SubjectProtocol.Text(entry["path"]);
+            string? moduleDigest = SubjectProtocol.Text(entry["module_digest"]);
             if (identity is null || identity.Length is 0 or > 512 ||
                 !ValidSubjectPath(path) || moduleDigest is null ||
                 !fileDigests.TryGetValue(path!, out string? fileDigest) ||
                 fileDigest != moduleDigest || !objectKinds.ContainsKey(moduleDigest) ||
                 (previous is not null && string.CompareOrdinal(previous, path) >= 0))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
             previous = path;
             moduleDigests.Add(moduleDigest);
@@ -433,15 +433,15 @@ public static class ManagedSubject
         string? previous = null;
         foreach (JsonNode? entryNode in debugArtifacts)
         {
-            if (entryNode is not JsonObject entry || !ManagedProtocol.HasExactly(
+            if (entryNode is not JsonObject entry || !SubjectProtocol.HasExactly(
                 entry, "artifact_digest", "kind", "module_digest", "path"))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
-            string? kind = ManagedProtocol.Text(entry["kind"]);
-            string? artifactDigest = ManagedProtocol.Text(entry["artifact_digest"]);
-            string? moduleDigest = ManagedProtocol.Text(entry["module_digest"]);
-            string? path = ManagedProtocol.Text(entry["path"]);
+            string? kind = SubjectProtocol.Text(entry["kind"]);
+            string? artifactDigest = SubjectProtocol.Text(entry["artifact_digest"]);
+            string? moduleDigest = SubjectProtocol.Text(entry["module_digest"]);
+            string? path = SubjectProtocol.Text(entry["path"]);
             string? artifactKind = artifactDigest is not null &&
                 objectKinds.TryGetValue(artifactDigest, out string? found)
                     ? found
@@ -460,7 +460,7 @@ public static class ManagedSubject
                 moduleDigest is null || !moduleDigests.Contains(moduleDigest) ||
                 (previous is not null && string.CompareOrdinal(previous, path) >= 0))
             {
-                throw ManagedProtocol.SchemaInvalid();
+                throw SubjectProtocol.SchemaInvalid();
             }
             previous = path;
         }
@@ -515,7 +515,7 @@ public static class ManagedSubject
     {
         JsonArray sorted = [];
         foreach (JsonObject entry in entries
-            .OrderBy(entry => ManagedProtocol.Text(entry[key]), StringComparer.Ordinal))
+            .OrderBy(entry => SubjectProtocol.Text(entry[key]), StringComparer.Ordinal))
         {
             sorted.Add(entry);
         }
@@ -551,7 +551,7 @@ public static class ManagedSubject
         byte[] content;
         try
         {
-            content = ManagedClosure.ReadBounded(path, before.Length);
+            content = ReadBounded(path, before.Length);
         }
         catch (ManagedCaptureException)
         {
@@ -566,6 +566,26 @@ public static class ManagedSubject
         return content;
     }
 
+    private static byte[] ReadBounded(string path, long expectedBytes)
+    {
+        if (expectedBytes <= 0 || expectedBytes > MaxSubjectObjectBytes)
+        {
+            throw SubjectUnbounded();
+        }
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length != expectedBytes)
+        {
+            throw SubjectChanging();
+        }
+        byte[] value = new byte[checked((int)expectedBytes)];
+        stream.ReadExactly(value);
+        if (stream.ReadByte() != -1)
+        {
+            throw SubjectChanging();
+        }
+        return value;
+    }
+
     private static JsonObject RuntimeIdentity()
     {
         string version = Environment.Version.ToString();
@@ -577,7 +597,7 @@ public static class ManagedSubject
         byte[] executableBytes = ReadStableFile(Path.GetFullPath(processPath));
         return new JsonObject
         {
-            ["executable_digest"] = ManagedProtocol.DigestBytes(executableBytes),
+            ["executable_digest"] = SubjectProtocol.DigestBytes(executableBytes),
             ["executable_size"] = executableBytes.LongLength,
             ["format"] = "reproit.dotnet-runtime-identity.v1",
             ["framework_description"] = RuntimeInformation.FrameworkDescription,

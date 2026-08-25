@@ -8,20 +8,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
-import { MemorySink } from "./memory-sink.js";
-
 const packageRoot = path.resolve(import.meta.dirname, "..");
-// The portability harness copies the package outside the repository tree and
-// supplies the canonical vectors through the environment. The relative path
-// serves direct in-repository runs.
-const protocolVectors = JSON.parse(
-  fs.readFileSync(
-    process.env.REPROIT_PROTOCOL_VECTORS ??
-      path.resolve(packageRoot, "../../.core/specs/v1/protocol-vectors.json"),
-    "utf8",
-  ),
-).positive;
-const vector = (name) => structuredClone(protocolVectors[name].value);
 
 test("package is deterministic, bounded, and installable from a local file", async () => {
   const temporaryRoot = fs.mkdtempSync(
@@ -39,9 +26,17 @@ test("package is deterministic, bounded, and installable from a local file", asy
     })
       .trim()
       .split("\n");
-    assert.ok(entries.includes("package/src/index.js"));
-    assert.ok(entries.includes("package/src/candidate-validation.js"));
+    assert.ok(entries.includes("package/src/public.js"));
+    assert.ok(entries.includes("package/src/engine-operation.js"));
     assert.ok(entries.includes("package/src/process-resources.js"));
+    assert.ok(entries.includes("package/src/native-engine.js"));
+    assert.ok(entries.includes("package/src/observation-adapters.js"));
+    assert.ok(entries.includes("package/native/reproit-sdk-engine-loader.c"));
+    assert.equal(entries.includes("package/src/index.js"), false);
+    assert.equal(entries.includes("package/src/managed-candidate.js"), false);
+    assert.equal(entries.includes("package/src/managed-sink.js"), false);
+    assert.equal(entries.includes("package/src/managed-upload.js"), false);
+    assert.equal(entries.includes("package/src/official-managed.js"), false);
     assert.ok(entries.every((entry) => !entry.includes("/test/")));
 
     const fixtureRoot = path.join(temporaryRoot, "fixture");
@@ -67,80 +62,21 @@ test("package is deterministic, bounded, and installable from a local file", asy
     );
     const entry = requireFromFixture.resolve("@reproit/sdk");
     const installed = await import(pathToFileURL(entry).href);
-    assert.equal(typeof installed.Sdk, "function");
+    assert.equal(typeof installed.ManagedEngineProject, "function");
+    assert.equal(typeof installed.runOperation, "function");
+    assert.equal("loadNativeEngine" in installed, false);
+    assert.equal("NativeEngineCallError" in installed, false);
     assert.equal("MemorySink" in installed, false);
     assert.equal("TlsCloudStagingSink" in installed, false);
     assert.throws(() => requireFromFixture.resolve("@reproit/sdk/http"));
-    exerciseInstalledArtifact(installed);
+    assert.throws(
+      () => new installed.ManagedEngineProject(null, 1, () => "not-used"),
+      /Use ManagedEngineProject\.open\(\)\./,
+    );
   } finally {
     fs.rmSync(temporaryRoot, { force: true, recursive: true });
   }
 });
-
-function exerciseInstalledArtifact(installed) {
-  const candidate = vector("candidate");
-  candidate.processing_mode = "managed";
-  candidate.deployment.processing_mode = "managed";
-  const start = {
-    captureId: candidate.capture_id,
-    deployment: candidate.deployment,
-    operationId: candidate.operation_id,
-    worldId: candidate.world_id,
-  };
-  const failureSink = new MemorySink();
-  const failureSdk = new installed.Sdk(failureSink);
-  const original = new Error("customer failure");
-  assert.throws(
-    () =>
-      installed.runOperation(
-        failureSdk,
-        start,
-        vector("operation_begin_payload"),
-        [vector("operation_input_payload")],
-        () => {
-          throw original;
-        },
-        () => vector("failure_payload"),
-      ),
-    (error) => error === original,
-  );
-  assert.deepEqual(failureSink.candidates, [installed.canonicalBytes(candidate)]);
-  assert.equal(failureSdk.activeOperations, 0);
-
-  for (const [kind, run] of [
-    ["stream", installed.runStreamOperation],
-    ["delivered-work", installed.runDeliveredWork],
-  ]) {
-    const sink = new MemorySink();
-    const sdk = new installed.Sdk(sink);
-    const begin = vector("operation_begin_payload");
-    begin.operation_kind = kind;
-    const failure = vector("failure_payload");
-    failure.identity.operation_kind = kind;
-    failure.failure.identity = `sha256:${createHash("sha256")
-      .update(installed.canonicalBytes(failure.identity))
-      .digest("hex")}`;
-    assert.throws(
-      () =>
-        run(
-          sdk,
-          { begin, dependencies: [], inputs: [], start },
-          () => {
-            throw original;
-          },
-          () => failure,
-        ),
-      (error) => error === original,
-    );
-    assert.equal(sink.candidates.length, 1);
-    const encoded = sink.candidates[0];
-    assert.deepEqual(
-      encoded,
-      installed.canonicalBytes(JSON.parse(Buffer.from(encoded).toString())),
-    );
-    assert.equal(sdk.activeOperations, 0);
-  }
-}
 
 function pack(destination) {
   fs.mkdirSync(destination);

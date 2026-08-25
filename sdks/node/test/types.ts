@@ -1,40 +1,28 @@
 import {
-  Sdk,
-  type CandidateSink,
-  type CandidateStart,
   type Json,
+  ManagedEngineProject,
   type OperationPreparation,
-  runDeliveredWork,
-  runPreparedOperation,
-  runStreamOperation,
+  type TriggerCompletion,
+  runOperation,
 } from "../src/index.js";
 
-const sink: CandidateSink = {
-  processingModes: new Set<"managed">(["managed"]),
-  queuedBytes: 0,
-  trySend: () => true,
-};
-const sdk = new Sdk(sink);
 const payload: { [key: string]: Json } = { format: "test" };
-const start: CandidateStart = {
-  captureId: "capture",
-  deployment: { processing_mode: "managed" },
-  operationId: "operation",
-  worldId: "world",
-};
-
-sdk.begin(start, payload);
-sdk.recordInput(start.operationId, payload);
-sdk.recordDependency(start.operationId, payload);
-sdk.cancel(start.operationId);
-sdk.abandonIncomplete(start.operationId);
-
 const preparation: OperationPreparation = {
   begin: payload,
-  dependencies: [],
+  completion: "return",
   inputs: [payload],
-  start,
 };
-runPreparedOperation(sdk, preparation, () => "result", () => payload);
-runStreamOperation(sdk, preparation, () => "result", () => payload);
-runDeliveredWork(sdk, preparation, () => "result", () => payload);
+const project = null as unknown as ManagedEngineProject;
+if (false) {
+  runOperation(
+    project,
+    preparation,
+    (context) => {
+      context.recordInput(payload);
+      return context.operationId;
+    },
+    () => payload,
+  );
+}
+const completion: TriggerCompletion = "return";
+void completion;

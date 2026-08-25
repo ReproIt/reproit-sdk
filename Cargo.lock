@@ -1533,7 +1533,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "reproit-backend"
 version = "1.0.0"
-source = "git+https://github.com/ReproIt/reproit-core?rev=86652d2083626ea4ee0217f80c3524c6ae0fe25e#86652d2083626ea4ee0217f80c3524c6ae0fe25e"
+source = "git+https://github.com/ReproIt/reproit-core?rev=6f8c7642c7dcd91014f7e1687a146118c16f6f6a#6f8c7642c7dcd91014f7e1687a146118c16f6f6a"
 dependencies = [
  "reproit-core",
  "serde",
@@ -1544,7 +1544,7 @@ dependencies = [
 [[package]]
 name = "reproit-cloud-api"
 version = "1.0.0"
-source = "git+https://github.com/ReproIt/reproit-core?rev=86652d2083626ea4ee0217f80c3524c6ae0fe25e#86652d2083626ea4ee0217f80c3524c6ae0fe25e"
+source = "git+https://github.com/ReproIt/reproit-core?rev=6f8c7642c7dcd91014f7e1687a146118c16f6f6a#6f8c7642c7dcd91014f7e1687a146118c16f6f6a"
 dependencies = [
  "reproit-core",
  "secrecy",
@@ -1555,7 +1555,7 @@ dependencies = [
 [[package]]
 name = "reproit-core"
 version = "1.0.0"
-source = "git+https://github.com/ReproIt/reproit-core?rev=86652d2083626ea4ee0217f80c3524c6ae0fe25e#86652d2083626ea4ee0217f80c3524c6ae0fe25e"
+source = "git+https://github.com/ReproIt/reproit-core?rev=6f8c7642c7dcd91014f7e1687a146118c16f6f6a#6f8c7642c7dcd91014f7e1687a146118c16f6f6a"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1572,6 +1572,18 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "reproit-sdk-engine"
+version = "1.0.0"
+dependencies = [
+ "reproit-backend",
+ "reproit-core",
+ "reproit-sdk-rust",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

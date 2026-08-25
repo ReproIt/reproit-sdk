@@ -13,7 +13,6 @@ const MAX_PROJECT_CONFIG_BYTES: usize = 65_536;
 const PENDING_MANAGED_ORIGIN: &str = "pending-official-managed-origin";
 const PENDING_SIGNER_ID: &str = "pending-managed-registration";
 const PENDING_SUBJECT_URI: &str = "reproit-managed://pending-subject";
-const RUST_RUNTIME_CAPABILITY: &str = "runtime.rust-native";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OfficialManagedProject {
@@ -27,6 +26,20 @@ impl OfficialManagedProject {
         build_repository_id: &str,
         source_revision: &str,
     ) -> Result<Self, Error> {
+        Self::from_build_for_sdk(
+            project_toml,
+            build_repository_id,
+            source_revision,
+            BackendSdk::Rust,
+        )
+    }
+
+    pub fn from_build_for_sdk(
+        project_toml: &str,
+        build_repository_id: &str,
+        source_revision: &str,
+        expected_sdk: BackendSdk,
+    ) -> Result<Self, Error> {
         // Validate the installed release before the application captures any
         // customer state. An unbound package must fail without local capture.
         let _ = official_managed_configuration()?;
@@ -37,7 +50,7 @@ impl OfficialManagedProject {
             toml::from_str(project_toml).map_err(|_| project_binding_invalid())?;
         project.validate().map_err(|_| project_binding_invalid())?;
         if project.processing_mode != ProcessingMode::Managed
-            || project.sdk != BackendSdk::Rust
+            || project.sdk != expected_sdk
             || project.repository_id != build_repository_id
             || !valid_source_revision(source_revision)
         {
@@ -50,14 +63,21 @@ impl OfficialManagedProject {
     }
 
     pub(crate) fn deployment(&self) -> Result<Deployment, Error> {
-        let pending_digest = Digest::of(b"pending managed Rust subject");
+        self.deployment_for_subject_runtime(runtime_capability(self.project.sdk))
+    }
+
+    pub(crate) fn deployment_for_subject_runtime(
+        &self,
+        runtime_capability: &str,
+    ) -> Result<Deployment, Error> {
+        let pending_digest = Digest::of(b"pending managed subject");
         let deployment = Deployment {
             format: DeploymentFormat::V1,
             organization_id: self.project.organization_id,
             processing_mode: ProcessingMode::Managed,
             project_id: self.project.project_id,
             repository_id: self.project.repository_id.clone(),
-            runtime_capabilities: vec![RUST_RUNTIME_CAPABILITY.to_owned()],
+            runtime_capabilities: vec![runtime_capability.to_owned()],
             runtime_endpoint: PENDING_MANAGED_ORIGIN.to_owned(),
             service_id: self.project.service_id,
             service_path: self.project.service_path.clone(),
@@ -80,6 +100,16 @@ impl OfficialManagedProject {
         };
         deployment.validate()?;
         Ok(deployment)
+    }
+}
+
+fn runtime_capability(sdk: BackendSdk) -> &'static str {
+    match sdk {
+        BackendSdk::Dotnet => "runtime.dotnet-native",
+        BackendSdk::Go => "runtime.go-native",
+        BackendSdk::Nodejs => "runtime.node-native",
+        BackendSdk::Python => "runtime.python-native",
+        BackendSdk::Rust => "runtime.rust-native",
     }
 }
 

@@ -5,7 +5,8 @@ use reproit_core::{
     identity::{CaptureId, OperationId},
     model::{
         DependencyCursorPayload, FailureIdentity, FailurePayload, FailurePayloadFormat,
-        FailureReference, OperationBeginPayload, OperationInputPayload, OperationKind, Validate,
+        FailureReference, OperationBeginPayload, OperationInputPayload, OperationKind,
+        TriggerCompletion, Validate,
     },
 };
 use uuid::Uuid;
@@ -21,7 +22,11 @@ pub trait RustOperation: Send {
     fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error>;
     fn succeed(self: Box<Self>);
     fn abandon_incomplete(self: Box<Self>);
-    fn fail(self: Box<Self>, identity: FailureIdentity) -> Result<(), Error>;
+    fn fail(
+        self: Box<Self>,
+        identity: FailureIdentity,
+        completion: TriggerCompletion,
+    ) -> Result<(), Error>;
 }
 
 pub trait RustOperationFactory: Send + Sync + 'static {
@@ -74,6 +79,7 @@ impl RustOperationFactory for OfficialManagedRustOperationFactory {
         )?;
         Ok(Box::new(FactoryOperation {
             operation,
+            operation_kind: begin.operation_kind,
             token_provider: self.token_provider.clone(),
         }))
     }
@@ -81,6 +87,7 @@ impl RustOperationFactory for OfficialManagedRustOperationFactory {
 
 struct FactoryOperation {
     operation: OfficialManagedRustOperation,
+    operation_kind: OperationKind,
     token_provider: Arc<dyn ManagedProjectTokenProvider>,
 }
 
@@ -101,11 +108,35 @@ impl RustOperation for FactoryOperation {
         self.operation.abandon_incomplete();
     }
 
-    fn fail(self: Box<Self>, identity: FailureIdentity) -> Result<(), Error> {
+    fn fail(
+        self: Box<Self>,
+        identity: FailureIdentity,
+        completion: TriggerCompletion,
+    ) -> Result<(), Error> {
+        validate_completion(self.operation_kind, completion)?;
         let token_provider = self.token_provider;
         self.operation
             .fail_identity(&identity, move || token_provider.project_token())?;
         Ok(())
+    }
+}
+
+pub(crate) fn validate_completion(
+    operation_kind: OperationKind,
+    completion: TriggerCompletion,
+) -> Result<(), Error> {
+    if matches!(
+        (operation_kind, completion),
+        (OperationKind::RequestResponse, TriggerCompletion::Return)
+            | (OperationKind::Stream, TriggerCompletion::StreamEnd)
+            | (
+                OperationKind::DeliveredWork,
+                TriggerCompletion::Acknowledgment | TriggerCompletion::TaskEnd
+            )
+    ) {
+        Ok(())
+    } else {
+        Err(Error::schema_invalid())
     }
 }
 
@@ -327,24 +358,32 @@ impl OfficialManagedRustOperation {
     }
 
     fn failure_payload(&self, identity: FailureIdentity) -> Result<FailurePayload, Error> {
-        identity.validate()?;
-        let (operation_kind, operation_name) = identity.operation();
-        if operation_kind != self.operation_kind || operation_name != self.operation_name {
-            return Err(Error::schema_invalid());
-        }
-        let grouping = identity.grouping()?;
-        Ok(FailurePayload {
-            failure: FailureReference {
-                category: grouping.category,
-                identity: grouping.identity_digest,
-                matcher: grouping.matcher,
-                object_id: format!("obj_{}", Uuid::now_v7()).parse()?,
-                schema: "reproit.failure.v1".to_owned(),
-            },
-            format: FailurePayloadFormat::V1,
-            identity,
-        })
+        failure_payload(identity, self.operation_kind, &self.operation_name)
     }
+}
+
+pub(crate) fn failure_payload(
+    identity: FailureIdentity,
+    expected_operation_kind: OperationKind,
+    expected_operation_name: &str,
+) -> Result<FailurePayload, Error> {
+    identity.validate()?;
+    let (operation_kind, operation_name) = identity.operation();
+    if operation_kind != expected_operation_kind || operation_name != expected_operation_name {
+        return Err(Error::schema_invalid());
+    }
+    let grouping = identity.grouping()?;
+    Ok(FailurePayload {
+        failure: FailureReference {
+            category: grouping.category,
+            identity: grouping.identity_digest,
+            matcher: grouping.matcher,
+            object_id: format!("obj_{}", Uuid::now_v7()).parse()?,
+            schema: "reproit.failure.v1".to_owned(),
+        },
+        format: FailurePayloadFormat::V1,
+        identity,
+    })
 }
 
 impl Drop for OfficialManagedRustOperation {
@@ -368,4 +407,28 @@ fn incomplete_operation() -> Error {
         ErrorCode::IncompleteCandidate,
         "The managed operation capture is incomplete.",
     )
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn every_backend_kind_accepts_only_its_declared_completion() {
+        assert!(
+            validate_completion(OperationKind::RequestResponse, TriggerCompletion::Return).is_ok()
+        );
+        assert!(validate_completion(OperationKind::Stream, TriggerCompletion::StreamEnd).is_ok());
+        assert!(
+            validate_completion(
+                OperationKind::DeliveredWork,
+                TriggerCompletion::Acknowledgment,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_completion(OperationKind::DeliveredWork, TriggerCompletion::TaskEnd).is_ok()
+        );
+        assert!(validate_completion(OperationKind::Stream, TriggerCompletion::Return).is_err());
+    }
 }

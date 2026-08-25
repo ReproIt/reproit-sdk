@@ -17,9 +17,9 @@ import weakref
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 
-from reproit_sdk import _PROCESS_RESOURCES, canonical_bytes
-
-from .managed_protocol import ManagedError, digest_bytes
+from .encoding import canonical_bytes
+from .process_resources import PROCESS_RESOURCES
+from .subject_protocol import ManagedError, digest_bytes
 
 COPY_BUFFER_BYTES = 64 * 1024
 MAX_CAPTURED_FILES = 32_764
@@ -215,7 +215,7 @@ def capture_python_subject_files(
 
 def _release_subject_reservation(reservation: list[int]) -> None:
     if reservation[0] > 0:
-        _PROCESS_RESOURCES.release_logical(reservation[0])
+        PROCESS_RESOURCES.release_logical(reservation[0])
         reservation[0] = 0
 
 
@@ -802,7 +802,7 @@ def _spool_stable_file(
         or metadata.st_size > MAX_SUBJECT_OBJECT_BYTES
     ):
         raise _subject_unbounded()
-    if not _PROCESS_RESOURCES.reserve_logical(metadata.st_size):
+    if not PROCESS_RESOURCES.reserve_logical(metadata.st_size):
         raise _subject_unbounded()
     reserved = True
     descriptor, temporary = tempfile.mkstemp(prefix=".subject-", dir=spool_path)
@@ -832,7 +832,7 @@ def _spool_stable_file(
         destination = os.path.join(spool_path, digest.removeprefix("sha256:"))
         if os.path.exists(destination):
             os.unlink(temporary)
-            _PROCESS_RESOURCES.release_logical(metadata.st_size)
+            PROCESS_RESOURCES.release_logical(metadata.st_size)
             reserved = False
         else:
             os.replace(temporary, destination)
@@ -847,7 +847,7 @@ def _spool_stable_file(
         except FileNotFoundError:
             pass
         if reserved:
-            _PROCESS_RESOURCES.release_logical(metadata.st_size)
+            PROCESS_RESOURCES.release_logical(metadata.st_size)
         raise
 
 

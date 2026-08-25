@@ -4,32 +4,143 @@
         <name>ReproIt.Sdk</name>
     </assembly>
     <members>
+        <member name="T:ReproIt.Sdk.AutomaticOperationKind">
+            <summary>Identifies one framework-neutral Backend Trigger.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticOperationKind.RequestResponse">
+            <summary>A request produces one response.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticOperationKind.Stream">
+            <summary>An ordered input stream produces one terminal result.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticOperationKind.DeliveredWork">
+            <summary>One delivered task ends with an acknowledgment or task result.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticInputChannel">
+            <summary>Identifies the meaning of one ordered input chunk.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticInputChannel.Control">
+            <summary>The chunk controls Trigger execution.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticInputChannel.Input">
+            <summary>The chunk contains application input.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticInputChannel.Metadata">
+            <summary>The chunk contains application-visible metadata.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticObservationClass">
+            <summary>Identifies one supported World boundary.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticObservationClass.Clock">
+            <summary>The observation reads a clock.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticObservationClass.Database">
+            <summary>The observation interacts with a database.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticObservationClass.Environment">
+            <summary>The observation reads the process environment.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticObservationClass.Filesystem">
+            <summary>The observation reads the filesystem.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticObservationClass.OutboundHttp">
+            <summary>The observation makes an outbound HTTP call.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticObservationClass.Queue">
+            <summary>The observation interacts with a queue.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticObservationClass.Randomness">
+            <summary>The observation reads randomness.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticTriggerCompletion">
+            <summary>Identifies how one Trigger ended.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticTriggerCompletion.Acknowledgment">
+            <summary>A delivered task ended with an acknowledgment.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticTriggerCompletion.Return">
+            <summary>A request-response operation returned.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticTriggerCompletion.StreamEnd">
+            <summary>An ordered stream reached its terminal item.</summary>
+        </member>
+        <member name="F:ReproIt.Sdk.AutomaticTriggerCompletion.TaskEnd">
+            <summary>A delivered task ended without an acknowledgment.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticProjectOptions">
+            <summary>Binds one installed SDK to one reviewed project and subject.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.AutomaticProjectOptions.BuildRepositoryId">
+            <summary>Gets the reviewed repository identity.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.AutomaticProjectOptions.ProjectToml">
+            <summary>Gets the reviewed project configuration bytes.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.AutomaticProjectOptions.ProjectTokenProvider">
+            <summary>Gets the project token only after a complete Failure.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.AutomaticProjectOptions.SourceRevision">
+            <summary>Gets the immutable source revision.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.AutomaticProjectOptions.SubjectEntryAssembly">
+            <summary>Gets the optional exact subject entry assembly.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticOperationStart">
+            <summary>Describes one framework-neutral operation.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticOperationStart.#ctor(System.String,System.String,System.Collections.Generic.IReadOnlyList{System.String},ReproIt.Sdk.AutomaticOperationKind,System.String)">
+            <summary>Describes one framework-neutral operation.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticInputChunk">
+            <summary>Contains one ordered, application-visible Trigger input.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticInputChunk.#ctor(ReproIt.Sdk.AutomaticInputChannel,System.String,System.Byte[])">
+            <summary>Contains one ordered, application-visible Trigger input.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticCaptureException">
+            <summary>Reports a local automatic capture failure without customer data.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticCaptureException.#ctor">
+            <summary>Reports a local automatic capture failure without customer data.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticProject">
+            <summary>Owns one shared native capture engine.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticProject.Open(ReproIt.Sdk.AutomaticProjectOptions)">
+            <summary>Opens the packaged shared engine for one running .NET subject.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticProject.StartOperation(ReproIt.Sdk.AutomaticOperationStart)">
+            <summary>Starts one request-response, stream, or delivered-work operation.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticProject.Dispose">
+            <summary>Deletes active shared-engine state.</summary>
+        </member>
+        <member name="T:ReproIt.Sdk.AutomaticOperation">
+            <summary>Owns one shared-engine operation until a terminal action.</summary>
+        </member>
+        <member name="P:ReproIt.Sdk.AutomaticOperation.OperationId">
+            <summary>Gets the stable identity for causal child operations.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticOperation.RecordInput(ReproIt.Sdk.AutomaticInputChunk)">
+            <summary>Records one ordered Trigger input chunk.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticOperation.Succeed">
+            <summary>Deletes one successful operation without delivery.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticOperation.Cancel">
+            <summary>Deletes one cancelled operation without delivery.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticOperation.Fail(ReproIt.Sdk.AutomaticTriggerCompletion,System.Text.Json.Nodes.JsonObject)">
+            <summary>Closes the World and sends one typed Failure to the shared engine.</summary>
+        </member>
+        <member name="M:ReproIt.Sdk.AutomaticOperation.Dispose">
+            <summary>Deletes one unfinished operation.</summary>
+        </member>
         <member name="T:ReproIt.Sdk.CanonicalJson">
             <summary>Encodes deterministic protocol JSON.</summary>
         </member>
         <member name="M:ReproIt.Sdk.CanonicalJson.Bytes(System.Text.Json.Nodes.JsonNode)">
             <summary>Encodes one protocol value with ordered object properties.</summary>
-        </member>
-        <member name="T:ReproIt.Sdk.Operations">
-            <summary>Provides fail-open operation wrapper behavior.</summary>
-        </member>
-        <member name="T:ReproIt.Sdk.Operations.Preparation">
-            <summary>Contains the records available before one operation starts.</summary>
-        </member>
-        <member name="M:ReproIt.Sdk.Operations.Preparation.#ctor(ReproIt.Sdk.CandidateStart,System.Text.Json.Nodes.JsonNode,System.Collections.Generic.IReadOnlyList{System.Text.Json.Nodes.JsonNode},System.Collections.Generic.IReadOnlyList{System.Text.Json.Nodes.JsonNode})">
-            <summary>Contains the records available before one operation starts.</summary>
-        </member>
-        <member name="M:ReproIt.Sdk.Operations.Run``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.CandidateStart,System.Text.Json.Nodes.JsonNode,System.Collections.Generic.IEnumerable{System.Text.Json.Nodes.JsonNode},System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
-            <summary>Runs an operation and preserves its exact return or exception.</summary>
-        </member>
-        <member name="M:ReproIt.Sdk.Operations.RunPrepared``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.Operations.Preparation,System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
-            <summary>Runs a prepared operation and preserves its exact return or exception.</summary>
-        </member>
-        <member name="M:ReproIt.Sdk.Operations.RunStream``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.Operations.Preparation,System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
-            <summary>Runs one ordered stream operation.</summary>
-        </member>
-        <member name="M:ReproIt.Sdk.Operations.RunDeliveredWork``1(ReproIt.Sdk.Sdk,ReproIt.Sdk.Operations.Preparation,System.Func{``0},System.Func{System.Exception,System.Text.Json.Nodes.JsonNode})">
-            <summary>Runs one delivered-work operation.</summary>
         </member>
         <member name="T:ReproIt.Sdk.CaptureException">
             <summary>Reports a local capture that is incomplete or exceeds a fixed bound.</summary>
@@ -37,92 +148,96 @@
         <member name="M:ReproIt.Sdk.CaptureException.#ctor(System.String)">
             <summary>Reports a local capture that is incomplete or exceeds a fixed bound.</summary>
         </member>
-        <member name="T:ReproIt.Sdk.CandidateStart">
-            <summary>Supplies the immutable identity needed to start one operation capture.</summary>
+        <member name="T:ReproIt.Sdk.ManagedCaptureException">
+            <summary>Reports a managed capture step failure with a stable protocol code.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.CandidateStart.#ctor(System.String,System.Text.Json.Nodes.JsonNode,System.String,System.String)">
-            <summary>Supplies the immutable identity needed to start one operation capture.</summary>
+        <member name="M:ReproIt.Sdk.ManagedCaptureException.#ctor(System.String,System.String)">
+            <summary>Creates one managed failure with a stable protocol error code.</summary>
         </member>
-        <member name="T:ReproIt.Sdk.ICandidateSink">
-            <summary>Accepts complete failed candidates without blocking an application operation.</summary>
+        <member name="P:ReproIt.Sdk.ManagedCaptureException.Code">
+            <summary>Gets the stable protocol error code.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.ICandidateSink.AllowsProcessingMode(System.String)">
-            <summary>Reports whether this sink accepts one processing mode.</summary>
+        <member name="T:ReproIt.Sdk.ManagedProjectToken">
+            <summary>Restricts a project token to managed workload registration.</summary>
         </member>
-        <member name="P:ReproIt.Sdk.ICandidateSink.QueuedBytes">
-            <summary>Gets the current queued candidate bytes.</summary>
+        <member name="M:ReproIt.Sdk.ManagedProjectToken.#ctor(System.String)">
+            <summary>Validates and wraps one managed project token.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.ICandidateSink.TrySend(System.String,System.ReadOnlyMemory{System.Byte})">
-            <summary>Tries to enqueue one complete candidate.</summary>
+        <member name="T:ReproIt.Sdk.PackagedSubjectObject">
+            <summary>Holds one packaged content-addressed subject object.</summary>
         </member>
-        <member name="T:ReproIt.Sdk.SdkRecallCounters">
-            <summary>Contains bounded local recall counters without customer values.</summary>
+        <member name="M:ReproIt.Sdk.PackagedSubjectObject.#ctor(System.String,System.String,System.Int64)">
+            <summary>Holds one packaged content-addressed subject object.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.SdkRecallCounters.#ctor(System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64,System.UInt64)">
-            <summary>Contains bounded local recall counters without customer values.</summary>
+        <member name="T:ReproIt.Sdk.DotnetSubjectPackage">
+            <summary>Holds the frozen subject manifest plus spooled object files.</summary>
         </member>
-        <member name="T:ReproIt.Sdk.Sdk">
-            <summary>Owns bounded active records and sends complete failed candidates only.</summary>
+        <member name="P:ReproIt.Sdk.DotnetSubjectPackage.Manifest">
+            <summary>Gets the validated subject closure manifest.</summary>
         </member>
-        <member name="F:ReproIt.Sdk.Sdk.MaxGlobalBytes">
-            <summary>The global active and queued byte bound.</summary>
+        <member name="P:ReproIt.Sdk.DotnetSubjectPackage.Objects">
+            <summary>Gets the content-addressed subject object files.</summary>
         </member>
-        <member name="F:ReproIt.Sdk.Sdk.MaxOperationBytes">
-            <summary>The per-operation byte bound.</summary>
+        <member name="M:ReproIt.Sdk.DotnetSubjectPackage.Dispose">
+            <summary>Removes the private subject spool.</summary>
         </member>
-        <member name="F:ReproIt.Sdk.Sdk.MaxEventBytes">
-            <summary>The per-event byte bound.</summary>
+        <member name="T:ReproIt.Sdk.ManagedSubject">
+            <summary>Packages the running .NET subject closure for managed capture.</summary>
+            <remarks>
+            Mirrors crates/reproit-sdk-rust/src/subject.rs for the language-neutral
+            manifest shape. The .NET subject closure contains the entry assembly,
+            its portable PDB debug artifact, the runtime identity, loaded
+            dependency-closure facts, and launch data.
+            </remarks>
         </member>
-        <member name="F:ReproIt.Sdk.Sdk.MaxEvents">
-            <summary>The event-count bound.</summary>
+        <member name="F:ReproIt.Sdk.ManagedSubject.SubjectFileMediaType">
+            <summary>The raw subject file media type.</summary>
         </member>
-        <member name="F:ReproIt.Sdk.Sdk.MaxActiveOperations">
-            <summary>The concurrent active-operation bound.</summary>
+        <member name="F:ReproIt.Sdk.ManagedSubject.SubjectLaunchMediaType">
+            <summary>The launch data media type.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.#ctor(ReproIt.Sdk.ICandidateSink)">
-            <summary>Creates an SDK with one bounded local candidate sink.</summary>
+        <member name="F:ReproIt.Sdk.ManagedSubject.ModuleIdentityMediaType">
+            <summary>The module identity media type.</summary>
         </member>
-        <member name="P:ReproIt.Sdk.Sdk.ActiveOperations">
-            <summary>Gets the active operation count.</summary>
+        <member name="F:ReproIt.Sdk.ManagedSubject.PortablePdbMediaType">
+            <summary>The portable PDB media type.</summary>
         </member>
-        <member name="P:ReproIt.Sdk.Sdk.RecallCounters">
-            <summary>Gets a bounded snapshot of local capture outcomes.</summary>
+        <member name="M:ReproIt.Sdk.ManagedSubject.PackageRunningDotnetSubject(System.String)">
+            <summary>Freezes and hashes the running .NET subject closure locally.</summary>
+            <remarks>
+            A null entry path uses the entry assembly. The entry assembly must
+            carry an adjacent portable PDB so the captured subject binds its
+            debug artifact, mirroring the Go port's embedded DWARF requirement.
+            </remarks>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.Begin(ReproIt.Sdk.CandidateStart,System.Text.Json.Nodes.JsonNode)">
-            <summary>Starts one operation with its immutable begin record.</summary>
+        <member name="M:ReproIt.Sdk.ManagedSubject.SubjectBinding(System.Text.Json.Nodes.JsonObject)">
+            <summary>Builds the deployment subject descriptor bound to a manifest.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.RecordInput(System.String,System.Text.Json.Nodes.JsonNode)">
-            <summary>Appends one ordered semantic input record.</summary>
+        <member name="M:ReproIt.Sdk.ManagedSubject.ValidateSubjectClosureManifest(System.Text.Json.Nodes.JsonNode)">
+            <summary>Mirrors reproit-core SubjectClosureManifest::validate.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.RecordDependency(System.String,System.Text.Json.Nodes.JsonNode)">
-            <summary>Appends one dependency cursor record.</summary>
+        <member name="M:ReproIt.Sdk.ManagedSubject.ReadStableFile(System.String)">
+            <summary>Reads a bounded regular file, failing if it changes underneath.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.Succeed(System.String)">
-            <summary>Deletes a successful operation without delivery.</summary>
+        <member name="T:ReproIt.Sdk.ProcessorCapture">
+            <summary>Captures the process-visible processor view of this host.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.Cancel(System.String)">
-            <summary>Deletes a cancelled operation without delivery.</summary>
+        <member name="M:ReproIt.Sdk.ProcessorCapture.CaptureProcessorCapabilities">
+            <summary>Captures sorted processor.* capability strings.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.AbandonIncomplete(System.String)">
-            <summary>Deletes incomplete local state and records the outcome.</summary>
+        <member name="M:ReproIt.Sdk.ProcessorCapture.DeriveProcessorCapabilities(System.String,System.String,System.Nullable{System.UInt64})">
+            <summary>Pure derivation over raw views, shared with the capture
+            vectors.</summary>
         </member>
-        <member name="M:ReproIt.Sdk.Sdk.Fail(System.String,System.Text.Json.Nodes.JsonNode)">
-            <summary>Freezes and enqueues one complete failed candidate.</summary>
+        <member name="M:ReproIt.Sdk.ProcessorCapture.ParseAuxvHwcap(System.Byte[])">
+            <summary>Extracts AT_HWCAP from raw /proc/self/auxv bytes:
+            little-endian 16-byte entries of key then value, terminated by a
+            zero key.</summary>
         </member>
-        <member name="T:ReproIt.Sdk.StagedDeliveryOutcome">
-            <summary>Reports one bounded staged-candidate delivery result.</summary>
-        </member>
-        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.CloudProtected">
-            <summary>A durable staging service owns the candidate.</summary>
-        </member>
-        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.LocalOnly">
-            <summary>Only the bounded local Runtime journal owns the candidate.</summary>
-        </member>
-        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.Rejected">
-            <summary>The receiver rejected the candidate.</summary>
-        </member>
-        <member name="F:ReproIt.Sdk.StagedDeliveryOutcome.Retryable">
-            <summary>The receiver did not provide a terminal result.</summary>
+        <member name="M:ReproIt.Sdk.ProcessorCapture.IdentityToken(System.String,System.String[],System.String,System.Int32[])">
+            <summary>Encodes the canonical lowercase identity token, or null
+            when a field is missing, malformed, or disagrees between processor
+            blocks.</summary>
         </member>
     </members>
 </doc>

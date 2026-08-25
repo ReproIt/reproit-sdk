@@ -23,18 +23,77 @@ const LINUX_RUNNING_EXECUTABLE: &str = "/proc/self/exe";
 const MAX_LINUX_MAPS_BYTES: u64 = 1_048_576;
 const MAX_SUBJECT_FILES: usize = 32_767;
 
-pub struct RustSubjectPackage {
+pub struct SubjectPackage {
     pub manifest: SubjectClosureManifest,
     pub objects: Vec<PackagedSubjectObject>,
     _reservation: crate::resources::LogicalByteReservation,
     _spool: TempDir,
 }
 
+pub type RustSubjectPackage = SubjectPackage;
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PackagedSubjectObject {
     pub digest: Digest,
     pub path: PathBuf,
     pub size: u64,
+}
+
+impl SubjectPackage {
+    pub fn freeze(
+        manifest: SubjectClosureManifest,
+        objects: &[PackagedSubjectObject],
+    ) -> Result<Self, Error> {
+        manifest.validate()?;
+        if objects.len() != manifest.objects.len() || objects.len() > MAX_SUBJECT_FILES {
+            return Err(subject_unsupported());
+        }
+        let declared = manifest
+            .objects
+            .iter()
+            .map(|object| (object.digest, (object.kind, object.size)))
+            .collect::<BTreeMap<_, _>>();
+        if declared.len() != objects.len() {
+            return Err(subject_unsupported());
+        }
+        let spool = tempfile::Builder::new()
+            .prefix("reproit-subject-")
+            .tempdir()
+            .map_err(subject_unreadable)?;
+        let mut reservation = crate::resources::LogicalByteReservation::new();
+        let mut frozen = Vec::with_capacity(objects.len());
+        for object in objects {
+            let (kind, declared_size) = declared
+                .get(&object.digest)
+                .copied()
+                .ok_or_else(subject_unsupported)?;
+            if declared_size != object.size || object.size > crate::MAX_SUBJECT_FILE_BYTES {
+                return Err(subject_unsupported());
+            }
+            let captured = capture_file(
+                &object.path,
+                FileSource::Path(&object.path),
+                spool.path(),
+                kind,
+                EmptyFilePolicy::Allowed,
+                &mut reservation,
+            )?;
+            if captured.digest != object.digest || captured.size != object.size {
+                return Err(subject_changing());
+            }
+            frozen.push(PackagedSubjectObject {
+                digest: captured.digest,
+                path: captured.spool_path,
+                size: captured.size,
+            });
+        }
+        Ok(Self {
+            manifest,
+            objects: frozen,
+            _reservation: reservation,
+            _spool: spool,
+        })
+    }
 }
 
 pub fn package_running_rust_subject() -> Result<RustSubjectPackage, Error> {
@@ -62,6 +121,7 @@ fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
         FileSource::RunningExecutable,
         spool.path(),
         SubjectObjectKind::Application,
+        EmptyFilePolicy::Rejected,
         &mut reservation,
     )?);
     for path in paths {
@@ -70,6 +130,7 @@ fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
             FileSource::Path(&path),
             spool.path(),
             SubjectObjectKind::NativeDependency,
+            EmptyFilePolicy::Rejected,
             &mut reservation,
         )?);
     }
@@ -207,11 +268,15 @@ fn capture_file(
     source: FileSource<'_>,
     spool_root: &Path,
     kind: SubjectObjectKind,
+    empty_file_policy: EmptyFilePolicy,
     reservation: &mut crate::resources::LogicalByteReservation,
 ) -> Result<CapturedFile, Error> {
     let mut source_file = source.open().map_err(subject_unreadable)?;
     let before = source.metadata(&source_file).map_err(subject_unreadable)?;
-    if !before.is_file() || before.len() == 0 || before.len() > crate::MAX_SUBJECT_FILE_BYTES {
+    if !before.is_file()
+        || empty_file_policy == EmptyFilePolicy::Rejected && before.len() == 0
+        || before.len() > crate::MAX_SUBJECT_FILE_BYTES
+    {
         return Err(subject_unbounded());
     }
     reserve_subject_bytes(reservation, before.len())?;
@@ -281,6 +346,12 @@ fn capture_file(
 enum FileSource<'a> {
     Path(&'a Path),
     RunningExecutable,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum EmptyFilePolicy {
+    Allowed,
+    Rejected,
 }
 
 impl<'a> FileSource<'a> {
@@ -760,6 +831,7 @@ mod tests {
             FileSource::RunningExecutable,
             spool.path(),
             SubjectObjectKind::Application,
+            EmptyFilePolicy::Rejected,
             &mut reservation,
         )
         .unwrap();

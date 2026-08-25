@@ -10,21 +10,24 @@ use reproit_core::{
     crypto::encode_base64url,
     identity::{CaptureId, Digest, OperationId},
     model::{
-        Candidate, CandidateFormat, Deployment, EventKind, EventRecord, TerminalFormat,
-        TerminalPayload, Validate,
+        AutomaticObservationPayload, Candidate, CandidateFormat, Deployment, EventKind,
+        EventRecord, NativeObservationFenceReceipt, TerminalFormat, TerminalPayload, Validate,
     },
 };
 
 pub use reproit_core::{
     Error,
     model::{
-        DependencyCursorFormat, DependencyCursorPayload, FailurePayload, FailurePayloadFormat,
-        InputChannel, OperationBeginFormat, OperationBeginPayload, OperationInputFormat,
-        OperationInputPayload, OperationKind, TriggerCompletion, WorldCheckpoint,
-        WorldCheckpointFormat,
+        AutomaticObservationClass, AutomaticObservationPayloadFormat, DependencyCursorFormat,
+        DependencyCursorPayload, FailurePayload, FailurePayloadFormat, InputChannel,
+        NativeObservationFenceReceiptFormat, OperationBeginFormat, OperationBeginPayload,
+        OperationInputFormat, OperationInputPayload, OperationKind, SemanticAdapterOwnership,
+        TriggerCompletion, WorldCheckpoint, WorldCheckpointFormat,
     },
 };
 
+mod automatic_engine;
+mod automatic_world;
 mod managed;
 mod managed_deployment;
 mod managed_identity;
@@ -37,6 +40,10 @@ mod request_response;
 mod resources;
 mod subject;
 
+#[doc(hidden)]
+pub use automatic_engine::{
+    AutomaticManagedEngine, AutomaticManagedOperation, AutomaticManagedRustOperationFactory,
+};
 pub use managed::{
     ManagedCandidateArtifact, ManagedCandidateGrantDelivery, ManagedCandidateIngressDelivery,
     ManagedRustCaptureClosure, ManagedRustCaptureClosureProvider, ManagedRustOperationClosure,
@@ -63,7 +70,9 @@ pub use request_response::{
     MAX_RESPONSE_HEADERS, RequestResponseFailureClassifier, RequestResponseHead,
     RequestResponseHeader, RequestResponseOperation, ResponseFailureClassification,
 };
-pub use subject::{PackagedSubjectObject, RustSubjectPackage, package_running_rust_subject};
+pub use subject::{
+    PackagedSubjectObject, RustSubjectPackage, SubjectPackage, package_running_rust_subject,
+};
 
 pub const MAX_GLOBAL_BYTES: usize = 1_048_576;
 pub const MAX_OPERATION_BYTES: usize = 262_144;
@@ -142,6 +151,13 @@ pub struct CandidateStart {
     pub world_id: Digest,
 }
 
+#[derive(Debug, Clone)]
+pub struct AutomaticCandidateStart {
+    pub capture_id: CaptureId,
+    pub deployment: Deployment,
+    pub operation_id: OperationId,
+}
+
 #[derive(Clone)]
 pub struct Sdk {
     state: Arc<Mutex<State>>,
@@ -161,6 +177,32 @@ impl Sdk {
         start: CandidateStart,
         payload: &OperationBeginPayload,
     ) -> Result<(), Error> {
+        self.begin_inner(start, payload, true)
+    }
+
+    pub fn begin_automatic(
+        &self,
+        start: AutomaticCandidateStart,
+        payload: &OperationBeginPayload,
+    ) -> Result<(), Error> {
+        self.begin_inner(
+            CandidateStart {
+                capture_id: start.capture_id,
+                deployment: start.deployment,
+                operation_id: start.operation_id,
+                world_id: Digest::of(b"pending automatic World"),
+            },
+            payload,
+            false,
+        )
+    }
+
+    fn begin_inner(
+        &self,
+        start: CandidateStart,
+        payload: &OperationBeginPayload,
+        world_bound: bool,
+    ) -> Result<(), Error> {
         let record = event_record(EventKind::Begin, 0, payload)?;
         let record_bytes = record_size(&record);
         let mut state = self.lock_state();
@@ -177,8 +219,27 @@ impl Sdk {
                 bytes: record_bytes,
                 records: vec![record],
                 start,
+                world_bound,
             },
         );
+        Ok(())
+    }
+
+    pub fn bind_automatic_world(
+        &self,
+        operation_id: OperationId,
+        world_id: Digest,
+    ) -> Result<(), Error> {
+        let mut state = self.lock_state();
+        let operation = state
+            .operations
+            .get_mut(&operation_id)
+            .ok_or_else(incomplete_candidate)?;
+        if operation.world_bound {
+            return Err(Error::schema_invalid());
+        }
+        operation.start.world_id = world_id;
+        operation.world_bound = true;
         Ok(())
     }
 
@@ -196,6 +257,22 @@ impl Sdk {
         payload: &DependencyCursorPayload,
     ) -> Result<(), Error> {
         self.append(operation_id, EventKind::Dependency, payload)
+    }
+
+    pub fn record_observation(
+        &self,
+        operation_id: OperationId,
+        payload: &AutomaticObservationPayload,
+    ) -> Result<(), Error> {
+        self.append(operation_id, EventKind::Observation, payload)
+    }
+
+    pub fn record_observation_fence(
+        &self,
+        operation_id: OperationId,
+        payload: &NativeObservationFenceReceipt,
+    ) -> Result<(), Error> {
+        self.append(operation_id, EventKind::ObservationFence, payload)
     }
 
     pub fn succeed(&self, operation_id: OperationId) {
@@ -228,6 +305,9 @@ impl Sdk {
                 .operations
                 .get(&operation_id)
                 .ok_or_else(incomplete_candidate)?;
+            if !operation.world_bound {
+                return Err(incomplete_candidate());
+            }
             event_record(
                 EventKind::Failure,
                 u16::try_from(operation.records.len()).map_err(|_| runtime_quota())?,
@@ -400,6 +480,7 @@ struct ActiveOperation {
     bytes: usize,
     records: Vec<EventRecord>,
     start: CandidateStart,
+    world_bound: bool,
 }
 
 fn event_record<T: serde::Serialize>(
