@@ -6,7 +6,9 @@ use reproit_core::{
     model::{
         AutomaticObservationClass, Candidate, DependencyOutcome, DependencyTranscript, Deployment,
         DeploymentFormat, OperationBeginFormat, OperationBeginPayload, OperationKind,
-        ProcessingMode, SemanticObservationOperation, SemanticObservationOutcome,
+        ProcessingMode, SemanticDependencyOperation, SemanticDependencyRequest,
+        SemanticDependencyRequestFormat, SemanticDependencyResponse,
+        SemanticDependencyResponseFormat, SemanticObservationOperation, SemanticObservationOutcome,
         SemanticObservationRequest, SemanticObservationRequestFormat, SemanticObservationResponse,
         SemanticObservationResponseFormat, Subject, SubjectFormat, TriggerCompletion,
         semantic_observation_value,
@@ -17,6 +19,11 @@ use super::*;
 use crate::{AutomaticCandidateStart, CandidateSink};
 
 static PROCESS_TEST: Mutex<()> = Mutex::new(());
+const SEMANTIC_DEPENDENCY_CLASSES: [AutomaticObservationClass; 3] = [
+    AutomaticObservationClass::Database,
+    AutomaticObservationClass::OutboundHttp,
+    AutomaticObservationClass::Queue,
+];
 
 #[derive(Default)]
 struct Sink;
@@ -36,7 +43,7 @@ fn transcript_binds_objects_causal_parent_and_fence_observation() {
     let _process = process_test();
     let (sdk, operation_id, causal_parent_id) = started_sdk();
     let mut coordinator = coordinator_with_coverage(sdk.clone(), operation_id);
-    capture(
+    let (request, response) = capture(
         &mut coordinator,
         1,
         AutomaticObservationClass::Database,
@@ -59,8 +66,8 @@ fn transcript_binds_objects_causal_parent_and_fence_observation() {
     let interaction = &transcript.interactions[0];
     assert_eq!(interaction.causal_parent_id, Some(causal_parent_id));
     assert_eq!(interaction.operation_id, operation_id);
-    assert_eq!(interaction.request_digest, Digest::of(b"select balance"));
-    assert_eq!(interaction.response_digest, Digest::of(b"balance=6"));
+    assert_eq!(interaction.request_digest, Digest::of(&request));
+    assert_eq!(interaction.response_digest, Digest::of(&response));
     let object_ids = capture
         .closure
         .artifacts
@@ -71,6 +78,139 @@ fn transcript_binds_objects_causal_parent_and_fence_observation() {
     assert!(object_ids.contains(&interaction.response_object_id));
     assert_eq!(capture.fence.observation_count, 1);
     assert_eq!(capture.fence.adapter_ownership.len(), 7);
+}
+
+#[test]
+fn semantic_dependency_classes_capture_and_close() {
+    let _process = process_test();
+    for class in SEMANTIC_DEPENDENCY_CLASSES {
+        let (sdk, operation_id, _) = started_sdk();
+        let mut coordinator = coordinator_with_coverage(sdk, operation_id);
+        let (request, response) =
+            capture(&mut coordinator, 1, class, None, b"request", b"response", 0);
+
+        let capture = coordinator.close(TriggerCompletion::Return).unwrap();
+        let transcript_artifact = capture
+            .closure
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.media_type == DEPENDENCY_TRANSCRIPT_MEDIA_TYPE)
+            .unwrap();
+        let transcript: DependencyTranscript =
+            canonical::parse_strict(&fs::read(&transcript_artifact.path).unwrap()).unwrap();
+        assert_eq!(transcript.interactions.len(), 1);
+        assert_eq!(
+            transcript.interactions[0].request_digest,
+            Digest::of(&request)
+        );
+        assert_eq!(
+            transcript.interactions[0].response_digest,
+            Digest::of(&response)
+        );
+    }
+}
+
+#[test]
+fn semantic_dependency_classes_replay_complete_canonical_responses() {
+    let _process = process_test();
+    for class in SEMANTIC_DEPENDENCY_CLASSES {
+        let (sdk, operation_id, _) = started_sdk();
+        let mut coordinator = coordinator_with_coverage(sdk, operation_id);
+        let (request, response) = semantic_records(class, b"request", b"response");
+        coordinator.open_observation(1, class, None).unwrap();
+        coordinator.write_observation_request(1, &request).unwrap();
+        let session = coordinator.sessions.get_mut(&1).unwrap();
+        fs::write(&session.response_path, &response).unwrap();
+        session.response_bytes = u64::try_from(response.len()).unwrap();
+        session.state = AutomaticObservationSessionState::Replay { response_offset: 0 };
+
+        let mut replayed = Vec::new();
+        loop {
+            let (chunk, eof) = coordinator.read_observation_response(1).unwrap();
+            replayed.extend_from_slice(&chunk);
+            if eof {
+                break;
+            }
+        }
+        assert_eq!(replayed, response);
+        coordinator
+            .finish_observation(1, DependencyOutcome::Response, 0)
+            .unwrap();
+        coordinator.close(TriggerCompletion::Return).unwrap();
+    }
+}
+
+#[test]
+fn semantic_dependency_classes_reject_mismatched_pairs_and_close() {
+    let _process = process_test();
+    for class in SEMANTIC_DEPENDENCY_CLASSES {
+        let (sdk, operation_id, _) = started_sdk();
+        let mut coordinator = coordinator_with_coverage(sdk, operation_id);
+        let (request, response) = semantic_records(class, b"request", b"response");
+        let mut response: SemanticDependencyResponse = canonical::parse_strict(&response).unwrap();
+        response.request_digest = Digest::of(b"different request");
+        let response = canonical::canonical_bytes(&response).unwrap();
+        coordinator.open_observation(1, class, None).unwrap();
+        coordinator.write_observation_request(1, &request).unwrap();
+        coordinator.dispatch_observation(1).unwrap();
+        coordinator
+            .write_observation_response(1, &response)
+            .unwrap();
+
+        assert_eq!(
+            coordinator
+                .finish_observation(1, DependencyOutcome::Response, 0)
+                .unwrap_err()
+                .code,
+            ErrorCode::IncompleteCandidate
+        );
+        assert_world_not_closed(coordinator);
+    }
+}
+
+#[test]
+fn semantic_dependency_classes_bind_order() {
+    let _process = process_test();
+    for class in SEMANTIC_DEPENDENCY_CLASSES {
+        let (sdk, operation_id, _) = started_sdk();
+        let mut coordinator = coordinator_with_coverage(sdk, operation_id);
+        let (request, response) = semantic_records(class, b"request", b"response");
+        coordinator.open_observation(1, class, None).unwrap();
+        coordinator.write_observation_request(1, &request).unwrap();
+        coordinator.dispatch_observation(1).unwrap();
+        coordinator
+            .write_observation_response(1, &response)
+            .unwrap();
+
+        assert_eq!(
+            coordinator
+                .finish_observation(1, DependencyOutcome::Response, 1)
+                .unwrap_err()
+                .code,
+            ErrorCode::IncompleteCandidate
+        );
+        assert_world_not_closed(coordinator);
+    }
+}
+
+#[test]
+fn semantic_dependency_classes_reject_one_over_record_bound_and_close() {
+    let _process = process_test();
+    for class in SEMANTIC_DEPENDENCY_CLASSES {
+        let (sdk, operation_id, _) = started_sdk();
+        let mut coordinator = coordinator_with_coverage(sdk, operation_id);
+        coordinator.open_observation(1, class, None).unwrap();
+        let one_over = vec![0_u8; usize::try_from(MAX_SEMANTIC_RECORD_BYTES).unwrap() + 1];
+        for chunk in one_over.chunks(MAX_AUTOMATIC_OBSERVATION_CHUNK_BYTES) {
+            coordinator.write_observation_request(1, chunk).unwrap();
+        }
+
+        assert_eq!(
+            coordinator.dispatch_observation(1).unwrap_err().code,
+            ErrorCode::IncompleteCandidate
+        );
+        assert_world_not_closed(coordinator);
+    }
 }
 
 #[test]
@@ -250,12 +390,12 @@ fn caller_session_position_must_match_canonical_order() {
     coordinator
         .open_observation(1, AutomaticObservationClass::Database, None)
         .unwrap();
-    coordinator
-        .write_observation_request(1, b"request")
-        .unwrap();
+    let (request, response) =
+        semantic_records(AutomaticObservationClass::Database, b"request", b"response");
+    coordinator.write_observation_request(1, &request).unwrap();
     coordinator.dispatch_observation(1).unwrap();
     coordinator
-        .write_observation_response(1, b"response")
+        .write_observation_response(1, &response)
         .unwrap();
     assert_eq!(
         coordinator
@@ -419,12 +559,20 @@ fn semantic_records(
     request: &[u8],
     response: &[u8],
 ) -> (Vec<u8>, Vec<u8>) {
+    if matches!(
+        class,
+        AutomaticObservationClass::Database
+            | AutomaticObservationClass::OutboundHttp
+            | AutomaticObservationClass::Queue
+    ) {
+        return semantic_dependency_records(class, request, response);
+    }
     let operation = match class {
         AutomaticObservationClass::Clock => SemanticObservationOperation::ClockWallTime,
         AutomaticObservationClass::Environment => SemanticObservationOperation::EnvironmentRead,
         AutomaticObservationClass::Filesystem => SemanticObservationOperation::FilesystemRead,
         AutomaticObservationClass::Randomness => SemanticObservationOperation::RandomBytes,
-        _ => return (request.to_vec(), response.to_vec()),
+        _ => unreachable!(),
     };
     let target = matches!(
         operation,
@@ -454,6 +602,51 @@ fn semantic_records(
         outcome: SemanticObservationOutcome::Response,
         request_digest: Digest::of(&request_bytes),
         value: Some(semantic_observation_value(response).unwrap()),
+    };
+    (
+        request_bytes,
+        canonical::canonical_bytes(&response).unwrap(),
+    )
+}
+
+fn semantic_dependency_records(
+    class: AutomaticObservationClass,
+    request_payload: &[u8],
+    response_payload: &[u8],
+) -> (Vec<u8>, Vec<u8>) {
+    let (operation, method) = match class {
+        AutomaticObservationClass::Database => (SemanticDependencyOperation::DatabaseExecute, None),
+        AutomaticObservationClass::OutboundHttp => (
+            SemanticDependencyOperation::OutboundHttpRequest,
+            Some("POST".to_owned()),
+        ),
+        AutomaticObservationClass::Queue => (SemanticDependencyOperation::QueuePublish, None),
+        _ => unreachable!(),
+    };
+    let request = SemanticDependencyRequest {
+        encoding: "bytes".to_owned(),
+        format: SemanticDependencyRequestFormat::V1,
+        metadata: Vec::new(),
+        method,
+        observation_class: class,
+        operation,
+        payload: encode_base64url(request_payload),
+        protocol: "test-protocol".to_owned(),
+        target: encode_base64url(b"test-target"),
+    };
+    let request_bytes = canonical::canonical_bytes(&request).unwrap();
+    let response = SemanticDependencyResponse {
+        error_code: None,
+        error_number: None,
+        format: SemanticDependencyResponseFormat::V1,
+        metadata: Vec::new(),
+        observation_class: class,
+        operation,
+        outcome: SemanticObservationOutcome::Response,
+        payload: Some(encode_base64url(response_payload)),
+        request_digest: canonical::digest(&request).unwrap(),
+        status: None,
+        status_code: (class == AutomaticObservationClass::OutboundHttp).then_some(200),
     };
     (
         request_bytes,
