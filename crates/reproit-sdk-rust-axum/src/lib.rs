@@ -20,8 +20,8 @@ use reproit_core::{
     model::{OperationBeginFormat, OperationBeginPayload, OperationKind},
 };
 use reproit_sdk_rust::{
-    RequestResponseFailureClassifier, RequestResponseHeader, RequestResponseOperation,
-    RustOperationFactory,
+    AutomaticOperationContext, RequestResponseFailureClassifier, RequestResponseHeader,
+    RequestResponseOperation, RustOperationFactory,
 };
 
 const ADAPTER_ID: &str = "axum";
@@ -90,6 +90,7 @@ pub async fn capture_axum_request(
     let Some(operation_id) = operation.operation_id() else {
         return next.run(request).await;
     };
+    let automatic_context = operation.automatic_context();
     let context = OperationContext {
         causal_parent_id,
         operation_id,
@@ -103,12 +104,15 @@ pub async fn capture_axum_request(
     });
     request.extensions_mut().insert(context);
 
-    let response = next.run(request).await;
+    let response = match automatic_context.as_ref() {
+        Some(context) => context.scope(next.run(request)).await,
+        None => next.run(request).await,
+    };
     if !lock_capture(&capture).input_complete() {
         lock_capture(&capture).abandon();
         return response;
     }
-    capture_response(response, capture)
+    capture_response(response, capture, automatic_context)
 }
 
 struct RequestCaptureBody {
@@ -173,7 +177,11 @@ impl Drop for RequestCaptureBody {
     }
 }
 
-fn capture_response(response: Response, capture: Arc<Mutex<RequestResponseOperation>>) -> Response {
+fn capture_response(
+    response: Response,
+    capture: Arc<Mutex<RequestResponseOperation>>,
+    automatic_context: Option<AutomaticOperationContext>,
+) -> Response {
     let (parts, body) = response.into_parts();
     let headers = parts
         .headers
@@ -195,6 +203,7 @@ fn capture_response(response: Response, capture: Arc<Mutex<RequestResponseOperat
     Response::from_parts(
         parts,
         Body::new(ResponseCaptureBody {
+            automatic_context,
             capture,
             inner: body,
             terminal: false,
@@ -203,6 +212,7 @@ fn capture_response(response: Response, capture: Arc<Mutex<RequestResponseOperat
 }
 
 struct ResponseCaptureBody {
+    automatic_context: Option<AutomaticOperationContext>,
     capture: Arc<Mutex<RequestResponseOperation>>,
     inner: Body,
     terminal: bool,
@@ -217,7 +227,13 @@ impl HttpBody for ResponseCaptureBody {
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.get_mut();
-        match Pin::new(&mut this.inner).poll_frame(context) {
+        let frame = match this.automatic_context.as_ref() {
+            Some(operation_context) => {
+                operation_context.scope_poll(|| Pin::new(&mut this.inner).poll_frame(context))
+            }
+            None => Pin::new(&mut this.inner).poll_frame(context),
+        };
+        match frame {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(bytes) = frame.data_ref()
                     && lock_capture(&this.capture)

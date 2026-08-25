@@ -77,6 +77,12 @@ impl AutomaticOperationContext {
         }
     }
 
+    #[doc(hidden)]
+    pub fn scope_poll<T>(&self, poll: impl FnOnce() -> T) -> T {
+        let _poll_context = AutomaticPollContext::install(self);
+        poll()
+    }
+
     pub fn open_observation(
         &self,
         class: AutomaticObservationClass,

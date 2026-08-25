@@ -10,7 +10,7 @@ use reproit_core::{
     },
 };
 
-use crate::{RustOperation, RustOperationFactory};
+use crate::{AutomaticOperationContext, RustOperation, RustOperationFactory};
 
 pub const MAX_REQUEST_INPUT_CHUNK_BYTES: usize = 32 * 1_024;
 pub const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1_024;
@@ -144,6 +144,14 @@ impl RequestResponseOperation {
         self.operation
             .as_ref()
             .map(|operation| operation.operation_id())
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn automatic_context(&self) -> Option<AutomaticOperationContext> {
+        self.operation
+            .as_ref()
+            .and_then(|operation| operation.automatic_context())
     }
 
     pub fn record_input_chunk(&mut self, bytes: &[u8]) -> Result<(), Error> {
