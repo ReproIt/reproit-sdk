@@ -27,6 +27,8 @@ test("package is deterministic, bounded, and installable from a local file", asy
       .trim()
       .split("\n");
     assert.ok(entries.includes("package/src/public.js"));
+    assert.ok(entries.includes("package/src/register.d.ts"));
+    assert.ok(entries.includes("package/src/register.js"));
     assert.ok(entries.includes("package/src/engine-operation.js"));
     assert.ok(entries.includes("package/src/process-resources.js"));
     assert.ok(entries.includes("package/src/native-engine.js"));
@@ -63,6 +65,7 @@ test("package is deterministic, bounded, and installable from a local file", asy
       path.join(fixtureRoot, "package.json"),
     );
     const entry = requireFromFixture.resolve("@reproit/sdk");
+    const registerEntry = requireFromFixture.resolve("@reproit/sdk/register");
     const installed = await import(pathToFileURL(entry).href);
     assert.equal(typeof installed.ManagedEngineProject, "function");
     assert.equal(typeof installed.runOperation, "function");
@@ -75,10 +78,78 @@ test("package is deterministic, bounded, and installable from a local file", asy
       () => new installed.ManagedEngineProject(null, 1, () => "not-used"),
       /Use ManagedEngineProject\.open\(\)\./,
     );
+    verifyRegisterPreload(fixtureRoot, registerEntry);
   } finally {
     fs.rmSync(temporaryRoot, { force: true, recursive: true });
   }
 });
+
+function verifyRegisterPreload(fixtureRoot, registerEntry) {
+  const sourceRoot = path.dirname(registerEntry);
+  const runtimeEntry = pathToFileURL(
+    path.join(sourceRoot, "runtime-observation-adapters.js"),
+  ).href;
+  const engineEntry = pathToFileURL(
+    path.join(sourceRoot, "engine-operation.js"),
+  ).href;
+  const applicationPath = path.join(fixtureRoot, "application.mjs");
+  fs.writeFileSync(
+    applicationPath,
+    preloadApplicationSource(runtimeEntry, engineEntry),
+  );
+  const output = execFileSync(
+    process.execPath,
+    ["--import", "@reproit/sdk/register", applicationPath],
+    {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      maxBuffer: 16 * 1_024,
+    },
+  );
+  assert.equal(output, "register-preload-pass\n");
+}
+
+function preloadApplicationSource(runtimeEntry, engineEntry) {
+  return `
+import assert from "node:assert/strict";
+import {
+  runtimeObservationAdapterStateForTest,
+} from ${JSON.stringify(runtimeEntry)};
+import {
+  openManagedEngineProjectWithForTest,
+} from ${JSON.stringify(engineEntry)};
+
+const startupDate = Date;
+assert.deepEqual(runtimeObservationAdapterStateForTest(), {
+  classes: ["clock", "environment", "filesystem", "randomness"],
+  leases: 1,
+});
+const registerModule = await import("@reproit/sdk/register");
+assert.deepEqual(Object.keys(registerModule), []);
+assert.equal(runtimeObservationAdapterStateForTest().leases, 1);
+
+const bridge = {
+  engineClose() {},
+  engineOpen() { return 7; },
+};
+const subject = {
+  dispose() {},
+  manifest: {},
+  objects: [],
+};
+const project = openManagedEngineProjectWithForTest({
+  buildRepositoryId: "repository",
+  projectTokenProvider: () => "unused-test-value",
+  projectToml: "[project]",
+  sourceRevision: "revision",
+}, bridge, subject);
+assert.equal(runtimeObservationAdapterStateForTest().leases, 2);
+project.close();
+assert.equal(runtimeObservationAdapterStateForTest().leases, 1);
+assert.equal(Date, startupDate);
+process.stdout.write("register-preload-pass\\n");
+`;
+}
 
 function pack(destination) {
   fs.mkdirSync(destination);

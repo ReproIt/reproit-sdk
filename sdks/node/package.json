@@ -7,6 +7,10 @@
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/public.js"
+    },
+    "./register": {
+      "types": "./src/register.d.ts",
+      "default": "./src/register.js"
     }
   },
   "types": "./src/index.d.ts",
@@ -22,6 +26,8 @@
     "src/observation-adapters.js",
     "src/process-resources.js",
     "src/public.js",
+    "src/register.d.ts",
+    "src/register.js",
     "src/runtime-observation-adapters.js",
     "src/semantic-observation.js",
     "src/subject-protocol.js",

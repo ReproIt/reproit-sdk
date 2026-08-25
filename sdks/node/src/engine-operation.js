@@ -43,48 +43,7 @@ export class ManagedEngineProject {
     const bridge = loadNativeEngine();
     bridge.contract();
     const subject = packageRunningNodeSubject(options.entryScript);
-    let engineHandle;
-    let releaseRuntimeAdapters = () => {};
-    let opened = false;
-    let subjectDisposed = false;
-    try {
-      releaseRuntimeAdapters = acquireRuntimeObservationAdapters();
-      engineHandle = bridge.engineOpen({
-        buildRepositoryId: options.buildRepositoryId,
-        projectToml: options.projectToml,
-        sourceRevision: options.sourceRevision,
-        subjectManifest: subject.manifest,
-        subjectObjects: subject.objects.map((value) => ({
-          digest: value.digest,
-          path: value.path,
-          size: value.size,
-        })),
-      });
-      opened = true;
-    } finally {
-      try {
-        subject.dispose();
-        subjectDisposed = true;
-      } finally {
-        if (!opened || !subjectDisposed) {
-          if (opened) {
-            try {
-              bridge.engineClose(engineHandle);
-            } catch {
-              // Cleanup must not replace the subject disposal error.
-            }
-          }
-          releaseRuntimeAdapters();
-        }
-      }
-    }
-    return new ManagedEngineProject(
-      PROJECT_CONSTRUCTOR,
-      bridge,
-      engineHandle,
-      options.projectTokenProvider,
-      releaseRuntimeAdapters,
-    );
+    return openPreparedProject(options, bridge, subject);
   }
 
   close() {
@@ -149,6 +108,60 @@ export class ManagedEngineProject {
     };
     const timer = setTimeout(poll, 0);
     timer.unref?.();
+  }
+}
+
+// This seam exercises the normal open lifecycle with package-test resources.
+// It is not exported from the public package entry point.
+export function openManagedEngineProjectWithForTest(options, bridge, subject) {
+  return openPreparedProject(options, bridge, subject);
+}
+
+function openPreparedProject(options, bridge, subject) {
+  let engineHandle;
+  let releaseRuntimeAdapters = () => {};
+  let opened = false;
+  let subjectDisposed = false;
+  try {
+    releaseRuntimeAdapters = acquireRuntimeObservationAdapters();
+    engineHandle = bridge.engineOpen({
+      buildRepositoryId: options.buildRepositoryId,
+      projectToml: options.projectToml,
+      sourceRevision: options.sourceRevision,
+      subjectManifest: subject.manifest,
+      subjectObjects: subject.objects.map((value) => ({
+        digest: value.digest,
+        path: value.path,
+        size: value.size,
+      })),
+    });
+    opened = true;
+  } finally {
+    try {
+      subject.dispose();
+      subjectDisposed = true;
+    } finally {
+      if (!opened || !subjectDisposed) {
+        closeFailedOpen(bridge, engineHandle, opened);
+        releaseRuntimeAdapters();
+      }
+    }
+  }
+  return new ManagedEngineProject(
+    PROJECT_CONSTRUCTOR,
+    bridge,
+    engineHandle,
+    options.projectTokenProvider,
+    releaseRuntimeAdapters,
+  );
+}
+
+function closeFailedOpen(bridge, engineHandle, opened) {
+  if (!opened) return;
+  try {
+    bridge.engineClose(engineHandle);
+  } catch {
+    // Cleanup must not replace the subject disposal error.
   }
 }
 
