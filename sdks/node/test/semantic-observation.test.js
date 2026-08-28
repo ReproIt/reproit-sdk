@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
@@ -140,14 +141,16 @@ test("the first project lease installs one adapter group and the last restores i
   try {
     assert.deepEqual(runtimeObservationAdapterStateForTest(), {
       classes: [
-        "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
+        "clock", "database", "environment", "filesystem", "outbound-http", "queue",
+        "randomness",
       ],
       leases: 2,
     });
     assert.deepEqual(
       installedObservationAdapters().map((value) => value.class),
       [
-        "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
+        "clock", "database", "environment", "filesystem", "outbound-http", "queue",
+        "randomness",
       ],
     );
     assert.notEqual(Date, original.date);
@@ -168,6 +171,24 @@ test("the first project lease installs one adapter group and the last restores i
   assert.equal(Date, original.date);
   assert.equal(cryptoModule.randomBytes, original.randomBytes);
   assert.equal(fsModule.readFileSync, original.readFileSync);
+});
+
+test("the adapter identity is the loaded module digest", () => {
+  const release = acquireRuntimeObservationAdapters();
+  try {
+    const source = fsModule.readFileSync(path.resolve(
+      import.meta.dirname,
+      "../src/runtime-observation-adapters.js",
+    ));
+    const expected = `sha256:${createHash("sha256").update(source).digest("hex")}`;
+    assert.ok(
+      installedObservationAdapters().every(
+        (registration) => registration.implementation_digest === expected,
+      ),
+    );
+  } finally {
+    release();
+  }
 });
 
 test("canonical replay returns only the four stored runtime observations", () => {

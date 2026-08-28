@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import time
@@ -246,6 +247,7 @@ class AutomaticAdapterTests(unittest.TestCase):
                 "environment",
                 "filesystem",
                 "outbound-http",
+                "queue",
                 "randomness",
             ],
         )
@@ -258,6 +260,12 @@ class AutomaticAdapterTests(unittest.TestCase):
             all(getattr(time, name) is value for name, value in original_clocks.items())
         )
         self.assertEqual(_installed_observation_adapters(), [])
+
+    def test_adapter_identity_is_the_loaded_module_digest(self) -> None:
+        self.assertEqual(
+            automatic_adapters._IMPLEMENTATION_DIGEST,
+            f"sha256:{hashlib.sha256(Path(automatic_adapters.__file__).read_bytes()).hexdigest()}",
+        )
 
     def test_install_conflict_does_not_replace_an_existing_hook(self) -> None:
         original = time.time_ns

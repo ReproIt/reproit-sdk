@@ -444,11 +444,12 @@ internal static class SemanticDependencyConformance
     private static DotnetSubjectPackage TestSubject()
     {
         string spool = Directory.CreateTempSubdirectory("reproit-dotnet-semantic-test-").FullName;
+        string digest = "sha256:" + new string('a', 64);
         return new DotnetSubjectPackage(
             new JsonObject { ["format"] = "reproit.subject-closure.v1" },
-            [new PackagedSubjectObject(
-                "sha256:" + new string('a', 64), Path.Combine(spool, "subject"), 1)],
-            spool);
+            [new PackagedSubjectObject(digest, Path.Combine(spool, "subject"), 1)],
+            spool,
+            digest);
     }
 
     private sealed class FakeNative(Func<JsonObject, byte[]> response) : INativeSdkEngine

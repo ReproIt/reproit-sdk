@@ -123,7 +123,7 @@ internal static class SemanticDependencyTranslator
         }
     }
 
-    private static JsonObject MakeRequest(SemanticDependencyRequest request)
+    internal static JsonObject MakeRequest(SemanticDependencyRequest request)
     {
         int rawBytes = CheckedBytes(
             StrictUtf8.GetByteCount(request.Encoding),
@@ -149,7 +149,7 @@ internal static class SemanticDependencyTranslator
         };
     }
 
-    private static JsonObject MakeResponse(SemanticDependencyResponse response)
+    internal static JsonObject MakeResponse(SemanticDependencyResponse response)
     {
         if (response.Payload is not null && response.Payload.Length > SdkEngineBridge.MaxCallBytes)
         {

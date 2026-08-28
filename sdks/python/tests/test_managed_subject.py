@@ -9,7 +9,12 @@ import unittest
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
-from reproit_sdk import managed_subject, managed_subject_files, subject_protocol
+from reproit_sdk import (
+    automatic_adapters,
+    managed_subject,
+    managed_subject_files,
+    subject_protocol,
+)
 from reproit_sdk.managed_subject import (
     PythonSubjectPackage,
     package_running_python_subject,
@@ -234,11 +239,16 @@ class ManagedSubjectPackagingTests(unittest.TestCase):
             identity["executable_digest"],
             executable_file["object_digest"],
         )
+        python_prefix = "/reproit/subject/runtime/python/"
+        native_prefix = "/reproit/subject/native/"
         self.assertTrue(
             all(
-                entry["path"].startswith("/reproit/subject/runtime/python/")
+                entry["path"].startswith((python_prefix, native_prefix))
                 for entry in runtime_files
             )
+        )
+        self.assertTrue(
+            any(entry["path"].startswith(python_prefix) for entry in runtime_files)
         )
 
     def test_empty_application_file_is_preserved(self) -> None:
@@ -268,7 +278,10 @@ class ManagedSubjectPackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "main.py"
-            script.write_text("import reproit_sdk\n", encoding="utf-8")
+            script.write_text(
+                "import reproit_sdk.automatic_adapters\n",
+                encoding="utf-8",
+            )
             subject = self._package(script, root)
             try:
                 paths = {
@@ -299,6 +312,14 @@ class ManagedSubjectPackagingTests(unittest.TestCase):
                         for path in paths
                         if "/reproit_sdk/" in path
                     )
+                )
+                module_digests = {
+                    entry["module_digest"]
+                    for entry in subject.manifest["modules"]
+                }
+                self.assertIn(
+                    automatic_adapters._IMPLEMENTATION_DIGEST,
+                    module_digests,
                 )
             finally:
                 subject.close()

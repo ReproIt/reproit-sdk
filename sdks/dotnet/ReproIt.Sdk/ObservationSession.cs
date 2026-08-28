@@ -51,6 +51,18 @@ internal static class InstalledObservationAdapters
         }
     }
 
+    internal static void Remove(InstalledObservationAdapter adapter)
+    {
+        lock (RegistryLock)
+        {
+            if (Registry.TryGetValue(adapter.Class, out InstalledObservationAdapter? installed) &&
+                installed == adapter)
+            {
+                Registry.Remove(adapter.Class);
+            }
+        }
+    }
+
     internal static JsonArray Snapshot()
     {
         lock (RegistryLock)

@@ -2,7 +2,7 @@
 #![allow(unsafe_code)]
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
@@ -447,6 +447,7 @@ impl Registry {
             })
             .collect::<Vec<_>>();
         let subject = SubjectPackage::freeze(configuration.subject_manifest, &objects)?;
+        validate_adapter_implementations(&configuration.observation_adapters, &subject.manifest)?;
         let mut engine = AutomaticManagedEngine::new(project, subject);
         for adapter in configuration.observation_adapters {
             engine.register_observation_adapter(
@@ -573,6 +574,34 @@ impl Registry {
         let work = task.work();
         Ok((handle, task, work))
     }
+}
+
+fn validate_adapter_implementations(
+    adapters: &[ObservationAdapterInput],
+    subject: &SubjectClosureManifest,
+) -> Result<(), Error> {
+    let required_classes = AutomaticObservationClass::ALL
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let registered_classes = adapters
+        .iter()
+        .map(|adapter| adapter.class)
+        .collect::<BTreeSet<_>>();
+    if adapters.len() != required_classes.len() || registered_classes != required_classes {
+        return Err(Error::schema_invalid());
+    }
+    let modules = subject
+        .modules
+        .iter()
+        .map(|module| module.module_digest)
+        .collect::<BTreeSet<_>>();
+    if adapters
+        .iter()
+        .any(|adapter| !modules.contains(&adapter.implementation_digest))
+    {
+        return Err(Error::schema_invalid());
+    }
+    Ok(())
 }
 
 fn dispatch_call(registry: &Mutex<Registry>, call: EngineCall) -> Result<Value, Error> {
@@ -798,8 +827,12 @@ fn execute(input: &[u8]) -> Vec<u8> {
 }
 
 fn serialize_response(response: &EngineResponse) -> Vec<u8> {
-    const FALLBACK: &[u8] =
-        br#"{"error_code":"SCHEMA_INVALID","format":"reproit.sdk-engine-response.v1","ok":false,"result":{}}"#;
+    const FALLBACK: &[u8] = concat!(
+        r#"{"error_code":"SCHEMA_INVALID","#,
+        r#""format":"reproit.sdk-engine-response.v1","#,
+        r#""ok":false,"result":{}}"#,
+    )
+    .as_bytes();
 
     let bytes = serde_json::to_vec(response).unwrap_or_else(|_| FALLBACK.to_vec());
     if !response.ok && bytes.len() > MAX_ERROR_RESPONSE_BYTES {

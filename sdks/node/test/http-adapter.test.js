@@ -92,11 +92,13 @@ test("the runtime lease installs and conditionally restores HTTP hooks", () => {
   assert.equal(httpsModule.request, originalRequest);
 });
 
-test("HTTP capture keeps live objects and replay performs no live request", async () => {
+test("HTTP capture streams a body and replay performs no live request", async () => {
   const server = httpModule.createServer((_request, response) => {
     response.setHeader("X-Tag", ["first", "second"]);
-    response.writeHead(204);
-    response.end();
+    response.setHeader("Trailer", "X-Checksum");
+    response.writeHead(200);
+    response.addTrailers({ "X-Checksum": "abc123" });
+    response.end("response body");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -104,12 +106,14 @@ test("HTTP capture keeps live objects and replay performs no live request", asyn
   const captureBridge = new HttpBridge("capture");
   let captureRequest;
   let captureResponse;
+  const captureChunks = [];
   try {
     await withAdapters(() => run(captureBridge, () => new Promise((resolve, reject) => {
       captureRequest = httpModule.get(target, { headers: { "X-Order": ["a", "b"] } },
         (response) => {
           captureResponse = response;
-          resolve();
+          response.on("data", (chunk) => captureChunks.push(chunk));
+          response.once("end", resolve);
         });
       captureRequest.once("error", reject);
     })));
@@ -121,7 +125,11 @@ test("HTTP capture keeps live objects and replay performs no live request", asyn
   assert.equal(captureBridge.requests.length, 1);
   assert.equal(captureBridge.responses.length, 1);
   assert.equal(captureBridge.requests[0].protocol, "http");
-  assert.equal(captureBridge.responses[0].status_code, 204);
+  assert.equal(captureBridge.responses[0].status_code, 200);
+  assert.equal(Buffer.concat(captureChunks).toString(), "response body");
+  assert.equal(captureResponse.trailers["x-checksum"], "abc123");
+  assert.equal(responsePayload(captureBridge.responses[0]).body, "response body");
+  assert.deepEqual(captureBridge.unowned, []);
   assert.deepEqual(
     captureBridge.requests[0].metadata.map((field) => field.value),
     ["YQ", "Yg"],
@@ -130,16 +138,20 @@ test("HTTP capture keeps live objects and replay performs no live request", asyn
   const replayBridge = new HttpBridge("replay", captureBridge.responses[0]);
   let replayRequest;
   let replayResponse;
+  const replayChunks = [];
   await withAdapters(() => run(replayBridge, () => new Promise((resolve, reject) => {
     replayRequest = httpModule.get(target, { headers: { "X-Order": ["a", "b"] } },
       (response) => {
         replayResponse = response;
-        resolve();
+        response.on("data", (chunk) => replayChunks.push(chunk));
+        response.once("end", resolve);
       });
     replayRequest.once("error", reject);
   })));
-  assert.equal(replayResponse.statusCode, 204);
+  assert.equal(replayResponse.statusCode, 200);
   assert.equal(replayResponse.statusMessage, captureResponse.statusMessage);
+  assert.equal(Buffer.concat(replayChunks).toString(), "response body");
+  assert.equal(replayResponse.trailers["x-checksum"], "abc123");
   assert.equal(replayRequest instanceof httpModule.ClientRequest, true);
   assert.equal(replayResponse instanceof httpModule.IncomingMessage, true);
   assert.equal(replayRequest.finished, true);
@@ -200,7 +212,7 @@ test("subclasses, added fields, and oversized HTTP errors stay local", async () 
   }
 });
 
-test("unsupported streaming, credentials, agents, and request API become unowned", async () => {
+test("unsupported credentials, agents, options, and request API become unowned", async () => {
   const server = httpModule.createServer((_request, response) => {
     response.writeHead(200, { "Content-Length": "1" });
     response.end("x");
@@ -214,7 +226,6 @@ test("unsupported streaming, credentials, agents, and request API become unowned
       () => httpModule.get(target, { headers: { Authorization: "not-recorded" } }),
       () => httpModule.get(target, { timeout: 1 }),
       () => httpModule.request(target).end(),
-      () => httpModule.get(target),
     ]) {
       const bridge = new HttpBridge("capture");
       await withAdapters(() => run(bridge, () => new Promise((resolve) => {
@@ -229,6 +240,43 @@ test("unsupported streaming, credentials, agents, and request API become unowned
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("partial, oversized, and sensitive HTTP responses stay local", async () => {
+  for (const serve of [
+    (_request, response) => {
+      response.writeHead(200, { Connection: "close", "Content-Length": "5" });
+      response.end("x");
+    },
+    (_request, response) => {
+      response.writeHead(200, { Connection: "close" });
+      response.end(Buffer.alloc(16 * 1024 + 1));
+    },
+    (_request, response) => {
+      response.writeHead(200, { Connection: "close", "Set-Cookie": "private=value" });
+      response.end("x");
+    },
+  ]) {
+    const server = httpModule.createServer(serve);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const target = `http://127.0.0.1:${server.address().port}/unsafe`;
+    const bridge = new HttpBridge("capture");
+    try {
+      await withAdapters(() => run(bridge, () => new Promise((resolve) => {
+        const request = httpModule.get(target, (response) => {
+          response.resume();
+          response.once("aborted", resolve);
+          response.once("end", resolve);
+          response.once("close", resolve);
+        });
+        request.once("error", resolve);
+      })));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    assert.equal(bridge.unowned.includes("outbound-http"), true);
+    assert.equal(bridge.responses.length, 0);
   }
 });
 
@@ -251,6 +299,34 @@ test("noncanonical replay bytes stop without a live request", async () => {
   const bridge = new HttpBridge("replay", replay);
   await withAdapters(() => run(bridge, () => new Promise((resolve, reject) => {
     const request = httpModule.get("http://127.0.0.1:1/no-live-request");
+    request.once("response", () => reject(new Error("Replay used a response.")));
+    request.once("error", (error) => {
+      assert.equal(error.code, "ERR_REPROIT_HTTP_REPLAY");
+      resolve();
+    });
+  })));
+});
+
+test("corrupt streamed HTTP replay stops without a live request", async () => {
+  const replay = {
+    error_code: null,
+    error_number: null,
+    metadata: [],
+    outcome: "response",
+    payload: Buffer.from(JSON.stringify({
+      body: "*",
+      format: "reproit.node-http-response.v1",
+      http_version: "1.1",
+      raw_trailers: [],
+      status_code: 200,
+      status_message: "OK",
+    })).toString("base64url"),
+    status: null,
+    status_code: 200,
+  };
+  const bridge = new HttpBridge("replay", replay);
+  await withAdapters(() => run(bridge, () => new Promise((resolve, reject) => {
+    const request = httpModule.get("http://127.0.0.1:1/no-live-stream");
     request.once("response", () => reject(new Error("Replay used a response.")));
     request.once("error", (error) => {
       assert.equal(error.code, "ERR_REPROIT_HTTP_REPLAY");
@@ -360,4 +436,12 @@ async function withFakeModuleGet(module, replacement, action) {
 
 function responseRecord(value) {
   return Buffer.from(JSON.stringify(value));
+}
+
+function responsePayload(value) {
+  const payload = JSON.parse(Buffer.from(value.payload, "base64url").toString("utf8"));
+  return {
+    ...payload,
+    body: Buffer.from(payload.body, "base64url").toString("utf8"),
+  };
 }

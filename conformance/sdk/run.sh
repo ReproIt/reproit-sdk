@@ -42,6 +42,8 @@ docker run --rm --platform "$native_oci_platform" --network none --read-only \
   --env GOCACHE=/tmp/go-cache \
   --env REPROIT_PROTOCOL_VECTORS=/source/.core/specs/v1/protocol-vectors.json \
   --env REPROIT_CLOUD_API_VECTORS=/source/.core/specs/v1/cloud-api-vectors.json \
+  --env REPROIT_CORE_ROOT=/source/.core \
+  --env REPROIT_PROCESSOR_CAPTURE=/source/.core/specs/v1/processor-capture.json \
   --volume "$PWD:/source:ro" --workdir /source/sdks/go \
   golang:1.26.5-bookworm@sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599 \
   go test ./...
@@ -58,14 +60,13 @@ docker run --rm --platform "$native_oci_platform" --network none --read-only \
   --volume "$PWD:/source:ro" --workdir /work \
   node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d \
   bash -lc '
-    cp -R /source/sdks/node /work/package
-    cd /work/package
+    cd /source/sdks/node
     npm pack --pack-destination /tmp >/dev/null
     mkdir /work/fixture
     cd /work/fixture
     npm install --ignore-scripts /tmp/reproit-sdk-1.0.0.tgz >/dev/null
     node -e "import(\"@reproit/sdk\").then(module => { if (!module.Sdk) process.exit(1) })"
-    cd /work/package
+    cd /source/sdks/node
     npm test
   '
 
@@ -73,6 +74,7 @@ docker run --rm --platform "$native_oci_platform" --network none --read-only \
   --security-opt label=disable \
   --tmpfs /tmp:rw,noexec,nosuid,size=32m \
   --tmpfs /work:rw,exec,nosuid,size=512m \
+  --env REPROIT_SDK_ENGINE_ABI=/source/crates/reproit-sdk-engine/sdk-engine-abi.json \
   --env REPROIT_PROTOCOL_VECTORS=/source/.core/specs/v1/protocol-vectors.json \
   --env REPROIT_CLOUD_API_VECTORS=/source/.core/specs/v1/cloud-api-vectors.json \
   --volume "$PWD:/source:ro" \

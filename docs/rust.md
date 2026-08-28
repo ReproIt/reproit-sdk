@@ -2,6 +2,11 @@
 
 Use the Rust SDK at one supported Backend operation boundary.
 
+The current SDK release does not provide package-owned automatic observation
+adapters. The CLI does not declare this SDK ready for automatic World capture.
+The operation and Axum APIs remain available for SDK development and conformance
+work.
+
 ## Install
 
 ```sh

@@ -19,7 +19,7 @@ internal interface INativeSdkEngine
 internal sealed class SdkEngineBridge : IDisposable
 {
     internal const string AbiContractDigest =
-        "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9";
+        "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78";
     internal const uint AbiVersion = 1;
     internal const int MaxEvidenceBytes = 785_408;
     internal const int MaxObservationAdapters = 7;
@@ -169,6 +169,8 @@ internal sealed class SdkEngineBridge : IDisposable
             ["observation_actions"] = new JsonArray("capture", "replay"),
             ["observation_contract"] = new JsonObject
             {
+                ["adapter_implementation_binding"] = new JsonArray(
+                    "subject-module-digest"),
                 ["adapter_registration_fields"] = new JsonArray(
                     "adapter_id", "adapter_version", "class", "implementation_digest"),
                 ["finish_fields"] = new JsonArray(

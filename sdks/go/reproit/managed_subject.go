@@ -74,10 +74,11 @@ type PackagedSubjectObject struct {
 // GoSubjectPackage is the frozen manifest plus content-addressed object
 // files in a spool.
 type GoSubjectPackage struct {
-	Manifest      map[string]any
-	Objects       []PackagedSubjectObject
-	reservedBytes int64
-	spool         string
+	Manifest                    map[string]any
+	Objects                     []PackagedSubjectObject
+	adapterImplementationDigest string
+	reservedBytes               int64
+	spool                       string
 }
 
 // Close removes the private subject spool.
@@ -261,7 +262,11 @@ func PackageRunningGoSubject(executablePath string) (*GoSubjectPackage, error) {
 	}
 	complete = true
 	return &GoSubjectPackage{
-		Manifest: manifest, Objects: packaged, reservedBytes: reservedBytes, spool: spool,
+		Manifest:                    manifest,
+		Objects:                     packaged,
+		adapterImplementationDigest: executableDigest,
+		reservedBytes:               reservedBytes,
+		spool:                       spool,
 	}, nil
 }
 

@@ -43,6 +43,55 @@ fn contract_call_returns_the_exact_abi_version() {
 }
 
 #[test]
+fn adapter_implementation_must_be_a_frozen_subject_module() {
+    let loaded = Digest::of(b"loaded-adapter-module");
+    let missing = Digest::of(b"missing-adapter-module");
+    let adapters = |implementation_digest| {
+        AutomaticObservationClass::ALL
+            .into_iter()
+            .map(|class| ObservationAdapterInput {
+                adapter_id: "automatic-test-adapter".to_owned(),
+                adapter_version: "1.0.0".to_owned(),
+                class,
+                implementation_digest,
+            })
+            .collect::<Vec<_>>()
+    };
+    let subject = SubjectClosureManifest {
+        architecture: "architecture.arm64".to_owned(),
+        debug_artifacts: Vec::new(),
+        files: Vec::new(),
+        format: reproit_core::model::SubjectClosureFormat::V1,
+        launch: reproit_core::model::SubjectLaunch {
+            arguments: Vec::new(),
+            environment_names: Vec::new(),
+            executable: "/reproit/subject/application/test".to_owned(),
+            working_directory: "/reproit/subject/work".to_owned(),
+        },
+        modules: vec![reproit_core::model::SubjectModule {
+            identity: loaded.to_string(),
+            module_digest: loaded,
+            path: "/reproit/subject/application/test".to_owned(),
+        }],
+        objects: Vec::new(),
+        operating_system: "operating-system.linux".to_owned(),
+        runtime_family: reproit_core::model::SubjectRuntimeFamily::Rust,
+        total_bytes: 0,
+    };
+
+    assert!(validate_adapter_implementations(&adapters(loaded), &subject).is_ok());
+    assert!(validate_adapter_implementations(&adapters(missing), &subject).is_err());
+
+    let mut incomplete = adapters(loaded);
+    incomplete.pop();
+    assert!(validate_adapter_implementations(&incomplete, &subject).is_err());
+
+    let mut duplicate = adapters(loaded);
+    duplicate[1].class = duplicate[0].class;
+    assert!(validate_adapter_implementations(&duplicate, &subject).is_err());
+}
+
+#[test]
 fn abi_contract_matches_engine_constants() {
     let contract: Value = serde_json::from_str(ABI_CONTRACT).unwrap();
     assert_eq!(contract["abi_version"], ABI_VERSION);
@@ -164,6 +213,7 @@ fn assert_observation_contract(contract: &Value) {
     assert_eq!(
         contract["observation_contract"],
         json!({
+            "adapter_implementation_binding": ["subject-module-digest"],
             "adapter_registration_fields": [
                 "adapter_id",
                 "adapter_version",

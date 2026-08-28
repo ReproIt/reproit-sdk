@@ -32,6 +32,16 @@ _MAX_PAYLOAD_BYTES = 48 * 1_024
 _MAX_RESPONSES = 65_536
 _MAX_URL_BYTES = 8 * 1_024
 _UNSUPPORTED_EVIDENCE = b"python-urllib-unsupported-v1"
+_SENSITIVE_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "set-cookie",
+        "www-authenticate",
+    }
+)
 _LOCK = threading.Lock()
 _ORIGINAL_URLOPEN = urllib.request.urlopen
 _ORIGINAL_OPENER_OPEN = urllib.request.OpenerDirector.open
@@ -487,6 +497,8 @@ def _encode_headers(headers: email.message.Message) -> list[list[str]]:
     total_bytes = 0
     for name, value in fields:
         selected_name = _bounded_text(name, 1_024)
+        if selected_name.lower() in _SENSITIVE_HEADERS:
+            raise _adapter_value()
         selected_value = _bounded_text(value, _MAX_HEADER_BYTES)
         total_bytes += len(selected_name.encode()) + len(selected_value.encode())
         if total_bytes > _MAX_HEADER_BYTES:
@@ -508,6 +520,8 @@ def _decode_headers(value: object) -> http.client.HTTPMessage:
         ):
             raise _invalid_replay()
         name, field_value = field
+        if name.lower() in _SENSITIVE_HEADERS:
+            raise _invalid_replay()
         total_bytes += len(name.encode()) + len(field_value.encode())
         if total_bytes > _MAX_HEADER_BYTES:
             raise _invalid_replay()

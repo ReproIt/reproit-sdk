@@ -26,6 +26,7 @@
     "src/native-engine.js",
     "src/observation-adapters.js",
     "src/process-resources.js",
+    "src/processor-capture.js",
     "src/public.js",
     "src/register.d.ts",
     "src/register.js",

@@ -50,6 +50,9 @@ internal static class AutomaticOperationConformance
         using AutomaticProject project = AutomaticProject.OpenWith(
             Options(null), bridge, subject);
         using AutomaticOperation outer = project.StartOperation(Start());
+        Require(
+            ReferenceEquals(AutomaticOperationContext.ActiveOperation(), outer),
+            "The .NET operation did not activate its automatic context.");
         using AutomaticOperationActivation outerActivation = outer.Activate();
         await Task.Yield();
         Require(
@@ -74,27 +77,35 @@ internal static class AutomaticOperationConformance
             Task.Run(() => ActiveAfterYieldAsync(first)),
             Task.Run(() => ActiveAfterYieldAsync(second)));
         Require(
-            concurrent.All(value => value) &&
-            ReferenceEquals(AutomaticOperationContext.ActiveOperation(), outer),
-            "Concurrent .NET activations shared or changed active state.");
+            concurrent.All(value => value),
+            "Concurrent .NET activations shared active state.");
         first.Cancel();
         second.Cancel();
+        Require(
+            ReferenceEquals(AutomaticOperationContext.ActiveOperation(), outer),
+            "Completed concurrent .NET operations did not restore their active parent.");
 
         using AutomaticOperation exceptional = project.StartOperation(Start());
         Require(
-            await RestoresAfterExceptionAsync(exceptional, outer),
-            "A .NET exception did not restore the exact active parent.");
+            await RestoresAfterExceptionAsync(exceptional),
+            "A .NET exception did not preserve the automatic operation.");
         exceptional.Cancel();
+        Require(
+            ReferenceEquals(AutomaticOperationContext.ActiveOperation(), outer),
+            "A completed exceptional .NET operation did not restore its active parent.");
 
         using AutomaticOperation canceled = project.StartOperation(Start());
         using CancellationTokenSource cancellation = new();
         Task<bool> canceledTask = Task.Run(
-            () => RestoresAfterCancellationAsync(canceled, outer, cancellation.Token));
+            () => RestoresAfterCancellationAsync(canceled, cancellation.Token));
         cancellation.Cancel();
         Require(
             await canceledTask,
-            "A .NET cancellation did not restore the exact active parent.");
+            "A .NET cancellation did not preserve the automatic operation.");
         canceled.Cancel();
+        Require(
+            ReferenceEquals(AutomaticOperationContext.ActiveOperation(), outer),
+            "A completed canceled .NET operation did not restore its active parent.");
 
         using (AutomaticOperation disposed = project.StartOperation(Start()))
         using (AutomaticOperationActivation disposedActivation = disposed.Activate())
@@ -128,8 +139,7 @@ internal static class AutomaticOperationConformance
     }
 
     private static async Task<bool> RestoresAfterExceptionAsync(
-        AutomaticOperation operation,
-        AutomaticOperation parent)
+        AutomaticOperation operation)
     {
         try
         {
@@ -139,13 +149,12 @@ internal static class AutomaticOperationConformance
         }
         catch (InvalidOperationException)
         {
-            return ReferenceEquals(AutomaticOperationContext.ActiveOperation(), parent);
+            return ReferenceEquals(AutomaticOperationContext.ActiveOperation(), operation);
         }
     }
 
     private static async Task<bool> RestoresAfterCancellationAsync(
         AutomaticOperation operation,
-        AutomaticOperation parent,
         CancellationToken cancellation)
     {
         try
@@ -155,7 +164,7 @@ internal static class AutomaticOperationConformance
         }
         catch (OperationCanceledException)
         {
-            return ReferenceEquals(AutomaticOperationContext.ActiveOperation(), parent);
+            return ReferenceEquals(AutomaticOperationContext.ActiveOperation(), operation);
         }
         return false;
     }
@@ -465,11 +474,12 @@ internal static class AutomaticOperationConformance
     private static DotnetSubjectPackage TestSubject()
     {
         string spool = Directory.CreateTempSubdirectory("reproit-dotnet-engine-test-").FullName;
+        string digest = "sha256:" + new string('a', 64);
         return new DotnetSubjectPackage(
             new JsonObject { ["format"] = "reproit.subject-closure.v1" },
-            [new PackagedSubjectObject(
-                "sha256:" + new string('a', 64), Path.Combine(spool, "subject"), 1)],
-            spool);
+            [new PackagedSubjectObject(digest, Path.Combine(spool, "subject"), 1)],
+            spool,
+            digest);
     }
 
     private static byte[] Success(JsonObject result) => Encoding.UTF8.GetBytes(

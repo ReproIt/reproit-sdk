@@ -1,0 +1,8 @@
+.git
+.work
+target
+sdks/python/.pytest_cache
+sdks/python/.venv
+sdks/python/reproit_sdk.egg-info
+sdks/python/reproit_sdk/__pycache__
+sdks/python/tests/__pycache__

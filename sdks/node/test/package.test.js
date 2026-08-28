@@ -112,6 +112,26 @@ function verifyRegisterPreload(fixtureRoot, registerEntry) {
     },
   );
   assert.equal(output, "register-preload-pass\n");
+
+  const nonce = "0123456789abcdef".repeat(4);
+  const markerPath = path.join(fixtureRoot, "probe-application-ran");
+  const probeApplicationPath = path.join(fixtureRoot, "probe-application.mjs");
+  fs.writeFileSync(
+    probeApplicationPath,
+    `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(markerPath)}, "ran");\n`,
+  );
+  const probeOutput = execFileSync(
+    process.execPath,
+    ["--import", "@reproit/sdk/register", probeApplicationPath],
+    {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      env: { ...process.env, REPROIT_INTERNAL_CAPTURE_PROBE: nonce },
+      maxBuffer: 16 * 1_024,
+    },
+  );
+  assert.equal(probeOutput, `reproit.capture-probe.v1:nodejs:${nonce}\n`);
+  assert.equal(fs.existsSync(markerPath), false);
 }
 
 function preloadApplicationSource(runtimeEntry, engineEntry) {
@@ -127,7 +147,8 @@ import {
 const startupDate = Date;
 assert.deepEqual(runtimeObservationAdapterStateForTest(), {
   classes: [
-    "clock", "database", "environment", "filesystem", "outbound-http", "randomness",
+    "clock", "database", "environment", "filesystem", "outbound-http", "queue",
+    "randomness",
   ],
   leases: 1,
 });

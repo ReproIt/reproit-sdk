@@ -118,16 +118,29 @@ impl Controller {
         if event.kind == platform::EventKind::Exit {
             return;
         }
-        let owner = self
+        let exact_owner = self
             .active_observations
             .values()
             .filter(|observation| {
                 observation.dispatched
                     && observation.thread_id == event.thread_id
-                    && event.kind.is_owned_by(observation.class)
+                    && event.kind.is_exactly_owned_by(observation.class)
             })
             .map(|observation| observation.operation_handle)
             .collect::<Vec<_>>();
+        let owner = if exact_owner.is_empty() {
+            self.active_observations
+                .values()
+                .filter(|observation| {
+                    observation.dispatched
+                        && observation.thread_id == event.thread_id
+                        && event.kind.is_owned_by(observation.class)
+                })
+                .map(|observation| observation.operation_handle)
+                .collect::<Vec<_>>()
+        } else {
+            exact_owner
+        };
         if owner.len() == 1 {
             if let Some(operation) = self.active_operations.get_mut(&owner[0]) {
                 operation.relevant_events = operation.relevant_events.saturating_add(1);
@@ -359,6 +372,10 @@ mod platform {
         pub(super) const fn is_owned_by(self, _: AutomaticObservationClass) -> bool {
             false
         }
+
+        pub(super) const fn is_exactly_owned_by(self, _: AutomaticObservationClass) -> bool {
+            false
+        }
     }
 
     pub(super) struct IgnoreGuard;
@@ -475,5 +492,49 @@ mod tests {
         assert_eq!(&evidence[16..24], &2_u64.to_be_bytes());
         assert_eq!(&evidence[24..32], &3_u64.to_be_bytes());
         assert_eq!(&evidence[32..], &3_u64.to_be_bytes());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn exact_observation_owns_an_event_inside_a_transitive_dependency() {
+        let mut controller = Controller::new();
+        controller.active_operations.insert(
+            7,
+            ActiveOperation {
+                start_sequence: 1,
+                relevant_events: 0,
+                owned_events: 0,
+                incomplete: false,
+            },
+        );
+        controller.active_observations.insert(
+            8,
+            ActiveObservation {
+                operation_handle: 7,
+                class: AutomaticObservationClass::OutboundHttp,
+                thread_id: 11,
+                dispatched: true,
+            },
+        );
+        controller.active_observations.insert(
+            9,
+            ActiveObservation {
+                operation_handle: 7,
+                class: AutomaticObservationClass::Randomness,
+                thread_id: 11,
+                dispatched: true,
+            },
+        );
+
+        controller.apply_event(platform::Event {
+            kind: platform::EventKind::Randomness,
+            thread_id: 11,
+            ..platform::Event::default()
+        });
+
+        let operation = controller.active_operations.get(&7).unwrap();
+        assert_eq!(operation.relevant_events, 1);
+        assert_eq!(operation.owned_events, 1);
+        assert!(!operation.incomplete);
     }
 }

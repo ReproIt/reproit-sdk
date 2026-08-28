@@ -29,7 +29,7 @@ export const NATIVE_ENGINE_MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES = 65_536;
 export const NATIVE_ENGINE_MAX_SINK_WAIT_MS = 1_800_000;
 export const NATIVE_ENGINE_MAX_SINK_WAITERS = 16;
 export const NATIVE_ENGINE_ABI_CONTRACT_DIGEST =
-  "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9";
+  "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78";
 export const NATIVE_ENGINE_LIBRARIES = Object.freeze({
   "linux-arm64": "libreproit_sdk_engine.so",
   "linux-x86_64": "libreproit_sdk_engine.so",
@@ -132,6 +132,7 @@ export const NATIVE_ENGINE_ERROR_BEHAVIOR = Object.freeze({
   success: "response-byte-count",
 });
 export const NATIVE_ENGINE_OBSERVATION_CONTRACT = Object.freeze({
+  adapter_implementation_binding: ["subject-module-digest"],
   adapter_registration_fields: [
     "adapter_id",
     "adapter_version",

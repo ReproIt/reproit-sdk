@@ -386,6 +386,67 @@ class HttpAdapterTests(unittest.TestCase):
         self.assertIs(value, body)
         self.assertEqual(bridge.abandoned, 1)
 
+    def test_sensitive_response_headers_preserve_live_io_and_stay_local(self) -> None:
+        url = "http://service.test/sensitive"
+        live_response = _response(url, b"payload")
+        live_response.headers.add_header("Set-Cookie", "private=value")
+        with _adapters():
+            _adopt_test_opener()
+            bridge = HttpBridge("capture")
+            with mock.patch.object(
+                http_adapter,
+                "_ORIGINAL_URLOPEN",
+                return_value=live_response,
+            ):
+                result = _run(
+                    bridge,
+                    lambda: self._open_and_read(url, live_response),
+                )
+        self.assertEqual(result[-1], b"payload")
+        self.assertEqual(bridge.abandoned, 1)
+        for response in bridge.responses:
+            self.assertNotIn("private=value", repr(_native_response_payload(response)))
+
+    def test_sensitive_replay_header_stops_without_network(self) -> None:
+        url = "http://service.test/sensitive-replay"
+        payload = base64.urlsafe_b64encode(
+            json.dumps(
+                [
+                    http_adapter._FORMAT,
+                    "open",
+                    1,
+                    200,
+                    "OK",
+                    11,
+                    url,
+                    [["Set-Cookie", "private=value"]],
+                    True,
+                    False,
+                    0,
+                    True,
+                ],
+                separators=(",", ":"),
+            ).encode()
+        ).rstrip(b"=").decode()
+        replay_response = {
+            "error_code": None,
+            "error_number": None,
+            "metadata": [],
+            "outcome": "response",
+            "payload": payload,
+            "status": None,
+            "status_code": None,
+        }
+        with _adapters():
+            replay = HttpBridge("replay", [replay_response])
+            with mock.patch.object(
+                http_adapter,
+                "_ORIGINAL_URLOPEN",
+                side_effect=AssertionError("Replay called the network."),
+            ):
+                with self.assertRaises(RuntimeError):
+                    _run(replay, lambda: urllib.request.urlopen(url))
+
     def test_response_identity_limit_is_per_operation_and_releasable(self) -> None:
         url = "http://service.test/bounded"
         first = _response(url, b"first")

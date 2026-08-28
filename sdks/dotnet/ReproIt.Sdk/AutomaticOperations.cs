@@ -97,6 +97,7 @@ public sealed class AutomaticCaptureException() : Exception(
 /// <summary>Owns one shared native capture engine.</summary>
 public sealed class AutomaticProject : IDisposable
 {
+    private readonly AutomaticHttpAdapterLease httpAdapter;
     private readonly SdkEngineBridge bridge;
     private readonly object stateLock = new();
     private readonly Func<ManagedProjectToken>? tokenProvider;
@@ -107,11 +108,13 @@ public sealed class AutomaticProject : IDisposable
     private AutomaticProject(
         SdkEngineBridge bridge,
         SdkEngineHandle handle,
-        Func<ManagedProjectToken>? tokenProvider)
+        Func<ManagedProjectToken>? tokenProvider,
+        AutomaticHttpAdapterLease httpAdapter)
     {
         this.bridge = bridge;
         this.handle = handle;
         this.tokenProvider = tokenProvider;
+        this.httpAdapter = httpAdapter;
     }
 
     /// <summary>Opens the packaged shared engine for one running .NET subject.</summary>
@@ -138,8 +141,10 @@ public sealed class AutomaticProject : IDisposable
         SdkEngineBridge bridge,
         DotnetSubjectPackage subject)
     {
+        AutomaticHttpAdapterLease? httpAdapter = null;
         try
         {
+            httpAdapter = AutomaticHttpAdapter.Acquire(subject.AdapterImplementationDigest);
             List<SdkEngineSubjectObject> objects = subject.Objects
                 .Select(value => value.Size > 0
                     ? new SdkEngineSubjectObject(
@@ -153,10 +158,12 @@ public sealed class AutomaticProject : IDisposable
                 options.SourceRevision,
                 subject.Manifest,
                 objects));
-            return new AutomaticProject(bridge, handle, options.ProjectTokenProvider);
+            return new AutomaticProject(
+                bridge, handle, options.ProjectTokenProvider, httpAdapter);
         }
         catch (Exception)
         {
+            httpAdapter?.Dispose();
             bridge.Dispose();
             throw CaptureError();
         }
@@ -187,7 +194,9 @@ public sealed class AutomaticProject : IDisposable
                     ["operation_kind"] = OperationKind(start.Kind),
                     ["operation_name"] = start.Name,
                 });
-                return new AutomaticOperation(this, bridge, operation);
+                AutomaticOperation result = new(this, bridge, operation);
+                result.ActivateAutomatically();
+                return result;
             }
             catch (Exception)
             {
@@ -272,6 +281,7 @@ public sealed class AutomaticProject : IDisposable
                 // Shared-engine cleanup must not change application behavior.
             }
             bridge.Dispose();
+            httpAdapter.Dispose();
         }
     }
 
@@ -299,6 +309,7 @@ public sealed class AutomaticOperation : IDisposable
     private readonly object stateLock = new();
     private readonly AutomaticProject project;
     private bool worldComplete;
+    private AutomaticOperationActivation? automaticActivation;
 
     internal AutomaticOperation(
         AutomaticProject project,
@@ -316,6 +327,15 @@ public sealed class AutomaticOperation : IDisposable
 
     internal AutomaticOperationActivation Activate() =>
         AutomaticOperationContext.Activate(this);
+
+    internal void ActivateAutomatically()
+    {
+        if (automaticActivation is not null)
+        {
+            throw AutomaticProject.CaptureError();
+        }
+        automaticActivation = AutomaticOperationContext.Activate(this);
+    }
 
     internal bool IsActive()
     {
@@ -561,9 +581,14 @@ public sealed class AutomaticOperation : IDisposable
     private void FinishLocked()
     {
         finished = true;
-        foreach (AutomaticOperationActivation activation in activations)
+        if (automaticActivation is AutomaticOperationActivation activation)
         {
-            activation.ClearOperation(this);
+            automaticActivation = null;
+            AutomaticOperationContext.Deactivate(activation);
+        }
+        foreach (AutomaticOperationActivation remainingActivation in activations)
+        {
+            remainingActivation.ClearOperation(this);
         }
         activations.Clear();
     }

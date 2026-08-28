@@ -12,6 +12,7 @@ if (args is ["processor-capture"])
 
 SdkEngineBridgeConformance.Run();
 AutomaticOperationConformance.Run();
+AutomaticHttpAdapterConformance.Run();
 PublicSurfaceConformance.Run();
 
 if (Environment.GetEnvironmentVariable("REPROIT_PROTOCOL_VECTORS") is not null)

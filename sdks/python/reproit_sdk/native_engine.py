@@ -34,7 +34,7 @@ MAX_SINK_WAIT_MS = 1_800_000
 MAX_SINK_WAITERS = 16
 MAX_ARTIFACT_MANIFEST_BYTES = 16_384
 ABI_CONTRACT_DIGEST = (
-    "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9"
+    "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78"
 )
 ARTIFACT_MANIFEST_FORMAT = "reproit.sdk-engine-artifacts.v1"
 ARTIFACT_MANIFEST_NAME = "sdk-engine-artifacts.json"
@@ -145,6 +145,7 @@ _ERROR_BEHAVIOR = {
     "success": "response-byte-count",
 }
 _OBSERVATION_CONTRACT = {
+    "adapter_implementation_binding": ["subject-module-digest"],
     "adapter_registration_fields": [
         "adapter_id",
         "adapter_version",

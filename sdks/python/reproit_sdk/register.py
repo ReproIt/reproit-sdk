@@ -9,10 +9,23 @@ import unicodedata
 from dataclasses import dataclass
 
 from .automatic_adapters import _acquire_automatic_adapters
+from .observation_adapters import _installed_observation_adapters
 
 _MAX_ARGUMENTS = 128
 _MAX_ARGUMENT_CHARACTERS = 4_096
 _MAX_TOTAL_ARGUMENT_BYTES = 64 * 1_024
+_CAPTURE_PROBE_ENVIRONMENT = "REPROIT_INTERNAL_CAPTURE_PROBE"
+_CAPTURE_PROBE_FORMAT = "reproit.capture-probe.v1"
+_CAPTURE_PROBE_NONCE_CHARACTERS = 64
+_CAPTURE_PROBE_CLASSES = {
+    "clock",
+    "database",
+    "environment",
+    "filesystem",
+    "outbound-http",
+    "queue",
+    "randomness",
+}
 _USAGE_ERROR = (
     "The Python launch arguments are invalid. Run: "
     "python -m reproit_sdk.register -- SCRIPT [ARGUMENT ...], or use "
@@ -39,12 +52,32 @@ def _main(arguments: list[str] | None = None) -> int:
     if not _acquire_process_lease():
         sys.stderr.write("Repro It could not install the Python capture hooks.\n")
         return 1
+    probe = os.environ.get(_CAPTURE_PROBE_ENVIRONMENT)
+    if probe is not None:
+        return _run_capture_probe(probe)
     if launch.module is not None:
         _run_module(launch.module, launch.arguments)
     else:
         assert launch.script is not None
         _run_script(launch.script, launch.arguments)
     return 0
+
+
+def _run_capture_probe(nonce: str) -> int:
+    if not _valid_capture_probe_nonce(nonce):
+        return 1
+    installed = _installed_observation_adapters()
+    classes = {value.get("class") for value in installed}
+    if len(installed) != len(_CAPTURE_PROBE_CLASSES) or classes != _CAPTURE_PROBE_CLASSES:
+        return 1
+    sys.stdout.write(f"{_CAPTURE_PROBE_FORMAT}:python:{nonce}\n")
+    return 0
+
+
+def _valid_capture_probe_nonce(value: str) -> bool:
+    return len(value) == _CAPTURE_PROBE_NONCE_CHARACTERS and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _parse_launch(arguments: list[str]) -> _Launch:

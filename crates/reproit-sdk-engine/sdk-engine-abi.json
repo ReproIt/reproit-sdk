@@ -128,6 +128,9 @@
     "replay"
   ],
   "observation_contract": {
+    "adapter_implementation_binding": [
+      "subject-module-digest"
+    ],
     "adapter_registration_fields": [
       "adapter_id",
       "adapter_version",

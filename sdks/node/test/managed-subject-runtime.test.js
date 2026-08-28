@@ -1,6 +1,7 @@
 // Negative controls for Node.js runtime evidence and launch options.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -20,6 +21,27 @@ test("runtime packaging preserves supported Node launch flags", () => {
     () => validateNodeRuntimeArguments(process.execArgv),
     JSON.stringify(process.execArgv),
   );
+});
+
+test("runtime packaging binds the adapter implementation module", (t) => {
+  const sourcePath = path.resolve(
+    import.meta.dirname,
+    "../src/runtime-observation-adapters.js",
+  );
+  const subject = packageNodeSubjectWithRuntimeEvidence(
+    path.resolve(import.meta.dirname, "../src/public.js"),
+    runtimeEvidence(t),
+  );
+  try {
+    const digest = `sha256:${createHash("sha256")
+      .update(fs.readFileSync(sourcePath))
+      .digest("hex")}`;
+    assert.ok(subject.manifest.modules.some(
+      (module) => module.module_digest === digest,
+    ));
+  } finally {
+    subject.dispose();
+  }
 });
 
 test("runtime packaging rejects a changed loaded-module report", (t) => {

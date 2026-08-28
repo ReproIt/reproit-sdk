@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -139,6 +140,40 @@ class RegisterLaunchTests(unittest.TestCase):
             completed = self._run(root, str(script))
         self.assertEqual(completed.returncode, 17)
 
+    def test_internal_capture_probe_stops_before_application_code(self) -> None:
+        nonce = "0123456789abcdef" * 4
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "application-ran"
+            script = root / "application.py"
+            script.write_text(
+                f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["REPROIT_INTERNAL_CAPTURE_PROBE"] = nonce
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "reproit_sdk.register",
+                    "--",
+                    str(script),
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=60,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.stdout,
+            f"reproit.capture-probe.v1:python:{nonce}\n",
+        )
+        self.assertFalse(marker.exists())
+
     def test_invalid_and_unbounded_forms_use_one_error(self) -> None:
         cases = (
             (),
@@ -173,7 +208,15 @@ class RegisterLaunchTests(unittest.TestCase):
             shutil.copytree(source_root / "reproit_sdk", build_root / "reproit_sdk")
             output = root / "dist"
             completed = subprocess.run(
-                ["uv", "build", str(build_root), "--out-dir", str(output)],
+                [
+                    "uv",
+                    "build",
+                    str(build_root),
+                    "--no-build-isolation",
+                    "--offline",
+                    "--out-dir",
+                    str(output),
+                ],
                 capture_output=True,
                 check=False,
                 text=True,

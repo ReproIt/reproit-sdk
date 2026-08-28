@@ -40,6 +40,22 @@ The Python layer owns subject discovery, operation context, and Failure translat
 The packaged shared engine owns candidate policy, World closure, encryption,
 delivery, and cleanup. A successful operation is deleted locally.
 
+## Automatic observations
+
+Inside `run_operation`, the SDK automatically captures supported standard-library
+clock, environment, filesystem, HTTP, randomness, subprocess, SQLite, and queue
+observations. Application code does not call a capture API for each observation.
+
+The HTTP adapter covers simple `urllib.request.urlopen` calls made during the
+operation. It records a later full `read()` of at most 32 KiB and replays it without
+live network access. It preserves the live response object and body behavior during
+capture. Direct `http.client` calls and partial response reads are unsupported.
+
+The operation stays local if an HTTP response is partial, oversized, malformed, or
+contains an authentication or cookie header. The operation also stays local when an
+observation is unsupported or cannot be assigned to exactly one active operation.
+This behavior prevents incomplete or sensitive Worlds from leaving the process.
+
 ## Verify SDK source
 
 ```sh

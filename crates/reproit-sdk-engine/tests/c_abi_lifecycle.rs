@@ -46,6 +46,13 @@ fn c_abi_runs_the_complete_local_non_failure_lifecycle() {
     }
 
     let package = package_running_rust_subject().unwrap();
+    let adapter_implementation_digest = package
+        .manifest
+        .modules
+        .iter()
+        .find(|module| module.path == package.manifest.launch.executable)
+        .expect("the running executable must be a frozen subject module")
+        .module_digest;
     let subject_objects = package
         .objects
         .iter()
@@ -60,7 +67,7 @@ fn c_abi_runs_the_complete_local_non_failure_lifecycle() {
     let open = call(json!({
         "build_repository_id": "source.example/acme/commerce",
         "format": CALL_FORMAT,
-        "observation_adapters": observation_adapters(),
+        "observation_adapters": observation_adapters(adapter_implementation_digest),
         "operation": "engine-open",
         "project_toml": PROJECT,
         "sdk": "rust",
@@ -208,7 +215,7 @@ fn capture_dependency(operation_handle: u64, class: &str) {
     assert_eq!(response["result"]["outcome"], "response");
 }
 
-fn observation_adapters() -> Vec<Value> {
+fn observation_adapters(implementation_digest: Digest) -> Vec<Value> {
     [
         "clock",
         "database",
@@ -224,7 +231,7 @@ fn observation_adapters() -> Vec<Value> {
             "adapter_id": "c-abi-semantic-hook",
             "adapter_version": "1.0.0",
             "class": class,
-            "implementation_digest": Digest::of(b"c-abi-semantic-hook"),
+            "implementation_digest": implementation_digest,
         })
     })
     .collect()

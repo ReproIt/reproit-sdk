@@ -6,6 +6,7 @@ readonly repository_root
 cd "$repository_root"
 
 exec ./tools/with-core.sh bash -c '
+  set -euo pipefail
   cargo fmt --all -- --check
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo test --workspace --all-targets --locked

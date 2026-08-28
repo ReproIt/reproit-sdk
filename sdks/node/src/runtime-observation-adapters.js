@@ -58,6 +58,7 @@ function installRuntimeObservationAdapters() {
     environment: installEnvironmentAdapter,
     filesystem: installFilesystemAdapter,
     "outbound-http": installHttpAdapter,
+    queue: installSentinelQueueAdapter,
     randomness: installRandomnessAdapter,
   };
   for (const observationClass of Object.keys(installers)) {
@@ -81,6 +82,12 @@ function installRuntimeObservationAdapters() {
   } catch {
     restoreRuntimeObservationAdapters();
   }
+}
+
+function installSentinelQueueAdapter() {
+  // Node.js has no standard provider queue API. The native sentinel rejects
+  // queue effects when no provider adapter owns them.
+  return () => {};
 }
 
 function restoreRuntimeObservationAdapters() {
@@ -113,21 +120,9 @@ function registrationFor(observationClass) {
 }
 
 function runtimeImplementationDigest() {
-  const files = [
-    fileURLToPath(import.meta.url),
-    fileURLToPath(new URL("./semantic-observation.js", import.meta.url)),
-    fileURLToPath(new URL("./semantic-dependency.js", import.meta.url)),
-    fileURLToPath(new URL("./http-adapter.js", import.meta.url)),
-    fileURLToPath(new URL("./sqlite-adapter.js", import.meta.url)),
-  ];
   const hash = originalCreateHash("sha256");
   try {
-    for (const file of files) {
-      const bytes = fsModule.readFileSync(file);
-      hash.update(Buffer.from(path.basename(file), "utf8"));
-      hash.update(Buffer.from([0]));
-      hash.update(bytes);
-    }
+    hash.update(fsModule.readFileSync(fileURLToPath(import.meta.url)));
   } catch {
     return null;
   }

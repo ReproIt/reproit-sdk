@@ -51,6 +51,15 @@ pub(super) enum EventKind {
 }
 
 impl EventKind {
+    pub(super) const fn is_exactly_owned_by(self, class: AutomaticObservationClass) -> bool {
+        matches!(
+            (self, class),
+            (Self::Filesystem, AutomaticObservationClass::Filesystem)
+                | (Self::Clock, AutomaticObservationClass::Clock)
+                | (Self::Randomness, AutomaticObservationClass::Randomness)
+        )
+    }
+
     pub(super) const fn is_owned_by(self, class: AutomaticObservationClass) -> bool {
         match self {
             // A semantic dependency owns its transitive kernel effects. For example,
@@ -94,8 +103,8 @@ impl EventKind {
 pub(super) struct Event {
     pub(super) thread_id: i32,
     pub(super) kind: EventKind,
-    padding: [u8; 3],
-    sequence: u64,
+    pub(super) padding: [u8; 3],
+    pub(super) sequence: u64,
 }
 
 #[repr(C)]

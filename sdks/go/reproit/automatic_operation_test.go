@@ -89,6 +89,80 @@ func TestAutomaticOperationContextsStayDistinctAcrossGoroutines(t *testing.T) {
 	}
 }
 
+func TestAutomaticOperationBindingUsesTheCurrentGoroutineStack(t *testing.T) {
+	project := automaticContextProject(t)
+	defer project.Close()
+	outer, err := project.StartOperation(automaticContextStart())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentAutomaticOperation() != outer {
+		t.Fatal("The goroutine did not bind the outer operation.")
+	}
+	inner, err := project.StartOperation(automaticContextStart())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentAutomaticOperation() != inner {
+		t.Fatal("The goroutine did not bind the nested operation.")
+	}
+	inner.Close()
+	if currentAutomaticOperation() != outer {
+		t.Fatal("The goroutine did not restore the outer operation.")
+	}
+	outer.Close()
+	if currentAutomaticOperation() != nil {
+		t.Fatal("The goroutine retained a closed operation.")
+	}
+}
+
+func TestAutomaticOperationBindingsStayDistinctAcrossGoroutines(t *testing.T) {
+	project := automaticContextProject(t)
+	defer project.Close()
+	ready := make(chan *AutomaticOperation, 2)
+	release := make(chan struct{})
+	results := make(chan bool, 2)
+	for range 2 {
+		go func() {
+			operation, err := project.StartOperation(automaticContextStart())
+			if err != nil {
+				ready <- nil
+				return
+			}
+			ready <- operation
+			results <- currentAutomaticOperation() == operation
+			<-release
+			operation.Close()
+		}()
+	}
+	first := <-ready
+	second := <-ready
+	if first == nil || second == nil || first == second || !<-results || !<-results {
+		close(release)
+		t.Fatal("Concurrent goroutines shared automatic operation ownership.")
+	}
+	close(release)
+}
+
+func TestAutomaticGoroutineHeaderParsingIsBounded(t *testing.T) {
+	valid := []byte("goroutine 18446744073709551615 [running]:")
+	identifier, ok := parseAutomaticGoroutineID(valid)
+	if !ok || identifier != ^uint64(0) {
+		t.Fatal("The goroutine header parser rejected the largest identifier.")
+	}
+	for _, invalid := range [][]byte{
+		[]byte("goroutine 0 [running]:"),
+		[]byte("goroutine x [running]:"),
+		[]byte("goroutine 18446744073709551616 [running]:"),
+		[]byte("thread 1 [running]:"),
+		[]byte("goroutine 1"),
+	} {
+		if _, parsed := parseAutomaticGoroutineID(invalid); parsed {
+			t.Fatal("The goroutine header parser accepted an invalid header.")
+		}
+	}
+}
+
 func TestAutomaticOperationContextCancellationClosesTheOperation(t *testing.T) {
 	project := automaticContextProject(t)
 	defer project.Close()

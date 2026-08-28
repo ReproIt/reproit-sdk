@@ -78,24 +78,26 @@ type AutomaticInputChunk struct {
 
 // AutomaticProject owns one shared native capture engine.
 type AutomaticProject struct {
-	automaticHTTP *automaticHTTPAdapterLease
-	bridge        *sdkEngineBridge
-	closed        bool
-	closedSignal  chan struct{}
-	handle        sdkEngineHandle
-	mu            sync.Mutex
-	sinkWaiters   chan struct{}
-	tokenProvider func() (*ManagedProjectToken, error)
+	automaticAdapters *automaticAdapterLeases
+	bridge            *sdkEngineBridge
+	closed            bool
+	closedSignal      chan struct{}
+	handle            sdkEngineHandle
+	mu                sync.Mutex
+	sinkWaiters       chan struct{}
+	tokenProvider     func() (*ManagedProjectToken, error)
 }
 
 // AutomaticOperation owns one shared-engine operation until a terminal action.
 type AutomaticOperation struct {
+	activeRegistered        bool
 	binding                 *automaticOperationBinding
 	finished                bool
 	handle                  sdkEngineOperationHandle
 	inputIndex              uint16
 	mu                      sync.Mutex
 	operationID             string
+	ownerGoroutineID        uint64
 	project                 *AutomaticProject
 	stopContextCancellation func() bool
 	worldComplete           bool
@@ -111,9 +113,18 @@ type automaticOperationBinding struct {
 
 var ErrAutomaticCapture = errors.New("Repro It could not capture the operation.")
 
+type automaticActiveOperationRegistry struct {
+	byGoroutine map[uint64][]*AutomaticOperation
+	mu          sync.RWMutex
+	operations  map[*AutomaticOperation]*AutomaticProject
+}
+
+var automaticActiveOperations automaticActiveOperationRegistry
+
 const (
-	automaticMaxInputBytes = 65_536
-	automaticMaxInputs     = 1_024
+	automaticMaxActiveOperations = 512
+	automaticMaxInputBytes       = 65_536
+	automaticMaxInputs           = 1_024
 )
 
 // OpenAutomaticProject opens the packaged shared engine for one running Go subject.
@@ -132,17 +143,17 @@ func OpenAutomaticProject(options AutomaticProjectOptions) (*AutomaticProject, e
 		return nil, ErrAutomaticCapture
 	}
 	defer subject.Close()
-	httpLease := acquireAutomaticHTTPAdapter()
-	if httpLease == nil {
+	adapters := acquireAutomaticAdapters(subject.adapterImplementationDigest)
+	if adapters == nil {
 		bridge.close()
 		return nil, ErrAutomaticCapture
 	}
 	project, err := openAutomaticProjectWith(options, bridge, subject)
 	if err != nil {
-		httpLease.release()
+		adapters.release()
 		return nil, err
 	}
-	project.automaticHTTP = httpLease
+	project.automaticAdapters = adapters
 	return project, nil
 }
 
@@ -218,9 +229,16 @@ func (project *AutomaticProject) StartOperation(
 	if err != nil {
 		return nil, ErrAutomaticCapture
 	}
-	return &AutomaticOperation{
+	operation := &AutomaticOperation{
 		handle: started.Handle, operationID: started.OperationID, project: project,
-	}, nil
+	}
+	if !registerAutomaticOperation(operation) {
+		_ = project.bridge.abandonOperation(operation.handle)
+		operation.finished = true
+		return nil, ErrAutomaticCapture
+	}
+	operation.activeRegistered = true
+	return operation, nil
 }
 
 // StartOperationContext starts an operation and binds it to one child context.
@@ -371,6 +389,10 @@ func (operation *AutomaticOperation) closeWorldLocked(
 	if operation.finished || operation.worldComplete {
 		return ErrAutomaticCapture
 	}
+	if operation.markUnhealthyAdaptersLocked() != nil {
+		operation.abandonLocked()
+		return ErrAutomaticCapture
+	}
 	if operation.project.bridge.closeOperationWorld(
 		operation.handle, string(completion),
 	) != nil {
@@ -378,6 +400,20 @@ func (operation *AutomaticOperation) closeWorldLocked(
 		return ErrAutomaticCapture
 	}
 	operation.worldComplete = true
+	return nil
+}
+
+func (operation *AutomaticOperation) markUnhealthyAdaptersLocked() error {
+	for _, check := range operation.project.automaticAdapters.health() {
+		if !check.healthy && operation.project.bridge.markOperationUnowned(
+			operation.handle,
+			string(check.class),
+			nil,
+			nil,
+		) != nil {
+			return ErrAutomaticCapture
+		}
+	}
 	return nil
 }
 
@@ -457,6 +493,10 @@ func (operation *AutomaticOperation) abandonLocked() {
 
 func (operation *AutomaticOperation) finishLocked() {
 	operation.finished = true
+	if operation.activeRegistered {
+		unregisterAutomaticOperation(operation)
+		operation.activeRegistered = false
+	}
 	if operation.binding != nil {
 		operation.binding.clear(operation)
 		operation.binding = nil
@@ -524,10 +564,113 @@ func (project *AutomaticProject) Close() {
 	}
 	project.closed = true
 	close(project.closedSignal)
+	for _, operation := range takeAutomaticProjectOperations(project) {
+		operation.mu.Lock()
+		operation.finishLocked()
+		operation.mu.Unlock()
+	}
 	_ = project.bridge.closeEngine(project.handle)
 	project.bridge.close()
-	httpLease := project.automaticHTTP
-	project.automaticHTTP = nil
+	adapters := project.automaticAdapters
+	project.automaticAdapters = nil
 	project.mu.Unlock()
-	httpLease.release()
+	adapters.release()
+}
+
+func registerAutomaticOperation(operation *AutomaticOperation) bool {
+	automaticActiveOperations.mu.Lock()
+	defer automaticActiveOperations.mu.Unlock()
+	if len(automaticActiveOperations.operations) >= automaticMaxActiveOperations {
+		return false
+	}
+	if automaticActiveOperations.operations == nil {
+		automaticActiveOperations.operations = make(
+			map[*AutomaticOperation]*AutomaticProject,
+		)
+	}
+	if _, exists := automaticActiveOperations.operations[operation]; exists {
+		return false
+	}
+	owner, ownerKnown := currentAutomaticGoroutineID()
+	if ownerKnown {
+		if automaticActiveOperations.byGoroutine == nil {
+			automaticActiveOperations.byGoroutine = make(map[uint64][]*AutomaticOperation)
+		}
+		stack := automaticActiveOperations.byGoroutine[owner]
+		automaticActiveOperations.byGoroutine[owner] = append(stack, operation)
+		operation.ownerGoroutineID = owner
+	}
+	automaticActiveOperations.operations[operation] = operation.project
+	return true
+}
+
+func unregisterAutomaticOperation(operation *AutomaticOperation) {
+	automaticActiveOperations.mu.Lock()
+	defer automaticActiveOperations.mu.Unlock()
+	delete(automaticActiveOperations.operations, operation)
+	owner := operation.ownerGoroutineID
+	operation.ownerGoroutineID = 0
+	if owner == 0 {
+		return
+	}
+	stack := automaticActiveOperations.byGoroutine[owner]
+	for index := len(stack) - 1; index >= 0; index-- {
+		if stack[index] != operation {
+			continue
+		}
+		stack = append(stack[:index], stack[index+1:]...)
+		break
+	}
+	if len(stack) == 0 {
+		delete(automaticActiveOperations.byGoroutine, owner)
+	} else {
+		automaticActiveOperations.byGoroutine[owner] = stack
+	}
+}
+
+func currentAutomaticOperation() *AutomaticOperation {
+	owner, ok := currentAutomaticGoroutineID()
+	if !ok {
+		return nil
+	}
+	automaticActiveOperations.mu.RLock()
+	stack := automaticActiveOperations.byGoroutine[owner]
+	var operation *AutomaticOperation
+	if len(stack) > 0 {
+		operation = stack[len(stack)-1]
+	}
+	automaticActiveOperations.mu.RUnlock()
+	if operation != nil && operation.isActive() {
+		return operation
+	}
+	return nil
+}
+
+func snapshotAutomaticOperations() []*AutomaticOperation {
+	automaticActiveOperations.mu.RLock()
+	candidates := make([]*AutomaticOperation, 0, len(automaticActiveOperations.operations))
+	for operation := range automaticActiveOperations.operations {
+		candidates = append(candidates, operation)
+	}
+	automaticActiveOperations.mu.RUnlock()
+	result := make([]*AutomaticOperation, 0, len(candidates))
+	for _, operation := range candidates {
+		if operation.isActive() {
+			result = append(result, operation)
+		}
+	}
+	return result
+}
+
+func takeAutomaticProjectOperations(project *AutomaticProject) []*AutomaticOperation {
+	automaticActiveOperations.mu.Lock()
+	defer automaticActiveOperations.mu.Unlock()
+	result := make([]*AutomaticOperation, 0)
+	for operation, owner := range automaticActiveOperations.operations {
+		if owner == project {
+			delete(automaticActiveOperations.operations, operation)
+			result = append(result, operation)
+		}
+	}
+	return result
 }

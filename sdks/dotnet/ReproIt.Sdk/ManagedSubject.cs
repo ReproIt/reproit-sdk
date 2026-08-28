@@ -14,12 +14,18 @@ public sealed class DotnetSubjectPackage : IDisposable
     private readonly string spool;
 
     internal DotnetSubjectPackage(
-        JsonObject manifest, List<PackagedSubjectObject> objects, string spool)
+        JsonObject manifest,
+        List<PackagedSubjectObject> objects,
+        string spool,
+        string adapterImplementationDigest)
     {
         Manifest = manifest;
         Objects = objects;
         this.spool = spool;
+        AdapterImplementationDigest = adapterImplementationDigest;
     }
+
+    internal string AdapterImplementationDigest { get; }
 
     /// <summary>Gets the validated subject closure manifest.</summary>
     public JsonObject Manifest { get; }
@@ -102,6 +108,26 @@ public static class ManagedSubject
         string assemblySubjectPath =
             $"/reproit/subject/application/{DigestName(assemblyDigest)}/{assemblyName}";
 
+        string adapterPath = Path.GetFullPath(typeof(AutomaticProject).Assembly.Location);
+        if (adapterPath.Length == 0)
+        {
+            throw SubjectUnsupported();
+        }
+        bool adapterIsApplication = string.Equals(
+            adapterPath, assemblyPath, StringComparison.Ordinal);
+        byte[] adapterBytes = adapterIsApplication
+            ? assemblyBytes
+            : ReadStableFile(adapterPath);
+        string adapterDigest = SubjectProtocol.DigestBytes(adapterBytes);
+        string adapterName = Path.GetFileName(adapterPath);
+        if (adapterName.Length == 0)
+        {
+            throw SubjectUnsupported();
+        }
+        string adapterSubjectPath = adapterIsApplication
+            ? assemblySubjectPath
+            : $"/reproit/subject/dotnet/modules/{DigestName(adapterDigest)}/{adapterName}";
+
         string pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
         if (!File.Exists(pdbPath))
         {
@@ -132,7 +158,7 @@ public static class ManagedSubject
         byte[] launchBytes = CanonicalJson.Bytes(launch);
         string launchDigest = SubjectProtocol.DigestBytes(launchBytes);
 
-        JsonArray objects = AssembleObjects(
+        List<(string Digest, string Kind, string MediaType, long Size)> objectInputs =
         [
             (assemblyDigest, "application", SubjectFileMediaType, assemblyBytes.Length),
             (pdbDigest, "debug-artifact", PortablePdbMediaType, pdbBytes.Length),
@@ -141,10 +167,16 @@ public static class ManagedSubject
             (dependencyDigest, "module-identity", ModuleIdentityMediaType,
                 dependencyBytes.Length),
             (launchDigest, "launch-data", SubjectLaunchMediaType, launchBytes.Length),
-        ]);
+        ];
+        if (!adapterIsApplication)
+        {
+            objectInputs.Add(
+                (adapterDigest, "native-dependency", SubjectFileMediaType, adapterBytes.Length));
+        }
+        JsonArray objects = AssembleObjects(objectInputs);
         long totalBytes = objects
             .Sum(entry => SubjectProtocol.Count(entry!["size"])!.Value);
-        JsonArray files = SortedByKey(
+        List<JsonObject> fileInputs =
         [
             new JsonObject
             {
@@ -176,8 +208,18 @@ public static class ManagedSubject
                 ["object_digest"] = runtimeDigest,
                 ["path"] = "/reproit/subject/dotnet/runtime.json",
             },
-        ], "path");
-        JsonArray modules = SortedByKey(
+        ];
+        if (!adapterIsApplication)
+        {
+            fileInputs.Add(new JsonObject
+            {
+                ["executable"] = false,
+                ["object_digest"] = adapterDigest,
+                ["path"] = adapterSubjectPath,
+            });
+        }
+        JsonArray files = SortedByKey(fileInputs, "path");
+        List<JsonObject> moduleInputs =
         [
             new JsonObject
             {
@@ -191,7 +233,17 @@ public static class ManagedSubject
                 ["module_digest"] = runtimeDigest,
                 ["path"] = "/reproit/subject/dotnet/runtime.json",
             },
-        ], "path");
+        ];
+        if (!adapterIsApplication)
+        {
+            moduleInputs.Add(new JsonObject
+            {
+                ["identity"] = adapterDigest,
+                ["module_digest"] = adapterDigest,
+                ["path"] = adapterSubjectPath,
+            });
+        }
+        JsonArray modules = SortedByKey(moduleInputs, "path");
         JsonArray debugArtifacts =
         [
             new JsonObject
@@ -217,15 +269,17 @@ public static class ManagedSubject
         };
         ValidateSubjectClosureManifest(manifest);
         string spool = Directory.CreateTempSubdirectory("reproit-dotnet-subject-").FullName;
-        List<PackagedSubjectObject> packaged = SpoolObjects(spool, new()
+        Dictionary<string, byte[]> spoolInputs = new()
         {
             [assemblyDigest] = assemblyBytes,
             [pdbDigest] = pdbBytes,
             [runtimeDigest] = runtimeBytes,
             [dependencyDigest] = dependencyBytes,
             [launchDigest] = launchBytes,
-        });
-        return new DotnetSubjectPackage(manifest, packaged, spool);
+        };
+        spoolInputs[adapterDigest] = adapterBytes;
+        List<PackagedSubjectObject> packaged = SpoolObjects(spool, spoolInputs);
+        return new DotnetSubjectPackage(manifest, packaged, spool, adapterDigest);
     }
 
     /// <summary>Builds the deployment subject descriptor bound to a manifest.</summary>
@@ -696,7 +750,9 @@ public static class ManagedSubject
             ? "operating-system.macos"
             : OperatingSystem.IsLinux()
                 ? "operating-system.linux"
-                : throw UnsupportedHost();
+                : OperatingSystem.IsWindows()
+                    ? "operating-system.windows"
+                    : throw UnsupportedHost();
 
     private static string DigestName(string digest) => digest["sha256:".Length..];
 

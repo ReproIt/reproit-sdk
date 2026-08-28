@@ -19,14 +19,19 @@ const httpsModule = require("node:https");
 const MAX_BODY_BYTES = 16 * 1_024;
 const MAX_HEADER_BYTES = 8 * 1_024;
 const MAX_HEADER_FIELDS = 64;
+const MAX_PAYLOAD_BYTES = 2 * MAX_BODY_BYTES;
+const MAX_RESPONSE_STREAMS = 512;
 const MAX_TARGET_BYTES = 8 * 1_024;
-const PAYLOAD_FORMAT = "reproit.node-http-empty-response.v1";
+const EMPTY_PAYLOAD_FORMAT = "reproit.node-http-empty-response.v1";
+const STREAM_PAYLOAD_FORMAT = "reproit.node-http-response.v1";
 const UNSUPPORTED_EVIDENCE = Buffer.from("node-http-unsupported-v1", "utf8");
 const SUPPORTED_OPTION_NAMES = new Set(["headers", "method"]);
 const SENSITIVE_HEADERS = new Set([
-  "authorization", "cookie", "proxy-authorization", "set-cookie",
+  "authorization", "cookie", "proxy-authenticate", "proxy-authorization",
+  "set-cookie", "www-authenticate",
 ]);
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+let activeResponseStreams = 0;
 
 export function installHttpAdapter() {
   const restores = [];
@@ -80,14 +85,23 @@ function managedGet(call, requiredProtocol) {
     throw error;
   }
   liveRequest.prependOnceListener("response", (response) => {
-    markUnsupportedResponseUse(response);
-    const encoded = captureResponse(response);
-    if (encoded === null) {
+    let empty;
+    try {
+      empty = captureEmptyResponse(response);
+    } catch {
       markUnowned();
       dependency.abandon();
       return;
     }
-    if (dependency.finish(encoded) === null) markUnowned();
+    if (empty !== null) {
+      markUnsupportedResponseUse(response);
+      if (dependency.finish(empty) === null) markUnowned();
+      return;
+    }
+    if (!captureResponseStream(response, dependency)) {
+      markUnowned();
+      dependency.abandon();
+    }
   });
   liveRequest.once(errorMonitor, () => {
     // Node.js uses private error prototypes that public APIs cannot reproduce exactly.
@@ -125,7 +139,7 @@ function requestValue(arguments_, requiredProtocol) {
   const payload = canonicalBytes({
     body: "",
     body_kind: "none",
-    format: PAYLOAD_FORMAT,
+    format: EMPTY_PAYLOAD_FORMAT,
     method: "GET",
     protocol: requiredProtocol.slice(0, -1),
     target: target.href,
@@ -167,7 +181,7 @@ function requestHeaders(headers) {
   return metadata;
 }
 
-function captureResponse(response) {
+function captureEmptyResponse(response) {
   if (
     response === null ||
     (response.statusCode !== 204 && response.statusCode !== 304) ||
@@ -186,13 +200,181 @@ function captureResponse(response) {
     return null;
   }
   const payload = canonicalBytes({
-    format: PAYLOAD_FORMAT,
+    format: EMPTY_PAYLOAD_FORMAT,
     http_version: response.httpVersion,
     status_code: response.statusCode,
     status_message: response.statusMessage,
   });
   return dependencyResponse({
     metadata,
+    outcome: "response",
+    payload,
+    statusCode: response.statusCode,
+  });
+}
+
+function captureResponseStream(response, dependency) {
+  let head;
+  try {
+    head = responseHead(response);
+  } catch {
+    return false;
+  }
+  if (head === null || activeResponseStreams >= MAX_RESPONSE_STREAMS) return false;
+  const pushDescriptor = Object.getOwnPropertyDescriptor(response, "push");
+  const originalPush = response.push;
+  if (typeof originalPush !== "function") return false;
+  const state = {
+    body: [], bytes: 0, dependency, head, response, terminal: false,
+  };
+  const replacement = function (chunk, ...arguments_) {
+    let result;
+    try {
+      result = Reflect.apply(originalPush, this, [chunk, ...arguments_]);
+    } catch (error) {
+      failResponseStream(state);
+      throw error;
+    }
+    if (chunk === null) finishResponseStream(state);
+    else captureResponseChunk(state, chunk, arguments_[0]);
+    return result;
+  };
+  try {
+    Object.defineProperty(response, "push", {
+      configurable: true,
+      value: replacement,
+      writable: true,
+    });
+  } catch {
+    return false;
+  }
+  state.pushDescriptor = pushDescriptor;
+  state.replacement = replacement;
+  activeResponseStreams += 1;
+  try {
+    response.once(errorMonitor, () => failResponseStream(state));
+    response.once("aborted", () => failResponseStream(state));
+    response.once("close", () => failResponseStream(state));
+    markUnsupportedResponseUse(response);
+  } catch {
+    failResponseStream(state);
+    return true;
+  }
+  return true;
+}
+
+function responseHead(response) {
+  if (
+    response === null ||
+    !Number.isInteger(response.statusCode) ||
+    response.statusCode < 100 ||
+    response.statusCode > 599 ||
+    response.statusCode === 101 ||
+    typeof response.statusMessage !== "string" ||
+    typeof response.httpVersion !== "string" ||
+    !boundedContentLength(response.headers?.["content-length"])
+  ) {
+    return null;
+  }
+  let metadata;
+  try {
+    metadata = rawHeaders(response.rawHeaders);
+  } catch {
+    return null;
+  }
+  return { metadata };
+}
+
+function boundedContentLength(value) {
+  if (value === undefined) return true;
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/u.test(value)) return false;
+  const length = Number(value);
+  return Number.isSafeInteger(length) && length <= MAX_BODY_BYTES;
+}
+
+function captureResponseChunk(state, chunk, encoding) {
+  if (state.terminal) return;
+  let bytes;
+  try {
+    if (chunk instanceof Uint8Array) bytes = Buffer.from(chunk);
+    else if (typeof chunk === "string") bytes = Buffer.from(chunk, encoding);
+    else throw unsupported();
+  } catch {
+    failResponseStream(state);
+    return;
+  }
+  if (bytes.length > MAX_BODY_BYTES - state.bytes) {
+    failResponseStream(state);
+    return;
+  }
+  state.bytes += bytes.length;
+  state.body.push(bytes);
+}
+
+function finishResponseStream(state) {
+  if (state.terminal) return;
+  state.terminal = true;
+  activeResponseStreams -= 1;
+  restoreResponsePush(state);
+  let encoded;
+  try {
+    encoded = captureStreamResponse(state.response, state.head, Buffer.concat(state.body));
+  } catch {
+    encoded = null;
+  }
+  if (encoded === null) {
+    markUnowned();
+    state.dependency.abandon();
+    return;
+  }
+  if (state.dependency.finish(encoded) === null) markUnowned();
+}
+
+function failResponseStream(state) {
+  if (state.terminal) return;
+  state.terminal = true;
+  activeResponseStreams -= 1;
+  restoreResponsePush(state);
+  markUnowned();
+  state.dependency.abandon();
+}
+
+function restoreResponsePush(state) {
+  try {
+    if (Object.getOwnPropertyDescriptor(state.response, "push")?.value !== state.replacement) {
+      return;
+    }
+    if (state.pushDescriptor === undefined) delete state.response.push;
+    else Object.defineProperty(state.response, "push", state.pushDescriptor);
+  } catch {
+    markUnowned();
+  }
+}
+
+function captureStreamResponse(response, head, body) {
+  const declaredLength = response.headers?.["content-length"];
+  if (response.complete !== true ||
+      (declaredLength !== undefined && Number(declaredLength) !== body.length)) {
+    return null;
+  }
+  let rawTrailers;
+  try {
+    rawHeaders(response.rawTrailers);
+    rawTrailers = [...response.rawTrailers];
+  } catch {
+    return null;
+  }
+  const payload = canonicalBytes({
+    body: body.toString("base64url"),
+    format: STREAM_PAYLOAD_FORMAT,
+    http_version: response.httpVersion,
+    raw_trailers: rawTrailers,
+    status_code: response.statusCode,
+    status_message: response.statusMessage,
+  });
+  if (payload.length > MAX_PAYLOAD_BYTES) return null;
+  return dependencyResponse({
+    metadata: head.metadata,
     outcome: "response",
     payload,
     statusCode: response.statusCode,
@@ -238,12 +420,23 @@ function replayRequest(callback, response) {
 }
 
 function replayResponse(response) {
-  const payload = parsePayload(response.payload, [
-    "format", "http_version", "status_code", "status_message",
-  ]);
+  const payload = parsePayload(response.payload);
+  const empty = payload.format === EMPTY_PAYLOAD_FORMAT;
+  const streamResponse = payload.format === STREAM_PAYLOAD_FORMAT;
   if (
+    (!empty && !streamResponse) ||
+    (empty && !exactKeys(payload, [
+      "format", "http_version", "status_code", "status_message",
+    ])) ||
+    (streamResponse && !exactKeys(payload, [
+      "body", "format", "http_version", "raw_trailers", "status_code", "status_message",
+    ])) ||
     response.statusCode !== payload.status_code ||
-    (payload.status_code !== 204 && payload.status_code !== 304) ||
+    (empty && payload.status_code !== 204 && payload.status_code !== 304) ||
+    !Number.isInteger(payload.status_code) ||
+    payload.status_code < 100 ||
+    payload.status_code > 599 ||
+    payload.status_code === 101 ||
     typeof payload.http_version !== "string" ||
     typeof payload.status_message !== "string"
   ) {
@@ -274,24 +467,32 @@ function replayResponse(response) {
     const lower = name.toLowerCase();
     headers[lower] = headers[lower] === undefined ? value : `${headers[lower]}, ${value}`;
   }
-  const stream = Readable.from([]);
+  let body = Buffer.alloc(0);
+  let rawTrailers = [];
+  if (streamResponse) {
+    body = decodeBody(payload.body);
+    rawHeaders(payload.raw_trailers);
+    rawTrailers = [...payload.raw_trailers];
+  }
+  const trailers = headerObject(rawTrailers);
+  const stream = Readable.from(body.length === 0 ? [] : [body]);
   Object.assign(stream, {
     complete: true,
     headers,
     httpVersion: payload.http_version,
     rawHeaders: raw,
-    rawTrailers: [],
+    rawTrailers,
     statusCode: payload.status_code,
     statusMessage: payload.status_message,
-    trailers: Object.create(null),
+    trailers,
   });
   Object.setPrototypeOf(stream, httpModule.IncomingMessage.prototype);
   markUnsupportedResponseUse(stream);
   return stream;
 }
 
-function parsePayload(bytes, keys) {
-  if (!Buffer.isBuffer(bytes) || bytes.length > MAX_BODY_BYTES) throw replayInvalid();
+function parsePayload(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length > MAX_PAYLOAD_BYTES) throw replayInvalid();
   let value;
   try {
     value = JSON.parse(bytes.toString("utf8"));
@@ -299,11 +500,33 @@ function parsePayload(bytes, keys) {
   } catch {
     throw replayInvalid();
   }
-  if (!plainRecord(value) || Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0") ||
-      value.format !== PAYLOAD_FORMAT) {
+  if (!plainRecord(value)) {
     throw replayInvalid();
   }
   return value;
+}
+
+function exactKeys(value, keys) {
+  return Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
+}
+
+function decodeBody(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]*$/u.test(value)) throw replayInvalid();
+  const body = Buffer.from(value, "base64url");
+  if (body.length > MAX_BODY_BYTES || body.toString("base64url") !== value) {
+    throw replayInvalid();
+  }
+  return body;
+}
+
+function headerObject(raw) {
+  const headers = Object.create(null);
+  for (let index = 0; index < raw.length; index += 2) {
+    const lower = raw[index].toLowerCase();
+    const value = raw[index + 1];
+    headers[lower] = headers[lower] === undefined ? value : `${headers[lower]}, ${value}`;
+  }
+  return headers;
 }
 
 function rawHeaders(values) {
@@ -336,13 +559,12 @@ function markUnsupportedRequestUse(request) {
     "setTimeout", "write",
   ]);
   patchInstanceEvents(request, new Set([
-    "connect", "continue", "finish", "information", "socket", "timeout", "upgrade",
+    "connect", "continue", "information", "socket", "timeout", "upgrade",
   ]));
 }
 
 function markUnsupportedResponseUse(response) {
-  patchInstanceMethods(response, ["pipe", "read", "resume", "setEncoding"]);
-  patchInstanceEvents(response, new Set(["aborted", "data", "end", "readable"]));
+  patchInstanceMethods(response, ["setTimeout"]);
 }
 
 function patchInstanceMethods(owner, names) {

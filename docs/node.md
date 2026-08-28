@@ -40,6 +40,19 @@ The Node.js layer owns subject discovery, operation context, and Failure transla
 The packaged shared engine owns candidate policy, World closure, encryption,
 delivery, and cleanup. A successful operation is deleted locally.
 
+An open project automatically observes supported `http.get` and `https.get`
+requests inside `runOperation`. Replay returns a recorded response without live
+network access.
+
+The adapter captures complete response streams and trailers up to 16 KiB. It
+observes the underlying stream without changing the user stream mode.
+
+The adapter rejects credentials, sensitive headers, truncated streams, request
+mutation, and values outside its bounds. These cases keep a failed operation local.
+
+`http.request` and unsupported request options remain outside this automatic
+adapter boundary.
+
 ## Verify SDK source
 
 ```sh

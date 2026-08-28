@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	sdkEngineABIContractDigest                  = "sha256:861bf764fdaea60fc73d3dad988760608c02bc2951a5ddfabe80d9f8ecfda1d9"
+	sdkEngineABIContractDigest                  = "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78"
 	sdkEngineABIVersion                         = uint32(1)
 	sdkEngineMaxEvidenceBytes                   = 785_408
 	sdkEngineMaxObservationAdapters             = 7
@@ -157,6 +157,7 @@ func expectedSDKEngineContract() map[string]any {
 		"operations":          operations,
 		"observation_actions": []any{"capture", "replay"},
 		"observation_contract": map[string]any{
+			"adapter_implementation_binding": []any{"subject-module-digest"},
 			"adapter_registration_fields": []any{
 				"adapter_id", "adapter_version", "class", "implementation_digest",
 			},

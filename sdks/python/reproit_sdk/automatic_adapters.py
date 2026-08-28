@@ -108,29 +108,17 @@ class _RecordedError(Exception):
         self.number = number
 
 
-def _implementation_digest() -> str:
+def _implementation_digest() -> str | None:
     try:
-        files = tuple(
-            Path(__file__).with_name(name)
-            for name in (
-                "automatic_adapters.py",
-                "engine_operation.py",
-                "http_adapter.py",
-                "semantic_dependency.py",
-                "sqlite_adapter.py",
-            )
-        )
-        hasher = hashlib.sha256()
-        for file in files:
-            hasher.update(file.name.encode("utf-8"))
-            hasher.update(b"\0")
-            hasher.update(file.read_bytes())
+        value = Path(__file__).read_bytes()
     except OSError:
-        return f"sha256:{hashlib.sha256(b'reproit-python-adapters-v1').hexdigest()}"
-    return f"sha256:{hasher.hexdigest()}"
+        return None
+    return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
 
 _IMPLEMENTATION_DIGEST = _implementation_digest()
+# Python has no standard provider queue API. The native sentinel rejects queue
+# effects when no provider adapter owns them.
 _REGISTRATIONS = tuple(
     _ObservationAdapterRegistration(
         adapter_id=f"reproit.python.{observation_class}",
@@ -144,9 +132,10 @@ _REGISTRATIONS = tuple(
         "environment",
         "filesystem",
         "outbound-http",
+        "queue",
         "randomness",
     )
-)
+) if _IMPLEMENTATION_DIGEST is not None else ()
 
 
 def _acquire_automatic_adapters() -> bool:
