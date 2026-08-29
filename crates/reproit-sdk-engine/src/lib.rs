@@ -31,10 +31,10 @@ use serde_json::{Value, json};
 mod failure_delivery;
 mod observation;
 mod semantic_dependency;
-mod sentinel;
 
 use failure_delivery::{FailureTask, FailureWork, FailureWorker, MAX_FAILURE_TASKS};
 use observation::{ObservationAdapterInput, ObservationStreamInput};
+use reproit_sdk_sentinel as sentinel;
 use semantic_dependency::{
     SemanticDependencyRequestInput, SemanticDependencyResponseInput, SemanticDependencySession,
 };
@@ -448,7 +448,7 @@ impl Registry {
             .collect::<Vec<_>>();
         let subject = SubjectPackage::freeze(configuration.subject_manifest, &objects)?;
         validate_adapter_implementations(&configuration.observation_adapters, &subject.manifest)?;
-        let mut engine = AutomaticManagedEngine::new(project, subject);
+        let mut engine = AutomaticManagedEngine::new_unregistered(project, subject);
         for adapter in configuration.observation_adapters {
             engine.register_observation_adapter(
                 adapter.class,
@@ -762,6 +762,11 @@ fn remove_engine_sinks(sinks: &mut BTreeMap<u64, SinkEntry>, engine_handle: u64)
 #[unsafe(no_mangle)]
 pub extern "C" fn reproit_sdk_engine_abi_version() -> u32 {
     ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn reproit_sdk_engine_capture_probe() -> u32 {
+    u32::from(catch_unwind(sentinel::platform_probe).unwrap_or(false))
 }
 
 /// Execute one bounded engine call.

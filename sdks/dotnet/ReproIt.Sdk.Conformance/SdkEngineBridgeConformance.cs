@@ -436,6 +436,8 @@ internal static class SdkEngineBridgeConformance
                 SdkEngineBridge.AbiVersionSymbol &&
             abi.GetProperty("symbols").GetProperty("call").GetString() ==
                 SdkEngineBridge.CallSymbol &&
+            abi.GetProperty("symbols").GetProperty("capture_probe").GetString() ==
+                SdkEngineBridge.CaptureProbeSymbol &&
             requiredObservationClasses.SequenceEqual(
                 SdkEngineBridge.RequiredObservationClasses.Select(
                     AutomaticOperation.ObservationClass)) &&

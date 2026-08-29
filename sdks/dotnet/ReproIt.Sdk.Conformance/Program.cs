@@ -10,6 +10,12 @@ if (args is ["processor-capture"])
     return;
 }
 
+if (args is ["automatic-native"])
+{
+    AutomaticNativeGuardConformance.Run();
+    return;
+}
+
 SdkEngineBridgeConformance.Run();
 AutomaticOperationConformance.Run();
 AutomaticHttpAdapterConformance.Run();

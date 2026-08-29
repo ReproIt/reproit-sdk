@@ -2,10 +2,11 @@
 
 Use the Rust SDK at one supported Backend operation boundary.
 
-The current SDK release does not provide package-owned automatic observation
-adapters. The CLI does not declare this SDK ready for automatic World capture.
-The operation and Axum APIs remain available for SDK development and conformance
-work.
+The SDK installs package-owned guards for all seven World observation classes.
+The guards use the shared Linux coverage sentinel. A failed operation can leave
+the process only when the native trace is healthy and every kernel-visible effect
+belongs to a supported semantic observation. An unowned effect or a trace gap
+keeps the failure local.
 
 ## Install
 
@@ -24,6 +25,11 @@ cargo add reproit-sdk-rust-axum@1.0.0
 
 The Axum adapter streams bounded request inputs and response observations through the same Rust
 operation API. It does not buffer a complete request or response body.
+
+`reproit init` accepts a direct `cargo run` application command. The internal
+startup probe verifies that the Rust SDK and the Linux native sentinel are linked
+before it stores the command. The public CLI does not add a Rust-specific run
+command.
 
 The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
 incomplete, unsupported, and resource-limited operations local.

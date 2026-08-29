@@ -19,13 +19,13 @@ const MAX_ACTIVE_OBSERVATIONS: usize = 1_024;
 static SENTINEL: OnceLock<Mutex<Controller>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OperationCoverage {
+pub enum OperationCoverage {
     Incomplete,
     CleanKernelTrace(KernelTraceEvidence),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct KernelTraceEvidence {
+pub struct KernelTraceEvidence {
     start_sequence: u64,
     end_sequence: u64,
     relevant_events: u64,
@@ -33,7 +33,8 @@ pub(crate) struct KernelTraceEvidence {
 }
 
 impl KernelTraceEvidence {
-    pub(crate) fn encode(self) -> [u8; 40] {
+    #[must_use]
+    pub fn encode(self) -> [u8; 40] {
         const FORMAT: u64 = 1;
 
         let mut encoded = [0_u8; 40];
@@ -203,11 +204,11 @@ impl Controller {
     }
 }
 
-pub(crate) struct EngineCallGuard {
+pub struct EngineCallGuard {
     ignore: Option<platform::IgnoreGuard>,
 }
 
-pub(crate) fn engine_call_scope() -> EngineCallGuard {
+pub fn engine_call_scope() -> EngineCallGuard {
     let ignore = controller()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -223,7 +224,7 @@ impl Drop for EngineCallGuard {
     }
 }
 
-pub(crate) fn engine_opened() {
+pub fn engine_opened() {
     let mut controller = controller().lock().unwrap_or_else(PoisonError::into_inner);
     controller.engine_count = controller.engine_count.saturating_add(1);
     if controller.runtime.is_none() {
@@ -231,7 +232,7 @@ pub(crate) fn engine_opened() {
     }
 }
 
-pub(crate) fn engine_closed() {
+pub fn engine_closed() {
     let _runtime = {
         let mut controller = controller().lock().unwrap_or_else(PoisonError::into_inner);
         controller.engine_count = controller.engine_count.saturating_sub(1);
@@ -246,28 +247,33 @@ pub(crate) fn engine_closed() {
     };
 }
 
-pub(crate) fn operation_started(operation_handle: u64) {
+#[must_use]
+pub fn platform_probe() -> bool {
+    platform::Runtime::install().is_ok()
+}
+
+pub fn operation_started(operation_handle: u64) {
     controller()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .operation_started(operation_handle);
 }
 
-pub(crate) fn operation_finished(operation_handle: u64) -> OperationCoverage {
+pub fn operation_finished(operation_handle: u64) -> OperationCoverage {
     controller()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .operation_finished(operation_handle)
 }
 
-pub(crate) fn operation_removed(operation_handle: u64) {
+pub fn operation_removed(operation_handle: u64) {
     controller()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove_operation(operation_handle);
 }
 
-pub(crate) fn observation_opened(
+pub fn observation_opened(
     observation_handle: u64,
     operation_handle: u64,
     class: AutomaticObservationClass,
@@ -289,7 +295,7 @@ pub(crate) fn observation_opened(
     );
 }
 
-pub(crate) fn observation_dispatched(observation_handle: u64) {
+pub fn observation_dispatched(observation_handle: u64) {
     let mut controller = controller().lock().unwrap_or_else(PoisonError::into_inner);
     controller.drain();
     let thread_id = platform::current_thread_id();
@@ -301,7 +307,7 @@ pub(crate) fn observation_dispatched(observation_handle: u64) {
     observation.dispatched = true;
 }
 
-pub(crate) fn observation_finished(observation_handle: u64) {
+pub fn observation_finished(observation_handle: u64) {
     let mut controller = controller().lock().unwrap_or_else(PoisonError::into_inner);
     controller.drain();
     if controller
@@ -313,8 +319,8 @@ pub(crate) fn observation_finished(observation_handle: u64) {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn observation_is_active(observation_handle: u64) -> bool {
+#[doc(hidden)]
+pub fn observation_is_active(observation_handle: u64) -> bool {
     controller()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

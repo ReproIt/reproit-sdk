@@ -29,7 +29,7 @@ export const NATIVE_ENGINE_MAX_SEMANTIC_DEPENDENCY_RECORD_BYTES = 65_536;
 export const NATIVE_ENGINE_MAX_SINK_WAIT_MS = 1_800_000;
 export const NATIVE_ENGINE_MAX_SINK_WAITERS = 16;
 export const NATIVE_ENGINE_ABI_CONTRACT_DIGEST =
-  "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78";
+  "sha256:b44f8f670ee31066c81a37876543b6fbce70215e69ed2b0aa6a4aa1ae1b4de47";
 export const NATIVE_ENGINE_LIBRARIES = Object.freeze({
   "linux-arm64": "libreproit_sdk_engine.so",
   "linux-x86_64": "libreproit_sdk_engine.so",
@@ -39,6 +39,7 @@ export const NATIVE_ENGINE_LIBRARIES = Object.freeze({
 export const NATIVE_ENGINE_SYMBOLS = Object.freeze({
   abi_version: "reproit_sdk_engine_abi_version",
   call: "reproit_sdk_engine_call",
+  capture_probe: "reproit_sdk_engine_capture_probe",
 });
 const ENGINE_OPERATION = Object.freeze({
   CONTRACT: "contract",

@@ -1,0 +1,12 @@
+[package]
+name = "reproit-sdk-sentinel"
+description = "Native effect coverage sentinel for Repro It SDKs"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+libc.workspace = true
+reproit-core.workspace = true

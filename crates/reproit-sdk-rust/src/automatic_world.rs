@@ -45,7 +45,9 @@ const DEPENDENCY_TRANSCRIPT_MEDIA_TYPE: &str =
     "application/vnd.reproit.dependency-transcript.v1+json";
 const OBSERVATION_OBJECT_MEDIA_TYPE: &str = "application/octet-stream";
 const FENCE_ID: &str = "reproit-native-observation-fence";
+#[cfg(unix)]
 const MAX_AMBIENT_ENVIRONMENT_BYTES: usize = 512 * 1_024;
+#[cfg(unix)]
 const MAX_AMBIENT_ENVIRONMENT_VALUES: usize = 4_096;
 pub(crate) const MAX_NATIVE_SENTINEL_EVIDENCE_BYTES: usize = 256;
 const MAX_RECOVERABLE_SECONDS: i64 = 1_800;
@@ -93,6 +95,7 @@ pub(crate) struct AutomaticWorldCoordinator {
     dependency_interactions: Vec<DependencyTranscriptInteraction>,
     dropped_observation_count: u64,
     incomplete_session: bool,
+    #[cfg(unix)]
     next_internal_session: u64,
     observations: Vec<AutomaticObservationPayload>,
     operation_id: OperationId,
@@ -265,6 +268,7 @@ impl AutomaticWorldCoordinator {
             dependency_interactions: Vec::new(),
             dropped_observation_count: 0,
             incomplete_session: false,
+            #[cfg(unix)]
             next_internal_session: u64::MAX,
             observations: Vec::new(),
             operation_id,
@@ -538,52 +542,55 @@ impl AutomaticWorldCoordinator {
         Ok(())
     }
 
+    #[cfg_attr(not(unix), allow(clippy::unused_self))]
     pub(crate) fn capture_ambient(&mut self) -> Result<(), Error> {
         #[cfg(not(unix))]
-        return Err(Error::new(
-            ErrorCode::Unsupported,
-            "Automatic environment capture requires a supported production host.",
-        ));
-        #[cfg(unix)]
-        let mut environment = BTreeMap::new();
-        let mut environment_bytes = 0_usize;
-        for (name, value) in std::env::vars_os() {
-            let name = name.as_os_str().as_bytes();
-            let value = value.as_os_str().as_bytes();
-            let next_bytes = environment_bytes
-                .checked_add(name.len())
-                .and_then(|bytes| bytes.checked_add(value.len()));
-            let Some(next_bytes) = next_bytes else {
-                self.overflowed = true;
-                self.dropped_observation_count = self.dropped_observation_count.saturating_add(1);
-                return Err(capture_limit());
-            };
-            environment_bytes = next_bytes;
-            if environment.len() >= MAX_AMBIENT_ENVIRONMENT_VALUES
-                || environment_bytes > MAX_AMBIENT_ENVIRONMENT_BYTES
-            {
-                self.overflowed = true;
-                self.dropped_observation_count = self.dropped_observation_count.saturating_add(1);
-                return Err(capture_limit());
-            }
-            environment.insert(encode_base64url(name), encode_base64url(value));
+        {
+            Err(Error::new(
+                ErrorCode::Unsupported,
+                "Automatic environment capture requires a supported production host.",
+            ))
         }
         #[cfg(unix)]
-        let environment_bytes = canonical::canonical_bytes(&environment)?;
-        #[cfg(unix)]
-        self.capture_internal(
-            AutomaticObservationClass::Environment,
-            b"process-environment",
-            &environment_bytes,
-        )?;
-        #[cfg(unix)]
-        let clock = timestamp(OffsetDateTime::now_utc())?;
-        #[cfg(unix)]
-        self.capture_internal(
-            AutomaticObservationClass::Clock,
-            b"wall-clock",
-            clock.as_str().as_bytes(),
-        )
+        {
+            let mut environment = BTreeMap::new();
+            let mut environment_bytes = 0_usize;
+            for (name, value) in std::env::vars_os() {
+                let name = name.as_os_str().as_bytes();
+                let value = value.as_os_str().as_bytes();
+                let next_bytes = environment_bytes
+                    .checked_add(name.len())
+                    .and_then(|bytes| bytes.checked_add(value.len()));
+                let Some(next_bytes) = next_bytes else {
+                    self.overflowed = true;
+                    self.dropped_observation_count =
+                        self.dropped_observation_count.saturating_add(1);
+                    return Err(capture_limit());
+                };
+                environment_bytes = next_bytes;
+                if environment.len() >= MAX_AMBIENT_ENVIRONMENT_VALUES
+                    || environment_bytes > MAX_AMBIENT_ENVIRONMENT_BYTES
+                {
+                    self.overflowed = true;
+                    self.dropped_observation_count =
+                        self.dropped_observation_count.saturating_add(1);
+                    return Err(capture_limit());
+                }
+                environment.insert(encode_base64url(name), encode_base64url(value));
+            }
+            let environment_bytes = canonical::canonical_bytes(&environment)?;
+            self.capture_internal(
+                AutomaticObservationClass::Environment,
+                b"process-environment",
+                &environment_bytes,
+            )?;
+            let clock = timestamp(OffsetDateTime::now_utc())?;
+            self.capture_internal(
+                AutomaticObservationClass::Clock,
+                b"wall-clock",
+                clock.as_str().as_bytes(),
+            )
+        }
     }
 
     pub(crate) fn mark_unowned(
@@ -686,6 +693,7 @@ impl AutomaticWorldCoordinator {
         })
     }
 
+    #[cfg(unix)]
     fn capture_internal(
         &mut self,
         class: AutomaticObservationClass,

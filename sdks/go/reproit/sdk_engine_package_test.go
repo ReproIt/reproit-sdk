@@ -95,8 +95,9 @@ func TestGoSDKEngineConstantsMatchCanonicalABI(t *testing.T) {
 			OutputCapacityBytes int    `json:"output_capacity_bytes"`
 		} `json:"response"`
 		Symbols struct {
-			ABIVersion string `json:"abi_version"`
-			Call       string `json:"call"`
+			ABIVersion   string `json:"abi_version"`
+			Call         string `json:"call"`
+			CaptureProbe string `json:"capture_probe"`
 		} `json:"symbols"`
 	}
 	if err := json.Unmarshal(value, &abi); err != nil {
@@ -131,6 +132,7 @@ func TestGoSDKEngineConstantsMatchCanonicalABI(t *testing.T) {
 		abi.Response.OutputCapacityBytes != sdkEngineOutputCapacity ||
 		abi.Symbols.ABIVersion != sdkEngineABIVersionSymbol ||
 		abi.Symbols.Call != sdkEngineCallSymbol ||
+		abi.Symbols.CaptureProbe != sdkEngineCaptureProbeSymbol ||
 		!reflect.DeepEqual(abi.Operations, sdkEngineOperationNames) ||
 		!reflect.DeepEqual(abi.RequiredObservationClasses, []string{
 			"clock", "database", "environment", "filesystem", "outbound-http", "queue",

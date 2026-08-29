@@ -120,6 +120,10 @@ fn abi_contract_matches_engine_constants() {
         "reproit_sdk_engine_abi_version"
     );
     assert_eq!(contract["symbols"]["call"], "reproit_sdk_engine_call");
+    assert_eq!(
+        contract["symbols"]["capture_probe"],
+        "reproit_sdk_engine_capture_probe"
+    );
 }
 
 #[test]

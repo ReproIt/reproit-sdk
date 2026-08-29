@@ -180,9 +180,9 @@ fn managed_workload_receipt_fails_closed_for_corruption_and_scope_mismatch() {
 
 #[test]
 fn managed_workload_state_rejects_links_and_open_permissions() {
-    let root = private_root();
     #[cfg(unix)]
     {
+        let root = private_root();
         let linked_root = private_root();
         let link = root.path().join("reproit");
         symlink(linked_root.path(), &link).unwrap();

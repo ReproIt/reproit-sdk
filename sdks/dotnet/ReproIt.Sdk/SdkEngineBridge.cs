@@ -9,6 +9,8 @@ internal interface INativeSdkEngine
 {
     uint AbiVersion();
 
+    uint CaptureProbe() => 1;
+
     nint Call(byte[] input, byte[] output);
 
     void Close()
@@ -19,7 +21,7 @@ internal interface INativeSdkEngine
 internal sealed class SdkEngineBridge : IDisposable
 {
     internal const string AbiContractDigest =
-        "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78";
+        "sha256:b44f8f670ee31066c81a37876543b6fbce70215e69ed2b0aa6a4aa1ae1b4de47";
     internal const uint AbiVersion = 1;
     internal const int MaxEvidenceBytes = 785_408;
     internal const int MaxObservationAdapters = 7;
@@ -37,6 +39,7 @@ internal sealed class SdkEngineBridge : IDisposable
     internal const string CallFormat = "reproit.sdk-engine-call.v1";
     internal const string AbiVersionSymbol = "reproit_sdk_engine_abi_version";
     internal const string CallSymbol = "reproit_sdk_engine_call";
+    internal const string CaptureProbeSymbol = "reproit_sdk_engine_capture_probe";
 
     private const string ResponseFormat = "reproit.sdk-engine-response.v1";
     internal static IReadOnlyList<AutomaticObservationClass> RequiredObservationClasses { get; } =
@@ -92,6 +95,18 @@ internal sealed class SdkEngineBridge : IDisposable
             throw ResponseError();
         }
         return AbiVersion;
+    }
+
+    internal bool CaptureProbe()
+    {
+        lock (stateLock)
+        {
+            if (closed)
+            {
+                throw Unavailable();
+            }
+            return native.CaptureProbe() == 1;
+        }
     }
 
     internal static JsonObject ExpectedContract()
@@ -197,6 +212,7 @@ internal sealed class SdkEngineBridge : IDisposable
             {
                 ["abi_version"] = AbiVersionSymbol,
                 ["call"] = CallSymbol,
+                ["capture_probe"] = CaptureProbeSymbol,
             },
         };
     }
@@ -365,6 +381,7 @@ internal sealed class PInvokeSdkEngine : INativeSdkEngine
 {
     private readonly AbiVersionDelegate abiVersion;
     private readonly CallDelegate call;
+    private readonly CaptureProbeDelegate captureProbe;
     private nint library;
 
     internal PInvokeSdkEngine(string libraryPath)
@@ -376,6 +393,8 @@ internal sealed class PInvokeSdkEngine : INativeSdkEngine
                 NativeLibrary.GetExport(library, SdkEngineBridge.AbiVersionSymbol));
             call = Marshal.GetDelegateForFunctionPointer<CallDelegate>(
                 NativeLibrary.GetExport(library, SdkEngineBridge.CallSymbol));
+            captureProbe = Marshal.GetDelegateForFunctionPointer<CaptureProbeDelegate>(
+                NativeLibrary.GetExport(library, SdkEngineBridge.CaptureProbeSymbol));
         }
         catch
         {
@@ -390,6 +409,8 @@ internal sealed class PInvokeSdkEngine : INativeSdkEngine
     public nint Call(byte[] input, byte[] output) => call(
         input, checked((nuint)input.Length), output, checked((nuint)output.Length));
 
+    public uint CaptureProbe() => captureProbe();
+
     public void Close()
     {
         if (library != 0)
@@ -401,6 +422,9 @@ internal sealed class PInvokeSdkEngine : INativeSdkEngine
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate uint AbiVersionDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate uint CaptureProbeDelegate();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate nint CallDelegate(

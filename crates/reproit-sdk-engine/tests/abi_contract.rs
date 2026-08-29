@@ -1,6 +1,8 @@
 use std::ffi::c_void;
 
-use reproit_sdk_engine::{reproit_sdk_engine_abi_version, reproit_sdk_engine_call};
+use reproit_sdk_engine::{
+    reproit_sdk_engine_abi_version, reproit_sdk_engine_call, reproit_sdk_engine_capture_probe,
+};
 use serde_json::{Value, json};
 
 const ABI_CONTRACT: &str = include_str!("../sdk-engine-abi.json");
@@ -34,6 +36,7 @@ fn exported_engine_matches_the_canonical_abi_contract() {
     assert_eq!(response["result"], contract);
 
     let _: extern "C" fn() -> u32 = reproit_sdk_engine_abi_version;
+    let _: extern "C" fn() -> u32 = reproit_sdk_engine_capture_probe;
     let _: unsafe extern "C" fn(*const c_void, usize, *mut c_void, usize) -> isize =
         reproit_sdk_engine_call;
 }

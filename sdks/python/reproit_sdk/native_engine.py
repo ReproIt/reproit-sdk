@@ -34,13 +34,14 @@ MAX_SINK_WAIT_MS = 1_800_000
 MAX_SINK_WAITERS = 16
 MAX_ARTIFACT_MANIFEST_BYTES = 16_384
 ABI_CONTRACT_DIGEST = (
-    "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78"
+    "sha256:b44f8f670ee31066c81a37876543b6fbce70215e69ed2b0aa6a4aa1ae1b4de47"
 )
 ARTIFACT_MANIFEST_FORMAT = "reproit.sdk-engine-artifacts.v1"
 ARTIFACT_MANIFEST_NAME = "sdk-engine-artifacts.json"
 _ABI_SYMBOLS = {
     "abi_version": "reproit_sdk_engine_abi_version",
     "call": "reproit_sdk_engine_call",
+    "capture_probe": "reproit_sdk_engine_capture_probe",
 }
 _PLATFORM_LIBRARY_NAMES = {
     "linux-arm64": "libreproit_sdk_engine.so",
@@ -229,9 +230,11 @@ class NativeEngineBridge:
     def __init__(self, library: object):
         abi_version = None
         call = None
+        capture_probe = None
         try:
             abi_version = getattr(library, _ABI_SYMBOLS["abi_version"])
             call = getattr(library, _ABI_SYMBOLS["call"])
+            capture_probe = getattr(library, _ABI_SYMBOLS["capture_probe"])
             abi_version.argtypes = []
             abi_version.restype = ctypes.c_uint32
             call.argtypes = [
@@ -241,12 +244,15 @@ class NativeEngineBridge:
                 ctypes.c_size_t,
             ]
             call.restype = ctypes.c_ssize_t
+            capture_probe.argtypes = []
+            capture_probe.restype = ctypes.c_uint32
         except Exception:
             pass
-        if abi_version is None or call is None:
+        if abi_version is None or call is None or capture_probe is None:
             raise _engine_unavailable()
         self._abi_version = abi_version
         self._call = call
+        self._capture_probe = capture_probe
 
     @classmethod
     def load(cls) -> NativeEngineBridge:

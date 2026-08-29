@@ -113,22 +113,27 @@ internal static class AutomaticHttpAdapterConformance
     {
         Require(
             InstalledObservationAdapters.Snapshot().Count == 0,
-            "The .NET HTTP adapter was active without an open project.");
+            "The .NET observation adapters were active without an open project.");
         using AdapterFixture fixture = new();
         JsonArray registrations = InstalledObservationAdapters.Snapshot();
         JsonArray engineRegistrations = fixture.Native.Requests
             .Single(value => Operation(value) == "engine-open")["observation_adapters"]!
             .AsArray();
         Require(
-            registrations.Count == 1 &&
-            registrations[0]!["class"]!.GetValue<string>() == "outbound-http" &&
-            engineRegistrations.Count == 1 &&
+            registrations.Count == 7 &&
+            registrations.Select(value => value!["class"]!.GetValue<string>()).SequenceEqual(
+                new[]
+                {
+                    "clock", "database", "environment", "filesystem", "outbound-http",
+                    "queue", "randomness",
+                }) &&
+            engineRegistrations.Count == 7 &&
             JsonNode.DeepEquals(registrations, engineRegistrations),
-            "The .NET project did not register its active HTTP adapter.");
+            "The .NET project did not register all active observation adapters.");
         fixture.Dispose();
         Require(
             InstalledObservationAdapters.Snapshot().Count == 0,
-            "The .NET HTTP adapter remained active after project close.");
+            "The .NET observation adapters remained active after project close.");
     }
 
     private static void CapturesSupportedBodylessHttp()

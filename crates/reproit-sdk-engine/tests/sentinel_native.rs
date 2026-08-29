@@ -1,11 +1,11 @@
 #![allow(clippy::duplicate_mod, dead_code, unused_imports)]
 
 #[cfg(target_os = "linux")]
-#[path = "../src/sentinel_linux.rs"]
+#[path = "../../reproit-sdk-sentinel/src/sentinel_linux.rs"]
 mod sentinel_linux;
 
 #[cfg(target_os = "linux")]
-#[path = "../src/sentinel.rs"]
+#[path = "../../reproit-sdk-sentinel/src/sentinel.rs"]
 mod sentinel_controller;
 
 #[cfg(target_os = "linux")]

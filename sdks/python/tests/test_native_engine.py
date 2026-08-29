@@ -70,6 +70,7 @@ class FakeLibrary:
         self.written = written
         self.reproit_sdk_engine_abi_version = FakeFunction(lambda: abi_version)
         self.reproit_sdk_engine_call = FakeFunction(self._call)
+        self.reproit_sdk_engine_capture_probe = FakeFunction(lambda: 1)
 
     def _call(self, input_pointer, input_length, output_pointer, output_capacity):
         request_bytes = ctypes.string_at(input_pointer, input_length)

@@ -2,10 +2,11 @@
 
 Use the .NET SDK at one supported Backend operation boundary.
 
-The current SDK release does not provide the complete automatic adapter set that
-`reproit init` requires. The CLI does not declare this SDK ready for automatic
-World capture. The operation API and HTTP adapter remain available for SDK
-development and conformance work.
+The SDK installs guards for all seven automatic observation classes. The HTTP
+adapter captures its supported `HttpClient` boundary. Six native guards cover
+clock, database, environment, filesystem, queue, and randomness classes. The
+shared Linux sentinel keeps a failure local when a kernel-visible effect is
+unowned or the native trace is incomplete.
 
 ## Install
 
@@ -29,6 +30,10 @@ The operation is active in its asynchronous context until a terminal method runs
 The SDK automatically captures supported bodyless `HttpClient` calls in that context.
 It keeps the operation local for bodies, credentials, sensitive headers, ambiguous errors,
 changed runtime events, or resource limit failures.
+
+`reproit init` accepts a direct `dotnet run` application command. The internal
+startup probe verifies the managed SDK, the packaged engine, and the Linux native
+sentinel. The public CLI does not add a .NET-specific run command.
 
 The .NET layer owns subject discovery, operation context, and Failure
 translation. The packaged shared engine owns candidate policy, closure,

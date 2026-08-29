@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use reproit_core::{
@@ -12,6 +15,8 @@ use reproit_core::{
     },
 };
 use uuid::Uuid;
+
+use reproit_sdk_sentinel::{self as native_sentinel, OperationCoverage};
 
 use crate::{
     AutomaticCandidateStart, ManagedProjectToken, ManagedRustCandidateSink,
@@ -36,16 +41,70 @@ pub struct AutomaticManagedEngine {
     observation_registrations:
         BTreeMap<AutomaticObservationClass, AutomaticObservationRegistration>,
     project: OfficialManagedProject,
+    sentinel: Option<Arc<NativeSentinelLease>>,
     subject: Arc<SubjectPackage>,
+}
+
+const RUST_NATIVE_GUARD_ADAPTER_ID: &str = "rust-native-coverage-sentinel";
+const RUST_NATIVE_GUARD_ADAPTER_VERSION: &str = "1.0.0";
+static NEXT_NATIVE_OPERATION_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+struct NativeSentinelLease;
+
+impl NativeSentinelLease {
+    fn acquire() -> Arc<Self> {
+        native_sentinel::engine_opened();
+        Arc::new(Self)
+    }
+}
+
+impl Drop for NativeSentinelLease {
+    fn drop(&mut self) {
+        native_sentinel::engine_closed();
+    }
 }
 
 impl AutomaticManagedEngine {
     #[must_use]
     pub fn new(project: OfficialManagedProject, subject: SubjectPackage) -> Self {
+        let mut engine = Self {
+            observation_registrations: BTreeMap::new(),
+            project,
+            sentinel: Some(NativeSentinelLease::acquire()),
+            subject: Arc::new(subject),
+        };
+        engine.install_native_guard_adapters();
+        engine
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_unregistered(project: OfficialManagedProject, subject: SubjectPackage) -> Self {
         Self {
             observation_registrations: BTreeMap::new(),
             project,
+            sentinel: None,
             subject: Arc::new(subject),
+        }
+    }
+
+    fn install_native_guard_adapters(&mut self) {
+        let Some(implementation_digest) = self.subject.manifest.modules.iter().find_map(|module| {
+            (module.path == self.subject.manifest.launch.executable).then_some(module.module_digest)
+        }) else {
+            return;
+        };
+        for class in AutomaticObservationClass::ALL {
+            let Ok(registration) = AutomaticObservationRegistration::new(
+                class,
+                RUST_NATIVE_GUARD_ADAPTER_ID.to_owned(),
+                RUST_NATIVE_GUARD_ADAPTER_VERSION.to_owned(),
+                implementation_digest,
+            ) else {
+                self.observation_registrations.clear();
+                return;
+            };
+            self.observation_registrations.insert(class, registration);
         }
     }
 
@@ -112,6 +171,14 @@ impl AutomaticManagedEngine {
                 return Err(error);
             }
         };
+        let sentinel_handle = if self.sentinel.is_some() {
+            let handle = next_native_operation_handle()?;
+            let _engine_call_guard = native_sentinel::engine_call_scope();
+            native_sentinel::operation_started(handle);
+            Some(handle)
+        } else {
+            None
+        };
         Ok(AutomaticManagedOperation {
             closure: None,
             finished: false,
@@ -120,6 +187,7 @@ impl AutomaticManagedEngine {
             operation_name: begin.operation_name.clone(),
             recorder,
             sdk,
+            sentinel_handle,
             shared,
         })
     }
@@ -133,6 +201,7 @@ pub struct AutomaticManagedOperation {
     operation_name: String,
     recorder: Arc<ManagedRustLocalRecorder>,
     sdk: Sdk,
+    sentinel_handle: Option<u64>,
     shared: Arc<AutomaticOperationShared>,
 }
 
@@ -155,6 +224,7 @@ impl AutomaticManagedOperation {
     }
 
     pub fn record_input(&self, input: &OperationInputPayload) -> Result<(), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.sdk.record_input(self.operation_id, input)
     }
 
@@ -164,6 +234,7 @@ impl AutomaticManagedOperation {
         class: AutomaticObservationClass,
         causal_parent_id: Option<OperationId>,
     ) -> Result<u64, Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared.with_coordinator(|coordinator| {
             coordinator.open_observation(session_id, class, causal_parent_id)
         })
@@ -186,6 +257,7 @@ impl AutomaticManagedOperation {
     }
 
     pub fn dispatch_observation(&mut self, session_id: u64) -> Result<&'static str, Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared.with_coordinator(|coordinator| {
             coordinator
                 .dispatch_observation(session_id)
@@ -194,6 +266,7 @@ impl AutomaticManagedOperation {
     }
 
     pub fn read_observation_response(&mut self, session_id: u64) -> Result<(Vec<u8>, bool), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared
             .with_coordinator(|coordinator| coordinator.read_observation_response(session_id))
     }
@@ -204,12 +277,14 @@ impl AutomaticManagedOperation {
         outcome: DependencyOutcome,
         session_position: u64,
     ) -> Result<(), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared.with_coordinator(|coordinator| {
             coordinator.finish_observation(session_id, outcome, session_position)
         })
     }
 
     pub fn abandon_observation(&mut self, session_id: u64) -> Result<(), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared
             .with_coordinator(|coordinator| coordinator.abandon_observation(session_id))
     }
@@ -220,6 +295,7 @@ impl AutomaticManagedOperation {
         causal_parent_id: Option<OperationId>,
         evidence: &[u8],
     ) -> Result<(), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared.with_coordinator(|coordinator| {
             coordinator.mark_unowned(class, causal_parent_id, evidence)
         })
@@ -227,6 +303,7 @@ impl AutomaticManagedOperation {
 
     #[doc(hidden)]
     pub fn bind_native_sentinel_coverage(&mut self, evidence: &[u8]) -> Result<(), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared
             .with_coordinator(|coordinator| coordinator.bind_native_sentinel_coverage(evidence))
     }
@@ -237,6 +314,7 @@ impl AutomaticManagedOperation {
         stream: AutomaticObservationStream,
         chunk: &[u8],
     ) -> Result<(), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
         self.shared.with_coordinator(|coordinator| {
             coordinator.write_observation(session_id, stream, chunk)
         })
@@ -246,6 +324,13 @@ impl AutomaticManagedOperation {
         &mut self,
         completion: reproit_core::model::TriggerCompletion,
     ) -> Result<(), Error> {
+        let _engine_call_guard = native_sentinel::engine_call_scope();
+        if let Some(handle) = self.sentinel_handle.take()
+            && let OperationCoverage::CleanKernelTrace(evidence) =
+                native_sentinel::operation_finished(handle)
+        {
+            self.bind_native_sentinel_coverage(&evidence.encode())?;
+        }
         let coordinator = self.shared.take_for_close()?;
         let capture = coordinator.close(completion)?;
         self.bind_automatic_world(capture)
@@ -277,12 +362,14 @@ impl AutomaticManagedOperation {
     }
 
     pub fn succeed(mut self) {
+        self.remove_native_sentinel_operation();
         self.shared.deactivate();
         self.sdk.succeed(self.operation_id);
         self.finished = true;
     }
 
     pub fn abandon_incomplete(mut self) {
+        self.remove_native_sentinel_operation();
         self.shared.deactivate();
         self.sdk.abandon_incomplete(self.operation_id);
         self.finished = true;
@@ -302,6 +389,13 @@ impl AutomaticManagedOperation {
             .ok_or_else(incomplete_operation)?;
         self.finished = true;
         recorded.finalize_official(closure, move || Ok(project_token))
+    }
+
+    fn remove_native_sentinel_operation(&mut self) {
+        if let Some(handle) = self.sentinel_handle.take() {
+            let _engine_call_guard = native_sentinel::engine_call_scope();
+            native_sentinel::operation_removed(handle);
+        }
     }
 }
 
@@ -374,6 +468,7 @@ impl RustOperation for AutomaticFactoryOperation {
 impl Drop for AutomaticManagedOperation {
     fn drop(&mut self) {
         if !self.finished {
+            self.remove_native_sentinel_operation();
             self.shared.deactivate();
             self.sdk.abandon_incomplete(self.operation_id);
         }
@@ -386,6 +481,19 @@ fn new_capture_id() -> Result<CaptureId, Error> {
 
 fn new_operation_id() -> Result<OperationId, Error> {
     format!("op_{}", Uuid::now_v7()).parse()
+}
+
+fn next_native_operation_handle() -> Result<u64, Error> {
+    NEXT_NATIVE_OPERATION_HANDLE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |handle| {
+            handle.checked_add(1)
+        })
+        .map_err(|_| {
+            Error::new(
+                ErrorCode::RuntimeQuota,
+                "The native operation limit was reached.",
+            )
+        })
 }
 
 fn incomplete_operation() -> Error {

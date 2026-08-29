@@ -15,6 +15,7 @@ libc.workspace = true
 reproit-backend.workspace = true
 reproit-core.workspace = true
 reproit-sdk-rust = { path = "../reproit-sdk-rust" }
+reproit-sdk-sentinel = { path = "../reproit-sdk-sentinel", version = "=1.0.0" }
 serde.workspace = true
 serde_json.workspace = true
 

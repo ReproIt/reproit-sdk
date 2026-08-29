@@ -180,6 +180,7 @@
   },
   "symbols": {
     "abi_version": "reproit_sdk_engine_abi_version",
-    "call": "reproit_sdk_engine_call"
+    "call": "reproit_sdk_engine_call",
+    "capture_probe": "reproit_sdk_engine_capture_probe"
   }
 }

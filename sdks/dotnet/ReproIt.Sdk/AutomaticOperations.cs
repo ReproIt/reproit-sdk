@@ -98,6 +98,7 @@ public sealed class AutomaticCaptureException() : Exception(
 public sealed class AutomaticProject : IDisposable
 {
     private readonly AutomaticHttpAdapterLease httpAdapter;
+    private readonly AutomaticNativeGuardLease nativeGuard;
     private readonly SdkEngineBridge bridge;
     private readonly object stateLock = new();
     private readonly Func<ManagedProjectToken>? tokenProvider;
@@ -109,12 +110,14 @@ public sealed class AutomaticProject : IDisposable
         SdkEngineBridge bridge,
         SdkEngineHandle handle,
         Func<ManagedProjectToken>? tokenProvider,
-        AutomaticHttpAdapterLease httpAdapter)
+        AutomaticHttpAdapterLease httpAdapter,
+        AutomaticNativeGuardLease nativeGuard)
     {
         this.bridge = bridge;
         this.handle = handle;
         this.tokenProvider = tokenProvider;
         this.httpAdapter = httpAdapter;
+        this.nativeGuard = nativeGuard;
     }
 
     /// <summary>Opens the packaged shared engine for one running .NET subject.</summary>
@@ -142,8 +145,10 @@ public sealed class AutomaticProject : IDisposable
         DotnetSubjectPackage subject)
     {
         AutomaticHttpAdapterLease? httpAdapter = null;
+        AutomaticNativeGuardLease? nativeGuard = null;
         try
         {
+            nativeGuard = AutomaticNativeGuard.Acquire(subject.AdapterImplementationDigest);
             httpAdapter = AutomaticHttpAdapter.Acquire(subject.AdapterImplementationDigest);
             List<SdkEngineSubjectObject> objects = subject.Objects
                 .Select(value => value.Size > 0
@@ -159,11 +164,12 @@ public sealed class AutomaticProject : IDisposable
                 subject.Manifest,
                 objects));
             return new AutomaticProject(
-                bridge, handle, options.ProjectTokenProvider, httpAdapter);
+                bridge, handle, options.ProjectTokenProvider, httpAdapter, nativeGuard);
         }
         catch (Exception)
         {
             httpAdapter?.Dispose();
+            nativeGuard?.Dispose();
             bridge.Dispose();
             throw CaptureError();
         }
@@ -282,6 +288,7 @@ public sealed class AutomaticProject : IDisposable
             }
             bridge.Dispose();
             httpAdapter.Dispose();
+            nativeGuard.Dispose();
         }
     }
 

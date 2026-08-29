@@ -249,10 +249,16 @@ fn ensure_state_root(path: &Path) -> Result<(), Error> {
             Err(_) => return Err(state_root_unavailable()),
         }
     }
-    let metadata = fs::symlink_metadata(path).map_err(|_| state_root_unavailable())?;
     #[cfg(unix)]
-    if metadata.permissions().mode() & 0o022 != 0 {
-        return Err(state_root_invalid());
+    {
+        let metadata = fs::symlink_metadata(path).map_err(|_| state_root_unavailable())?;
+        if metadata.permissions().mode() & 0o022 != 0 {
+            return Err(state_root_invalid());
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        fs::symlink_metadata(path).map_err(|_| state_root_unavailable())?;
     }
     Ok(())
 }
@@ -269,9 +275,12 @@ fn ensure_private_directory(path: &Path) -> Result<(), Error> {
 }
 
 fn create_private_directory(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
     let mut builder = DirBuilder::new();
     #[cfg(unix)]
     builder.mode(0o700);
+    #[cfg(not(unix))]
+    let builder = DirBuilder::new();
     builder.create(path).map_err(|_| state_root_unavailable())
 }
 

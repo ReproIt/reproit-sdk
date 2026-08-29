@@ -3,6 +3,7 @@ members = [
     "crates/reproit-sdk-engine",
     "crates/reproit-sdk-rust",
     "crates/reproit-sdk-rust-axum",
+    "crates/reproit-sdk-sentinel",
 ]
 resolver = "3"
 

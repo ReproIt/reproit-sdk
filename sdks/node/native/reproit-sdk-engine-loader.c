@@ -28,6 +28,7 @@
 #endif
 
 typedef uint32_t (*engine_abi_version_fn)(void);
+typedef uint32_t (*engine_capture_probe_fn)(void);
 typedef intptr_t (*engine_call_fn)(
     const void *input,
     size_t input_len,
@@ -36,6 +37,7 @@ typedef intptr_t (*engine_call_fn)(
 
 static engine_abi_version_fn engine_abi_version = NULL;
 static engine_call_fn engine_call = NULL;
+static engine_capture_probe_fn engine_capture_probe = NULL;
 
 static napi_value initialize(napi_env env, napi_value exports);
 
@@ -96,7 +98,11 @@ static bool load_engine(void) {
   engine_call = (engine_call_fn)(void *)GetProcAddress(
       engine,
       "reproit_sdk_engine_call");
-  return engine_abi_version != NULL && engine_call != NULL;
+  engine_capture_probe = (engine_capture_probe_fn)(void *)GetProcAddress(
+      engine,
+      "reproit_sdk_engine_capture_probe");
+  return engine_abi_version != NULL && engine_call != NULL &&
+      engine_capture_probe != NULL;
 }
 #else
 static bool load_engine(void) {
@@ -126,11 +132,21 @@ static bool load_engine(void) {
   if (engine == NULL) return false;
   void *abi_symbol = dlsym(engine, "reproit_sdk_engine_abi_version");
   void *call_symbol = dlsym(engine, "reproit_sdk_engine_call");
-  if (abi_symbol == NULL || call_symbol == NULL) return false;
+  void *capture_probe_symbol = dlsym(engine, "reproit_sdk_engine_capture_probe");
+  if (abi_symbol == NULL || call_symbol == NULL || capture_probe_symbol == NULL) {
+    return false;
+  }
   _Static_assert(sizeof(engine_abi_version) == sizeof(abi_symbol), "ABI pointer size");
   _Static_assert(sizeof(engine_call) == sizeof(call_symbol), "call pointer size");
+  _Static_assert(
+      sizeof(engine_capture_probe) == sizeof(capture_probe_symbol),
+      "capture probe pointer size");
   memcpy(&engine_abi_version, &abi_symbol, sizeof(engine_abi_version));
   memcpy(&engine_call, &call_symbol, sizeof(engine_call));
+  memcpy(
+      &engine_capture_probe,
+      &capture_probe_symbol,
+      sizeof(engine_capture_probe));
   return true;
 }
 #endif

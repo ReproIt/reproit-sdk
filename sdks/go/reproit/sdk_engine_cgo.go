@@ -9,6 +9,7 @@ package reproit
 #include <stdlib.h>
 
 typedef uint32_t (*reproit_sdk_engine_abi_version_fn)(void);
+typedef uint32_t (*reproit_sdk_engine_capture_probe_fn)(void);
 typedef intptr_t (*reproit_sdk_engine_call_fn)(
     const void *, size_t, void *, size_t);
 
@@ -16,6 +17,7 @@ typedef struct {
     void *library;
     reproit_sdk_engine_abi_version_fn abi_version;
     reproit_sdk_engine_call_fn call;
+    reproit_sdk_engine_capture_probe_fn capture_probe;
 } reproit_sdk_engine_handle;
 
 static reproit_sdk_engine_handle *reproit_open_sdk_engine(const char *name) {
@@ -33,7 +35,10 @@ static reproit_sdk_engine_handle *reproit_open_sdk_engine(const char *name) {
         dlsym(library, "reproit_sdk_engine_abi_version");
     handle->call = (reproit_sdk_engine_call_fn)
         dlsym(library, "reproit_sdk_engine_call");
-    if (handle->abi_version == NULL || handle->call == NULL) {
+    handle->capture_probe = (reproit_sdk_engine_capture_probe_fn)
+        dlsym(library, "reproit_sdk_engine_capture_probe");
+    if (handle->abi_version == NULL || handle->call == NULL ||
+        handle->capture_probe == NULL) {
         dlclose(library);
         free(handle);
         return NULL;

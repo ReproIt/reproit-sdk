@@ -15,6 +15,7 @@ hickory-resolver.workspace = true
 reproit-backend.workspace = true
 reproit-cloud-api.workspace = true
 reproit-core.workspace = true
+reproit-sdk-sentinel = { path = "../reproit-sdk-sentinel", version = "=1.0.0" }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 serde.workspace = true
@@ -33,6 +34,11 @@ serde_json.workspace = true
 
 [[bench]]
 name = "capture"
+harness = false
+
+[[test]]
+name = "automatic_native"
+path = "tests/automatic_native.rs"
 harness = false
 
 [lints]

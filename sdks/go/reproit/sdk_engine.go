@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	sdkEngineABIContractDigest                  = "sha256:72e11b757a7a8e7d76b445001801acc349bc051b041d2e77ed784e731a60eb78"
+	sdkEngineABIContractDigest                  = "sha256:b44f8f670ee31066c81a37876543b6fbce70215e69ed2b0aa6a4aa1ae1b4de47"
 	sdkEngineABIVersion                         = uint32(1)
 	sdkEngineMaxEvidenceBytes                   = 785_408
 	sdkEngineMaxObservationAdapters             = 7
@@ -25,6 +25,7 @@ const (
 	engineResponseFormat                        = "reproit.sdk-engine-response.v1"
 	sdkEngineABIVersionSymbol                   = "reproit_sdk_engine_abi_version"
 	sdkEngineCallSymbol                         = "reproit_sdk_engine_call"
+	sdkEngineCaptureProbeSymbol                 = "reproit_sdk_engine_capture_probe"
 )
 
 var (
@@ -181,7 +182,9 @@ func expectedSDKEngineContract() map[string]any {
 			"format": engineResponseFormat, "output_capacity_bytes": sdkEngineOutputCapacity,
 		},
 		"symbols": map[string]any{
-			"abi_version": sdkEngineABIVersionSymbol, "call": sdkEngineCallSymbol,
+			"abi_version":   sdkEngineABIVersionSymbol,
+			"call":          sdkEngineCallSymbol,
+			"capture_probe": sdkEngineCaptureProbeSymbol,
 		},
 	}
 }

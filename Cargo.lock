@@ -1582,6 +1582,7 @@ dependencies = [
  "reproit-backend",
  "reproit-core",
  "reproit-sdk-rust",
+ "reproit-sdk-sentinel",
  "serde",
  "serde_json",
  "tempfile",
@@ -1599,6 +1600,7 @@ dependencies = [
  "reproit-backend",
  "reproit-cloud-api",
  "reproit-core",
+ "reproit-sdk-sentinel",
  "rustls",
  "rustls-platform-verifier",
  "serde",
@@ -1622,6 +1624,14 @@ dependencies = [
  "serde",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "reproit-sdk-sentinel"
+version = "1.0.0"
+dependencies = [
+ "libc",
+ "reproit-core",
 ]
 
 [[package]]
