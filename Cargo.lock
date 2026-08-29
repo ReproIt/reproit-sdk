@@ -1533,7 +1533,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "reproit-backend"
 version = "1.0.0"
-source = "git+https://github.com/ReproIt/reproit-core?rev=437c899713c43e41f235a493ef04b084b3953d43#437c899713c43e41f235a493ef04b084b3953d43"
+source = "git+https://github.com/ReproIt/reproit-core?rev=01b1f55f7f859b9610cec5e89a0a2b0ac2a886c3#01b1f55f7f859b9610cec5e89a0a2b0ac2a886c3"
 dependencies = [
  "reproit-core",
  "serde",
@@ -1544,18 +1544,19 @@ dependencies = [
 [[package]]
 name = "reproit-cloud-api"
 version = "1.0.0"
-source = "git+https://github.com/ReproIt/reproit-core?rev=437c899713c43e41f235a493ef04b084b3953d43#437c899713c43e41f235a493ef04b084b3953d43"
+source = "git+https://github.com/ReproIt/reproit-core?rev=01b1f55f7f859b9610cec5e89a0a2b0ac2a886c3#01b1f55f7f859b9610cec5e89a0a2b0ac2a886c3"
 dependencies = [
  "reproit-core",
  "secrecy",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
 name = "reproit-core"
 version = "1.0.0"
-source = "git+https://github.com/ReproIt/reproit-core?rev=437c899713c43e41f235a493ef04b084b3953d43#437c899713c43e41f235a493ef04b084b3953d43"
+source = "git+https://github.com/ReproIt/reproit-core?rev=01b1f55f7f859b9610cec5e89a0a2b0ac2a886c3#01b1f55f7f859b9610cec5e89a0a2b0ac2a886c3"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1589,6 +1590,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reproit-sdk-platform"
+version = "1.0.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "reproit-sdk-rust"
 version = "1.0.0"
 dependencies = [
@@ -1600,6 +1609,7 @@ dependencies = [
  "reproit-backend",
  "reproit-cloud-api",
  "reproit-core",
+ "reproit-sdk-platform",
  "reproit-sdk-sentinel",
  "rustls",
  "rustls-platform-verifier",

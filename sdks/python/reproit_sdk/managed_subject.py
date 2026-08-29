@@ -58,6 +58,7 @@ _ARCHITECTURES = {
 _OPERATING_SYSTEMS = {
     "darwin": "operating-system.macos",
     "linux": "operating-system.linux",
+    "win32": "operating-system.windows",
 }
 
 

@@ -23,6 +23,9 @@ Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store. Do not put
 tracked configuration. The SDK works in a host process or an OCI container. It does not require a
 container engine, sidecar, orchestrator, or container control socket.
 
+Read the [platform architecture](docs/platforms.md) for the native target matrix,
+provider boundary, and replay compatibility rules.
+
 ## Maintain the SDKs
 
 This repository pins the shared contract revision in `core-pin.json`. Run the local checks with:

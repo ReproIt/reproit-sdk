@@ -599,6 +599,20 @@ fn bind_subject(
     deployment: &mut Deployment,
     manifest: &SubjectClosureManifest,
 ) -> Result<(), Error> {
+    let platform = reproit_sdk_platform::host_platform().map_err(|_| {
+        Error::new(
+            ErrorCode::Unsupported,
+            "This host does not have a supported Backend platform descriptor.",
+        )
+    })?;
+    if manifest.architecture != platform.architecture
+        || manifest.operating_system != platform.operating_system
+    {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "The subject platform does not match the capture host.",
+        ));
+    }
     deployment.processing_mode = ProcessingMode::Managed;
     deployment.subject = Subject {
         architecture: manifest.architecture.clone(),
@@ -613,6 +627,7 @@ fn bind_subject(
         working_directory: manifest.launch.working_directory.clone(),
     };
     deployment.runtime_capabilities.extend([
+        platform.runtime_abi.to_owned(),
         manifest.architecture.clone(),
         manifest.operating_system.clone(),
     ]);
@@ -642,7 +657,7 @@ where
     let binding_digest = managed_deployment_binding_digest(deployment)?;
     let workload_identity = match workload_state {
         WorkloadStateLocation::Protected => {
-            ManagedWorkloadIdentityState::from_linux_environment(binding_digest)?
+            ManagedWorkloadIdentityState::from_environment(binding_digest)?
         }
         WorkloadStateLocation::Root(state_root) => {
             ManagedWorkloadIdentityState::from_state_root(state_root, binding_digest)?

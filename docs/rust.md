@@ -8,6 +8,11 @@ the process only when the native trace is healthy and every kernel-visible effec
 belongs to a supported semantic observation. An unowned effect or a trace gap
 keeps the failure local.
 
+The shared engine and subject module discovery also run on macOS and Windows.
+Automatic capture stays local on those hosts until a matching native coverage
+provider is available. Windows Rust subject delivery uses the native PDB
+artifact contract in Repro It Core.
+
 ## Install
 
 ```sh

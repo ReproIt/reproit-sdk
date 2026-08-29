@@ -19,7 +19,6 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
-	"syscall"
 	"unicode/utf8"
 )
 
@@ -50,8 +49,9 @@ var subjectArchitectures = map[string]string{
 }
 
 var subjectOperatingSystems = map[string]string{
-	"darwin": "operating-system.macos",
-	"linux":  "operating-system.linux",
+	"darwin":  "operating-system.macos",
+	"linux":   "operating-system.linux",
+	"windows": "operating-system.windows",
 }
 
 var subjectObjectKinds = map[string]bool{
@@ -381,12 +381,9 @@ func readStableSubjectFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, errSubjectUnreadable()
 	}
-	beforeStat, beforeStatOK := before.Sys().(*syscall.Stat_t)
-	afterStat, afterStatOK := after.Sys().(*syscall.Stat_t)
 	if int64(len(content)) != before.Size() || after.Size() != before.Size() ||
 		!after.ModTime().Equal(before.ModTime()) ||
-		!beforeStatOK || !afterStatOK ||
-		beforeStat.Ino != afterStat.Ino || beforeStat.Dev != afterStat.Dev {
+		!sameSubjectFileVersion(before, after) {
 		return nil, errSubjectChanging()
 	}
 	return content, nil

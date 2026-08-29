@@ -10,6 +10,7 @@ exec ./tools/with-core.sh bash -c '
   cargo fmt --all -- --check
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo test --workspace --all-targets --locked
+  python3 tools/sdk-engine-release/test_release.py
   uv run --project sdks/python --frozen pytest sdks/python/tests
   (cd sdks/go && go test ./... && go vet ./...)
   (cd sdks/node && npm test)

@@ -8,6 +8,9 @@ clock, database, environment, filesystem, queue, and randomness classes. The
 shared Linux sentinel keeps a failure local when a kernel-visible effect is
 unowned or the native trace is incomplete.
 
+The packaged engine loads on macOS and Windows. Automatic capture stays local on
+those hosts until a matching native coverage provider is available.
+
 ## Install
 
 ```sh

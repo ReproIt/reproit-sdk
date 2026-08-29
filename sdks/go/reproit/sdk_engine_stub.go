@@ -1,4 +1,4 @@
-//go:build !cgo || (!linux && !darwin)
+//go:build !windows && (!cgo || (!linux && !darwin))
 
 package reproit
 

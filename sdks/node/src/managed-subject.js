@@ -81,6 +81,7 @@ const ARCHITECTURES = {
 const OPERATING_SYSTEMS = {
   darwin: "operating-system.macos",
   linux: "operating-system.linux",
+  win32: "operating-system.windows",
 };
 
 // The frozen manifest plus content-addressed object files in a spool.

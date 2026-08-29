@@ -163,7 +163,22 @@ function resolveRuntimeModule(reportedPath) {
   ) {
     return null;
   }
+  if (process.platform === "win32" && isWindowsSystemModule(reportedPath)) {
+    return null;
+  }
   return exactRuntimePath(reportedPath);
+}
+
+function isWindowsSystemModule(modulePath) {
+  const systemRoot = process.env.SystemRoot;
+  if (typeof systemRoot !== "string" || !path.isAbsolute(systemRoot)) {
+    throw subjectUnsupported();
+  }
+  const relative = path.relative(systemRoot, modulePath);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
 }
 
 function captureRuntimeFile(filePath, spool, state) {

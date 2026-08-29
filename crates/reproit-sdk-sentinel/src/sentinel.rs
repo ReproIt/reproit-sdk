@@ -1,7 +1,7 @@
-//! Bounded Linux coverage sentinel for automatic World capture.
+//! Bounded native coverage sentinel for automatic World capture.
 //!
-//! The sentinel detects unowned kernel-visible effects. It never reads syscall
-//! arguments or copies application payload bytes. A clean trace is one part of
+//! A platform provider detects unowned native effects. It never copies
+//! application payload bytes. Complete evidence is one part of
 //! World coverage. The engine can bind it only when all seven semantic adapter
 //! classes are registered. Official package validation must prove that the
 //! registered hooks are installed. Registration alone does not prove this.
@@ -21,18 +21,20 @@ static SENTINEL: OnceLock<Mutex<Controller>> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationCoverage {
     Incomplete,
-    CleanKernelTrace(KernelTraceEvidence),
+    CleanKernelTrace(NativeCoverageEvidence),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct KernelTraceEvidence {
+pub struct NativeCoverageEvidence {
     start_sequence: u64,
     end_sequence: u64,
     relevant_events: u64,
     owned_events: u64,
 }
 
-impl KernelTraceEvidence {
+pub type KernelTraceEvidence = NativeCoverageEvidence;
+
+impl NativeCoverageEvidence {
     #[must_use]
     pub fn encode(self) -> [u8; 40] {
         const FORMAT: u64 = 1;
@@ -344,7 +346,7 @@ const fn coverage_result(
     {
         OperationCoverage::Incomplete
     } else {
-        OperationCoverage::CleanKernelTrace(KernelTraceEvidence {
+        OperationCoverage::CleanKernelTrace(NativeCoverageEvidence {
             start_sequence: operation.start_sequence,
             end_sequence,
             relevant_events: operation.relevant_events,
@@ -420,7 +422,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clean_kernel_trace_does_not_claim_full_world_coverage() {
+    fn complete_native_evidence_does_not_claim_full_world_coverage() {
         let operation = ActiveOperation {
             start_sequence: 7,
             relevant_events: 2,
@@ -429,7 +431,7 @@ mod tests {
         };
         assert_eq!(
             coverage_result(operation, true, 9),
-            OperationCoverage::CleanKernelTrace(KernelTraceEvidence {
+            OperationCoverage::CleanKernelTrace(NativeCoverageEvidence {
                 start_sequence: 7,
                 end_sequence: 9,
                 relevant_events: 2,
@@ -484,7 +486,7 @@ mod tests {
 
     #[test]
     fn clean_coverage_evidence_has_one_fixed_encoding() {
-        let evidence = KernelTraceEvidence {
+        let evidence = NativeCoverageEvidence {
             start_sequence: 1,
             end_sequence: 2,
             relevant_events: 3,

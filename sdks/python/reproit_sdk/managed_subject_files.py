@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import ctypes
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -31,6 +32,7 @@ MAX_SUBJECT_OBJECT_BYTES = 512 * 1024 * 1024
 MAX_SUBJECT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SUBJECT_PATH_BYTES = 4_096
 MAX_LINUX_MAPS_BYTES = 1_048_576
+MAX_NATIVE_MODULE_PATH_CODE_UNITS = 32_767
 
 _IGNORED_DIRECTORY_NAMES = frozenset({"__pycache__"})
 _IGNORED_DEPENDENCY_NAMES = frozenset({"REQUESTED", "py.typed"})
@@ -708,9 +710,7 @@ def _capture_loaded_native_modules(
     builder: _ClosureBuilder,
     runtime_root: str,
 ) -> list[CapturedPythonFile]:
-    if not sys.platform.startswith("linux"):
-        return []
-    paths = _loaded_linux_module_paths()
+    paths = _loaded_native_module_paths()
     captured = []
     for source in sorted(paths):
         try:
@@ -735,9 +735,19 @@ def _capture_loaded_native_modules(
                 module=True,
             )
         )
-    if _loaded_linux_module_paths() != paths:
+    if _loaded_native_module_paths() != paths:
         raise _subject_changing()
     return captured
+
+
+def _loaded_native_module_paths() -> set[str]:
+    if sys.platform.startswith("linux"):
+        return _loaded_linux_module_paths()
+    if sys.platform == "darwin":
+        return _loaded_macos_module_paths()
+    if sys.platform == "win32":
+        return _loaded_windows_module_paths()
+    raise _subject_unsupported()
 
 
 def _loaded_linux_module_paths() -> set[str]:
@@ -765,6 +775,108 @@ def _loaded_linux_module_paths() -> set[str]:
         if len(paths) > MAX_RUNTIME_FILES:
             raise _subject_unbounded()
     return paths
+
+
+def _loaded_macos_module_paths() -> set[str]:
+    try:
+        process = ctypes.CDLL(None)
+        image_count = process._dyld_image_count
+        image_count.argtypes = []
+        image_count.restype = ctypes.c_uint32
+        image_name = process._dyld_get_image_name
+        image_name.argtypes = [ctypes.c_uint32]
+        image_name.restype = ctypes.c_char_p
+        count = image_count()
+    except (AttributeError, OSError) as error:
+        raise _subject_unreadable() from error
+    if count == 0 or count > MAX_RUNTIME_FILES:
+        raise _subject_unbounded()
+    paths: set[str] = set()
+    for index in range(count):
+        raw = image_name(index)
+        if raw is None:
+            raise _subject_unreadable()
+        source = os.path.realpath(os.fsdecode(raw))
+        if not os.path.isabs(source):
+            raise _subject_unsupported()
+        if source.startswith(("/System/Library/", "/usr/lib/")):
+            continue
+        paths.add(source)
+    return paths
+
+
+def _loaded_windows_module_paths() -> set[str]:
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        psapi.EnumProcessModules.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        psapi.EnumProcessModules.restype = ctypes.c_int
+        psapi.GetModuleFileNameExW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_wchar),
+            ctypes.c_ulong,
+        ]
+        psapi.GetModuleFileNameExW.restype = ctypes.c_ulong
+        process = kernel32.GetCurrentProcess()
+        modules = (ctypes.c_void_p * MAX_RUNTIME_FILES)()
+        needed = ctypes.c_ulong()
+        buffer_bytes = ctypes.sizeof(modules)
+        if not psapi.EnumProcessModules(
+            process,
+            modules,
+            buffer_bytes,
+            ctypes.byref(needed),
+        ):
+            raise _subject_unreadable()
+        pointer_bytes = ctypes.sizeof(ctypes.c_void_p)
+        if (
+            needed.value == 0
+            or needed.value > buffer_bytes
+            or needed.value % pointer_bytes != 0
+        ):
+            raise _subject_unbounded()
+        count = needed.value // pointer_bytes
+        system_root = os.environ.get("SystemRoot")
+        if not system_root or not os.path.isabs(system_root):
+            raise _subject_unsupported()
+        system_root = os.path.normcase(os.path.realpath(system_root))
+        paths: set[str] = set()
+        for index in range(count):
+            buffer = ctypes.create_unicode_buffer(
+                MAX_NATIVE_MODULE_PATH_CODE_UNITS
+            )
+            length = psapi.GetModuleFileNameExW(
+                process,
+                modules[index],
+                buffer,
+                len(buffer),
+            )
+            if length == 0 or length >= len(buffer):
+                raise _subject_unreadable()
+            source = os.path.realpath(buffer.value)
+            if not os.path.isabs(source):
+                raise _subject_unsupported()
+            normalized = os.path.normcase(source)
+            try:
+                inside_system = (
+                    os.path.commonpath((system_root, normalized))
+                    == system_root
+                )
+            except ValueError as error:
+                raise _subject_unsupported() from error
+            if not inside_system:
+                paths.add(source)
+        return paths
+    except OSError as error:
+        raise _subject_unreadable() from error
 
 
 def _runtime_member(runtime_root: str, path: str) -> str:

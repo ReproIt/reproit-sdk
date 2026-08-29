@@ -1,5 +1,4 @@
 use std::{
-    env,
     ffi::OsStr,
     fs::{self, DirBuilder, File, OpenOptions},
     io::{Read as _, Write as _},
@@ -70,15 +69,20 @@ pub struct ManagedWorkloadIdentityState {
 }
 
 impl ManagedWorkloadIdentityState {
-    pub fn from_linux_environment(binding_digest: Digest) -> Result<Self, Error> {
-        let state_root = linux_state_root(
-            env::var_os("XDG_STATE_HOME").as_deref(),
-            env::var_os("HOME").as_deref(),
-        )?;
+    pub fn from_environment(binding_digest: Digest) -> Result<Self, Error> {
+        let state_root =
+            reproit_sdk_platform::managed_state_root().map_err(|_| state_root_invalid())?;
         Self::from_state_root(&state_root, binding_digest)
     }
 
+    #[deprecated(note = "Use from_environment for portable managed identity state.")]
+    pub fn from_linux_environment(binding_digest: Digest) -> Result<Self, Error> {
+        Self::from_environment(binding_digest)
+    }
+
     pub fn from_state_root(state_root: &Path, binding_digest: Digest) -> Result<Self, Error> {
+        reproit_sdk_platform::validate_managed_state_root(state_root)
+            .map_err(|_| state_root_invalid())?;
         ensure_state_root(state_root)?;
         let reproit = state_root.join("reproit");
         ensure_private_directory(&reproit)?;
@@ -198,39 +202,8 @@ pub fn load_or_create_managed_workload_key(path: &Path) -> Result<SecretKey, Err
     }
 }
 
-fn linux_state_root(
-    xdg_state_home: Option<&OsStr>,
-    home: Option<&OsStr>,
-) -> Result<PathBuf, Error> {
-    if let Some(xdg_state_home) = xdg_state_home.filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(xdg_state_home);
-        validate_absolute_clean_path(&path)?;
-        return Ok(path);
-    }
-    let home = home
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(state_root_invalid)?;
-    validate_absolute_clean_path(&home)?;
-    Ok(home.join(".local/state"))
-}
-
-fn validate_absolute_clean_path(path: &Path) -> Result<(), Error> {
-    if !path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::CurDir | Component::ParentDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(state_root_invalid());
-    }
-    Ok(())
-}
-
 fn ensure_state_root(path: &Path) -> Result<(), Error> {
-    validate_absolute_clean_path(path)?;
+    reproit_sdk_platform::validate_managed_state_root(path).map_err(|_| state_root_invalid())?;
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
@@ -350,6 +323,15 @@ fn atomic_create_from_temporary(
     Ok(created)
 }
 
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
+fn sync_directory(_: &Path) -> Result<(), Error> {
+    // Windows has no supported equivalent of a Unix directory fsync. The file
+    // data is flushed before the atomic hard link is created.
+    Ok(())
+}
+
+#[cfg(not(windows))]
 fn sync_directory(path: &Path) -> Result<(), Error> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
@@ -557,33 +539,4 @@ fn deployment_metadata_unavailable() -> Error {
         ErrorCode::ServiceUnavailable,
         "The managed deployment metadata is unavailable.",
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn linux_state_root_prefers_absolute_xdg_and_falls_back_to_home() {
-        assert_eq!(
-            linux_state_root(
-                Some(OsStr::new("/state")),
-                Some(OsStr::new("/account/user"))
-            )
-            .unwrap(),
-            PathBuf::from("/state")
-        );
-        assert_eq!(
-            linux_state_root(None, Some(OsStr::new("/account/user"))).unwrap(),
-            PathBuf::from("/account/user/.local/state")
-        );
-        assert!(
-            linux_state_root(
-                Some(OsStr::new("relative")),
-                Some(OsStr::new("/account/user"))
-            )
-            .is_err()
-        );
-        assert!(linux_state_root(None, Some(OsStr::new("relative"))).is_err());
-    }
 }

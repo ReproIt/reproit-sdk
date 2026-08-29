@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(windows)]
+use reproit_core::model::classify_pdb_prefix;
 use reproit_core::{
     Error, ErrorCode, canonical,
     crypto::encode_base64url,
@@ -19,7 +21,9 @@ use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
+#[cfg(target_os = "linux")]
 const LINUX_RUNNING_EXECUTABLE: &str = "/proc/self/exe";
+#[cfg(target_os = "linux")]
 const MAX_LINUX_MAPS_BYTES: u64 = 1_048_576;
 const MAX_SUBJECT_FILES: usize = 32_767;
 
@@ -97,17 +101,119 @@ impl SubjectPackage {
 }
 
 pub fn package_running_rust_subject() -> Result<RustSubjectPackage, Error> {
-    if cfg!(target_os = "linux") {
-        package_linux_subject()
-    } else {
-        Err(unsupported_host())
-    }
+    #[cfg(target_os = "linux")]
+    return package_linux_subject();
+
+    #[cfg(target_os = "macos")]
+    return package_macos_subject();
+
+    #[cfg(windows)]
+    return package_windows_subject();
+
+    #[cfg(any(target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+    return package_bsd_subject();
+
+    #[allow(unreachable_code)]
+    Err(unsupported_host())
 }
 
+#[cfg(any(target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+fn package_bsd_subject() -> Result<RustSubjectPackage, Error> {
+    let executable = fs::canonicalize(std::env::current_exe().map_err(subject_unreadable)?)
+        .map_err(subject_unreadable)?;
+    let paths = reproit_sdk_platform::loaded_module_paths()
+        .map_err(platform_module_error)?
+        .into_iter()
+        .filter(|path| path != &executable)
+        .collect::<BTreeSet<_>>();
+    package_native_subject(
+        &executable,
+        paths,
+        path_file_source,
+        &NativeDebugArtifact::EmbeddedDwarf,
+    )
+}
+
+#[cfg(target_os = "linux")]
 fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
     let executable = std::env::current_exe().map_err(subject_unreadable)?;
     let paths = loaded_linux_modules(&executable)?;
-    if paths.len().saturating_add(1) > MAX_SUBJECT_FILES {
+    package_native_subject(
+        &executable,
+        paths,
+        running_executable_source,
+        &NativeDebugArtifact::EmbeddedDwarf,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn package_macos_subject() -> Result<RustSubjectPackage, Error> {
+    let executable = fs::canonicalize(std::env::current_exe().map_err(subject_unreadable)?)
+        .map_err(subject_unreadable)?;
+    let paths = reproit_sdk_platform::loaded_module_paths()
+        .map_err(platform_module_error)?
+        .into_iter()
+        .filter(|path| path != &executable && !macos_system_module(path))
+        .collect::<BTreeSet<_>>();
+    package_native_subject(
+        &executable,
+        paths,
+        path_file_source,
+        &NativeDebugArtifact::EmbeddedDwarf,
+    )
+}
+
+#[cfg(windows)]
+fn package_windows_subject() -> Result<RustSubjectPackage, Error> {
+    let executable = fs::canonicalize(std::env::current_exe().map_err(subject_unreadable)?)
+        .map_err(subject_unreadable)?;
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .ok_or_else(subject_unsupported)?;
+    let system_root = fs::canonicalize(system_root).map_err(subject_unreadable)?;
+    let paths = reproit_sdk_platform::loaded_module_paths()
+        .map_err(platform_module_error)?
+        .into_iter()
+        .filter(|path| path != &executable && !windows_system_module(path, &system_root))
+        .collect::<BTreeSet<_>>();
+    let pdb = adjacent_native_pdb(&executable)?;
+    package_native_subject(
+        &executable,
+        paths,
+        path_file_source,
+        &NativeDebugArtifact::AdjacentNativePdb(pdb),
+    )
+}
+
+enum NativeDebugArtifact {
+    EmbeddedDwarf,
+    #[cfg(windows)]
+    AdjacentNativePdb(PathBuf),
+}
+
+impl NativeDebugArtifact {
+    const fn file_count(&self) -> usize {
+        match self {
+            Self::EmbeddedDwarf => 0,
+            #[cfg(windows)]
+            Self::AdjacentNativePdb(_) => 1,
+        }
+    }
+}
+
+fn package_native_subject(
+    executable: &Path,
+    paths: BTreeSet<PathBuf>,
+    executable_source: for<'a> fn(&'a Path) -> FileSource<'a>,
+    debug_artifact: &NativeDebugArtifact,
+) -> Result<RustSubjectPackage, Error> {
+    let debug_artifact_files = debug_artifact.file_count();
+    if paths
+        .len()
+        .saturating_add(1)
+        .saturating_add(debug_artifact_files)
+        > MAX_SUBJECT_FILES
+    {
         return Err(subject_unbounded());
     }
     let spool = tempfile::Builder::new()
@@ -115,10 +221,15 @@ fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
         .tempdir()
         .map_err(subject_unreadable)?;
     let mut reservation = crate::resources::LogicalByteReservation::new();
-    let mut captured = Vec::with_capacity(paths.len().saturating_add(1));
+    let mut captured = Vec::with_capacity(
+        paths
+            .len()
+            .saturating_add(1)
+            .saturating_add(debug_artifact_files),
+    );
     captured.push(capture_file(
-        &executable,
-        FileSource::RunningExecutable,
+        executable,
+        executable_source(executable),
         spool.path(),
         SubjectObjectKind::Application,
         EmptyFilePolicy::Rejected,
@@ -134,16 +245,90 @@ fn package_linux_subject() -> Result<RustSubjectPackage, Error> {
             &mut reservation,
         )?);
     }
-    if !captured
-        .iter()
-        .find(|file| file.source_path == executable)
-        .is_some_and(|file| file.has_dwarf)
-    {
-        return Err(debug_artifact_missing());
+    match debug_artifact {
+        NativeDebugArtifact::EmbeddedDwarf => {
+            if !captured
+                .iter()
+                .find(|file| file.source_path == executable)
+                .is_some_and(|file| file.has_dwarf)
+            {
+                return Err(debug_artifact_missing());
+            }
+        }
+        #[cfg(windows)]
+        NativeDebugArtifact::AdjacentNativePdb(path) => {
+            let mut artifact = capture_file(
+                path,
+                FileSource::Path(path),
+                spool.path(),
+                SubjectObjectKind::DebugArtifact,
+                EmptyFilePolicy::Rejected,
+                &mut reservation,
+            )?;
+            let prefix = pdb_prefix(&artifact.spool_path)?;
+            if classify_pdb_prefix(&prefix) != Some(DebugArtifactKind::NativePdb) {
+                return Err(debug_artifact_missing());
+            }
+            artifact.debug_artifact_kind = Some(DebugArtifactKind::NativePdb);
+            captured.push(artifact);
+        }
     }
-    build_package(spool, &captured, &executable, reservation)
+    build_package(spool, &captured, executable, reservation)
 }
 
+#[cfg(windows)]
+fn adjacent_native_pdb(executable: &Path) -> Result<PathBuf, Error> {
+    let path = executable.with_extension("pdb");
+    let metadata = fs::symlink_metadata(&path).map_err(|_| debug_artifact_missing())?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(debug_artifact_missing());
+    }
+    fs::canonicalize(path).map_err(subject_unreadable)
+}
+
+#[cfg(windows)]
+fn pdb_prefix(path: &Path) -> Result<[u8; 32], Error> {
+    let mut file = File::open(path).map_err(subject_unreadable)?;
+    let mut prefix = [0_u8; 32];
+    file.read_exact(&mut prefix)
+        .map_err(|_| debug_artifact_missing())?;
+    Ok(prefix)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_system_module(path: &Path) -> bool {
+    path.starts_with("/System/Library") || path.starts_with("/usr/lib")
+}
+
+#[cfg(windows)]
+fn windows_system_module(path: &Path, system_root: &Path) -> bool {
+    let path = path.to_string_lossy();
+    let system_root = system_root.to_string_lossy();
+    path.get(..system_root.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&system_root))
+        && path
+            .as_bytes()
+            .get(system_root.len())
+            .is_none_or(|separator| matches!(*separator, b'\\' | b'/'))
+}
+
+#[cfg(any(
+    target_os = "freebsd",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    windows
+))]
+fn platform_module_error(error: reproit_sdk_platform::PlatformError) -> Error {
+    match error {
+        reproit_sdk_platform::PlatformError::Changing => subject_changing(),
+        reproit_sdk_platform::PlatformError::Unbounded => subject_unbounded(),
+        reproit_sdk_platform::PlatformError::Unreadable => subject_unreadable(error),
+        reproit_sdk_platform::PlatformError::Unsupported => subject_unsupported(),
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn loaded_linux_modules(executable: &Path) -> Result<BTreeSet<PathBuf>, Error> {
     let bytes = fs::read("/proc/self/maps").map_err(subject_unreadable)?;
     if bytes.len() as u64 > MAX_LINUX_MAPS_BYTES {
@@ -180,12 +365,14 @@ fn loaded_linux_modules(executable: &Path) -> Result<BTreeSet<PathBuf>, Error> {
     Ok(paths)
 }
 
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Eq, PartialEq)]
 struct LinuxMapLine<'a> {
     pathname: Option<&'a str>,
     permissions: &'a str,
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn parse_linux_map_line(line: &str) -> Option<LinuxMapLine<'_>> {
     let mut remaining = line;
     let address = next_linux_map_field(&mut remaining)?;
@@ -209,6 +396,7 @@ fn parse_linux_map_line(line: &str) -> Option<LinuxMapLine<'_>> {
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn next_linux_map_field<'a>(remaining: &mut &'a str) -> Option<&'a str> {
     *remaining = remaining.trim_start_matches(char::is_whitespace);
     if remaining.is_empty() {
@@ -222,12 +410,14 @@ fn next_linux_map_field<'a>(remaining: &mut &'a str) -> Option<&'a str> {
     Some(field)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn valid_address_range(address: &str) -> bool {
     address
         .split_once('-')
         .is_some_and(|(start, end)| valid_hex(start) && valid_hex(end))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn valid_permissions(permissions: &str) -> bool {
     let bytes = permissions.as_bytes();
     bytes.len() == 4
@@ -237,16 +427,19 @@ fn valid_permissions(permissions: &str) -> bool {
         && matches!(bytes[3], b'p' | b's')
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn valid_hex(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn valid_device(device: &str) -> bool {
     device
         .split_once(':')
         .is_some_and(|(major, minor)| valid_hex(major) && valid_hex(minor))
 }
 
+#[cfg(target_os = "linux")]
 fn mapped_path_is_running_executable(mapped_path: &str, executable: &Path) -> bool {
     let mapped_path = mapped_path
         .strip_suffix(" (deleted)")
@@ -255,6 +448,7 @@ fn mapped_path_is_running_executable(mapped_path: &str, executable: &Path) -> bo
 }
 
 struct CapturedFile {
+    debug_artifact_kind: Option<DebugArtifactKind>,
     digest: Digest,
     has_dwarf: bool,
     kind: SubjectObjectKind,
@@ -284,7 +478,8 @@ fn capture_file(
     if !same_file_version(
         &before,
         &source_file.metadata().map_err(subject_unreadable)?,
-    ) {
+    ) || !source_path_matches_open_file(source, &source_file)?
+    {
         return Err(subject_changing());
     }
     let mut target = File::create(&temporary_path).map_err(subject_unreadable)?;
@@ -316,7 +511,10 @@ fn capture_file(
     }
     target.flush().map_err(subject_unreadable)?;
     let after = source.metadata(&source_file).map_err(subject_unreadable)?;
-    if copied != before.len() || !same_file_version(&before, &after) {
+    if copied != before.len()
+        || !same_file_version(&before, &after)
+        || !source_path_matches_open_file(source, &source_file)?
+    {
         return Err(subject_changing());
     }
     let digest = Digest::from_bytes(hasher.finalize().into());
@@ -333,6 +531,7 @@ fn capture_file(
         Err(error) => return Err(subject_unreadable(error)),
     }
     Ok(CapturedFile {
+        debug_artifact_kind: None,
         digest,
         has_dwarf,
         kind,
@@ -345,7 +544,24 @@ fn capture_file(
 #[derive(Clone, Copy)]
 enum FileSource<'a> {
     Path(&'a Path),
+    #[cfg(target_os = "linux")]
     RunningExecutable,
+}
+
+#[cfg(target_os = "linux")]
+fn running_executable_source(_: &Path) -> FileSource<'_> {
+    FileSource::RunningExecutable
+}
+
+#[cfg(any(
+    target_os = "freebsd",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    windows
+))]
+fn path_file_source(path: &Path) -> FileSource<'_> {
+    FileSource::Path(path)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -359,6 +575,14 @@ impl<'a> FileSource<'a> {
         File::open(self.path())
     }
 
+    #[cfg(windows)]
+    fn metadata(self, opened_file: &File) -> io::Result<Metadata> {
+        match self {
+            Self::Path(_) => opened_file.metadata(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     fn metadata(self, opened_file: &File) -> io::Result<Metadata> {
         match self {
             Self::Path(path) => fs::metadata(path),
@@ -366,12 +590,32 @@ impl<'a> FileSource<'a> {
         }
     }
 
+    #[cfg(not(any(target_os = "linux", windows)))]
+    fn metadata(self, _opened_file: &File) -> io::Result<Metadata> {
+        match self {
+            Self::Path(path) => fs::metadata(path),
+        }
+    }
+
     fn path(self) -> &'a Path {
         match self {
             Self::Path(path) => path,
+            #[cfg(target_os = "linux")]
             Self::RunningExecutable => Path::new(LINUX_RUNNING_EXECUTABLE),
         }
     }
+}
+
+#[cfg(windows)]
+fn source_path_matches_open_file(source: FileSource<'_>, opened: &File) -> Result<bool, Error> {
+    let current = File::open(source.path()).map_err(subject_unreadable)?;
+    reproit_sdk_platform::same_file(opened, &current).map_err(platform_module_error)
+}
+
+#[cfg(not(windows))]
+#[allow(clippy::unnecessary_wraps)]
+fn source_path_matches_open_file(_: FileSource<'_>, _: &File) -> Result<bool, Error> {
+    Ok(true)
 }
 
 fn build_package(
@@ -435,12 +679,14 @@ fn build_package(
     let objects = assembly
         .objects
         .into_iter()
-        .map(|(digest, (kind, size))| SubjectClosureObject {
-            digest,
-            kind,
-            media_type: object_media_type(kind).to_owned(),
-            size,
-        })
+        .map(
+            |(digest, (kind, size, debug_artifact_kind))| SubjectClosureObject {
+                digest,
+                kind,
+                media_type: object_media_type(kind, debug_artifact_kind).to_owned(),
+                size,
+            },
+        )
         .collect::<Vec<_>>();
     let total_bytes = objects.iter().try_fold(0_u64, |total, object| {
         total.checked_add(object.size).ok_or_else(subject_unbounded)
@@ -449,14 +695,20 @@ fn build_package(
         return Err(subject_unbounded());
     }
     let manifest = SubjectClosureManifest {
-        architecture: linux_architecture()?.to_owned(),
+        architecture: reproit_sdk_platform::host_platform()
+            .map_err(|_| unsupported_host())?
+            .architecture
+            .to_owned(),
         debug_artifacts: assembly.debug_artifacts,
         files: assembly.files,
         format: SubjectClosureFormat::V1,
         launch,
         modules: assembly.modules,
         objects,
-        operating_system: "operating-system.linux".to_owned(),
+        operating_system: reproit_sdk_platform::host_platform()
+            .map_err(|_| unsupported_host())?
+            .operating_system
+            .to_owned(),
         runtime_family: SubjectRuntimeFamily::Rust,
         total_bytes,
     };
@@ -473,7 +725,7 @@ struct SubjectAssembly {
     debug_artifacts: Vec<DebugArtifactBinding>,
     files: Vec<SubjectFile>,
     modules: Vec<SubjectModule>,
-    objects: BTreeMap<Digest, (SubjectObjectKind, u64)>,
+    objects: BTreeMap<Digest, (SubjectObjectKind, u64, Option<DebugArtifactKind>)>,
     packaged: BTreeMap<Digest, PackagedSubjectObject>,
 }
 
@@ -496,20 +748,36 @@ fn assemble_files(
             object_digest: file.digest,
             path: subject_path.clone(),
         });
-        assembly.modules.push(SubjectModule {
-            identity: file.digest.to_string(),
-            module_digest: file.digest,
-            path: subject_path.clone(),
-        });
+        if file.kind != SubjectObjectKind::DebugArtifact {
+            assembly.modules.push(SubjectModule {
+                identity: file.digest.to_string(),
+                module_digest: file.digest,
+                path: subject_path.clone(),
+            });
+        }
         if file.source_path == executable && file.has_dwarf {
             assembly.debug_artifacts.push(DebugArtifactBinding {
                 artifact_digest: file.digest,
                 kind: DebugArtifactKind::Dwarf,
                 module_digest: file.digest,
+                path: subject_path.clone(),
+            });
+        }
+        if let Some(kind) = file.debug_artifact_kind {
+            assembly.debug_artifacts.push(DebugArtifactBinding {
+                artifact_digest: file.digest,
+                kind,
+                module_digest: executable_digest,
                 path: subject_path,
             });
         }
-        insert_object(&mut assembly.objects, file.digest, file.kind, file.size)?;
+        insert_object(
+            &mut assembly.objects,
+            file.digest,
+            file.kind,
+            file.size,
+            file.debug_artifact_kind,
+        )?;
         assembly
             .packaged
             .entry(file.digest)
@@ -532,7 +800,7 @@ fn capture_bytes(
     spool_root: &Path,
     bytes: &[u8],
     kind: SubjectObjectKind,
-    objects: &mut BTreeMap<Digest, (SubjectObjectKind, u64)>,
+    objects: &mut BTreeMap<Digest, (SubjectObjectKind, u64, Option<DebugArtifactKind>)>,
     packaged: &mut BTreeMap<Digest, PackagedSubjectObject>,
     reservation: &mut crate::resources::LogicalByteReservation,
 ) -> Result<Digest, Error> {
@@ -548,7 +816,7 @@ fn capture_bytes(
     if !path.exists() {
         fs::write(&path, bytes).map_err(subject_unreadable)?;
     }
-    insert_object(objects, digest, kind, size)?;
+    insert_object(objects, digest, kind, size, None)?;
     packaged
         .entry(digest)
         .or_insert(PackagedSubjectObject { digest, path, size });
@@ -571,17 +839,18 @@ fn reserve_subject_bytes(
 }
 
 fn insert_object(
-    objects: &mut BTreeMap<Digest, (SubjectObjectKind, u64)>,
+    objects: &mut BTreeMap<Digest, (SubjectObjectKind, u64, Option<DebugArtifactKind>)>,
     digest: Digest,
     kind: SubjectObjectKind,
     size: u64,
+    debug_artifact_kind: Option<DebugArtifactKind>,
 ) -> Result<(), Error> {
     if let Some(existing) = objects.get(&digest) {
-        if *existing != (kind, size) {
+        if *existing != (kind, size, debug_artifact_kind) {
             return Err(subject_unsupported());
         }
     } else {
-        objects.insert(digest, (kind, size));
+        objects.insert(digest, (kind, size, debug_artifact_kind));
     }
     Ok(())
 }
@@ -592,10 +861,10 @@ fn subject_file_path(file: &CapturedFile, executable_digest: Digest) -> String {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("module");
-    let category = if file.digest == executable_digest {
-        "application"
-    } else {
-        "native"
+    let category = match file.kind {
+        SubjectObjectKind::DebugArtifact => "debug",
+        _ if file.digest == executable_digest => "application",
+        _ => "native",
     };
     format!(
         "/reproit/subject/{category}/{}/{name}",
@@ -629,35 +898,50 @@ fn same_file_version(before: &Metadata, after: &Metadata) -> bool {
         && before.mtime_nsec() == after.mtime_nsec()
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn same_file_version(before: &Metadata, after: &Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    before.file_size() == after.file_size()
+        && before.creation_time() == after.creation_time()
+        && before.last_write_time() == after.last_write_time()
+        && before.file_attributes() == after.file_attributes()
+}
+
+#[cfg(not(any(unix, windows)))]
 fn same_file_version(before: &Metadata, after: &Metadata) -> bool {
     before.len() == after.len() && before.modified().ok() == after.modified().ok()
 }
 
 fn contains_dwarf_marker(bytes: &[u8]) -> bool {
-    [b".debug_info".as_slice(), b".zdebug_info".as_slice()]
-        .iter()
-        .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
+    [
+        b"__DWARF".as_slice(),
+        b".debug_info".as_slice(),
+        b".zdebug_info".as_slice(),
+    ]
+    .iter()
+    .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
 }
 
-fn object_media_type(kind: SubjectObjectKind) -> &'static str {
-    match kind {
-        SubjectObjectKind::Application | SubjectObjectKind::NativeDependency => {
+fn object_media_type(
+    kind: SubjectObjectKind,
+    debug_artifact_kind: Option<DebugArtifactKind>,
+) -> &'static str {
+    match (kind, debug_artifact_kind) {
+        (SubjectObjectKind::DebugArtifact, Some(DebugArtifactKind::NativePdb)) => {
+            "application/vnd.reproit.native-pdb.v1"
+        }
+        (SubjectObjectKind::DebugArtifact, Some(DebugArtifactKind::PortablePdb)) => {
+            "application/vnd.reproit.portable-pdb.v1"
+        }
+        (SubjectObjectKind::Application | SubjectObjectKind::NativeDependency, _) => {
             "application/vnd.reproit.subject-file.v1"
         }
-        SubjectObjectKind::LaunchData => "application/vnd.reproit.subject-launch.v1+json",
-        SubjectObjectKind::ModuleIdentity => {
+        (SubjectObjectKind::LaunchData, _) => "application/vnd.reproit.subject-launch.v1+json",
+        (SubjectObjectKind::ModuleIdentity, _) => {
             "application/vnd.reproit.subject-module-identity.v1+json"
         }
         _ => "application/octet-stream",
-    }
-}
-
-fn linux_architecture() -> Result<&'static str, Error> {
-    match std::env::consts::ARCH {
-        "x86_64" => Ok("architecture.x86-64"),
-        "aarch64" => Ok("architecture.arm64"),
-        _ => Err(unsupported_host()),
     }
 }
 
@@ -713,7 +997,7 @@ fn subject_unsupported() -> Error {
 fn debug_artifact_missing() -> Error {
     Error::new(
         ErrorCode::Unsupported,
-        "The running Rust subject does not contain the required DWARF artifact.",
+        "The running Rust subject does not contain the required native debug artifact.",
     )
 }
 
@@ -774,7 +1058,17 @@ mod parser_tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    test,
+    any(
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        windows
+    )
+))]
 mod tests {
     use std::sync::{Mutex, PoisonError};
 
@@ -794,9 +1088,9 @@ mod tests {
             package.manifest.launch.arguments,
             std::env::args().skip(1).collect::<Vec<_>>()
         );
-        assert!(package.manifest.modules.len() >= 2);
+        assert!(!package.manifest.modules.is_empty());
         assert_eq!(package.manifest.debug_artifacts.len(), 1);
-        let running_bytes = fs::read(LINUX_RUNNING_EXECUTABLE).unwrap();
+        let running_bytes = fs::read(running_executable_path()).unwrap();
         let application = package
             .manifest
             .files
@@ -818,6 +1112,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn running_executable_capture_does_not_read_the_reported_path() {
         let _capture = SUBJECT_CAPTURE
@@ -843,6 +1138,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn deleted_running_executable_mapping_is_not_a_dependency() {
         let executable = Path::new("/srv/reproit/bin/service");
         assert!(mapped_path_is_running_executable(
@@ -852,6 +1148,41 @@ mod tests {
         assert!(!mapped_path_is_running_executable(
             "/srv/reproit/lib/libservice.so (deleted)",
             executable,
+        ));
+    }
+
+    fn running_executable_path() -> PathBuf {
+        #[cfg(target_os = "linux")]
+        return PathBuf::from(LINUX_RUNNING_EXECUTABLE);
+
+        #[cfg(any(
+            target_os = "freebsd",
+            target_os = "macos",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            windows
+        ))]
+        return std::env::current_exe().unwrap();
+
+        #[allow(unreachable_code)]
+        PathBuf::new()
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn system_module_filter_is_case_insensitive_and_component_bounded() {
+        let root = Path::new(r"C:\Windows");
+        assert!(windows_system_module(
+            Path::new(r"c:\WINDOWS\System32\kernel32.dll"),
+            root,
+        ));
+        assert!(!windows_system_module(
+            Path::new(r"C:\Windows.old\System32\kernel32.dll"),
+            root,
         ));
     }
 }

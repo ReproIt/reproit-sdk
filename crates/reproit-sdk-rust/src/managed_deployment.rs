@@ -70,6 +70,12 @@ impl OfficialManagedProject {
         &self,
         runtime_capability: &str,
     ) -> Result<Deployment, Error> {
+        let platform = reproit_sdk_platform::host_platform().map_err(|_| unsupported_host())?;
+        let mut runtime_capabilities = vec![
+            platform.runtime_abi.to_owned(),
+            runtime_capability.to_owned(),
+        ];
+        runtime_capabilities.sort();
         let pending_digest = Digest::of(b"pending managed subject");
         let deployment = Deployment {
             format: DeploymentFormat::V1,
@@ -77,7 +83,7 @@ impl OfficialManagedProject {
             processing_mode: ProcessingMode::Managed,
             project_id: self.project.project_id,
             repository_id: self.project.repository_id.clone(),
-            runtime_capabilities: vec![runtime_capability.to_owned()],
+            runtime_capabilities,
             runtime_endpoint: PENDING_MANAGED_ORIGIN.to_owned(),
             service_id: self.project.service_id,
             service_path: self.project.service_path.clone(),
@@ -86,7 +92,7 @@ impl OfficialManagedProject {
             signer_key_id: PENDING_SIGNER_ID.to_owned(),
             source_revision: self.source_revision.clone(),
             subject: Subject {
-                architecture: "architecture.native".to_owned(),
+                architecture: platform.architecture.to_owned(),
                 arguments: Vec::new(),
                 artifact_digest: pending_digest,
                 artifact_media_type: "application/vnd.reproit.subject-closure.v1+json".to_owned(),
@@ -94,7 +100,7 @@ impl OfficialManagedProject {
                 environment_names: Vec::new(),
                 executable: "/reproit/subject/application/pending".to_owned(),
                 format: SubjectFormat::V1,
-                operating_system: "operating-system.linux".to_owned(),
+                operating_system: platform.operating_system.to_owned(),
                 working_directory: "/reproit/subject/work".to_owned(),
             },
         };
@@ -161,6 +167,13 @@ fn project_binding_invalid() -> Error {
     )
 }
 
+fn unsupported_host() -> Error {
+    Error::new(
+        ErrorCode::Unsupported,
+        "This host does not have a supported Backend platform descriptor.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,8 +211,19 @@ remote = "origin"
         )
         .unwrap();
         let deployment = project.deployment().unwrap();
+        let platform = reproit_sdk_platform::host_platform().unwrap();
         assert_eq!(deployment.repository_id, "source.example/acme/commerce");
         assert_eq!(deployment.runtime_endpoint, PENDING_MANAGED_ORIGIN);
+        assert_eq!(deployment.subject.architecture, platform.architecture);
+        assert_eq!(
+            deployment.subject.operating_system,
+            platform.operating_system
+        );
+        assert!(
+            deployment
+                .runtime_capabilities
+                .contains(&platform.runtime_abi.to_owned())
+        );
         assert!(
             OfficialManagedProject::from_build(
                 PROJECT,

@@ -34,7 +34,8 @@ extern "C" fn rust_capture_probe() {
 }
 
 pub use sentinel::{
-    EngineCallGuard, KernelTraceEvidence, OperationCoverage, engine_call_scope, engine_closed,
-    engine_opened, observation_dispatched, observation_finished, observation_is_active,
-    observation_opened, operation_finished, operation_removed, operation_started, platform_probe,
+    EngineCallGuard, KernelTraceEvidence, NativeCoverageEvidence, OperationCoverage,
+    engine_call_scope, engine_closed, engine_opened, observation_dispatched, observation_finished,
+    observation_is_active, observation_opened, operation_finished, operation_removed,
+    operation_started, platform_probe,
 };
