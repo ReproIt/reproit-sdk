@@ -259,6 +259,7 @@ fn started_context(
         &OperationBeginPayload {
             adapter_id: "test-adapter".to_owned(),
             adapter_version: "1.0.0".to_owned(),
+            campaign_context: None,
             causal_parent_ids: Vec::new(),
             format: OperationBeginFormat::V1,
             operation_kind: OperationKind::RequestResponse,

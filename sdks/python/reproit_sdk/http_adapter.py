@@ -40,6 +40,8 @@ _SENSITIVE_HEADERS = frozenset(
         "proxy-authorization",
         "set-cookie",
         "www-authenticate",
+        "reproit-fuzz-context",
+        "reproit-parent-operation",
     }
 )
 _LOCK = threading.Lock()
@@ -107,6 +109,7 @@ def _urlopen(*arguments: Any, **keywords: Any) -> http.client.HTTPResponse:
     if parsed is None or not _opener_is_supported():
         return _unsupported_urlopen(arguments, keywords)
     url, timeout = parsed
+    live_arguments, live_keywords = _propagate_fuzz_context(arguments, keywords)
     try:
         request = _request("open", url, 0, _encode_timeout(timeout))
     except Exception:
@@ -116,7 +119,7 @@ def _urlopen(*arguments: Any, **keywords: Any) -> http.client.HTTPResponse:
         call_state = _CallState()
         token = _ACTIVE_CALL.set(call_state)
         try:
-            response = _ORIGINAL_URLOPEN(*arguments, **keywords)
+            response = _ORIGINAL_URLOPEN(*live_arguments, **live_keywords)
         finally:
             _ACTIVE_CALL.reset(token)
         if not isinstance(response, http.client.HTTPResponse):
@@ -138,6 +141,30 @@ def _urlopen(*arguments: Any, **keywords: Any) -> http.client.HTTPResponse:
         _encode_url_error,
         _decode_url_error,
     )
+
+
+def _propagate_fuzz_context(
+    arguments: tuple[Any, ...],
+    keywords: dict[str, Any],
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    from .distributed_fuzz import (
+        FUZZ_CONTEXT_HTTP_HEADER,
+        FUZZ_PARENT_HTTP_HEADER,
+        _current_fuzz_context,
+    )
+    from .engine_operation import _current_operation_context
+
+    fuzz_context = _current_fuzz_context()
+    operation = _current_operation_context()
+    if fuzz_context is None or operation is None or operation.operation_id is None:
+        return arguments, keywords
+    request = urllib.request.Request(str(arguments[0]))
+    request.add_unredirected_header(FUZZ_CONTEXT_HTTP_HEADER, fuzz_context.encoded)
+    request.add_unredirected_header(
+        FUZZ_PARENT_HTTP_HEADER,
+        operation.operation_id,
+    )
+    return (request, *arguments[1:]), keywords
 
 
 def _response_read(

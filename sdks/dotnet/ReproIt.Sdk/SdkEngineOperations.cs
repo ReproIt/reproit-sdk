@@ -120,15 +120,21 @@ internal static class SdkEngineOperations
     internal static SdkEngineOperationStart BeginOperation(
         this SdkEngineBridge bridge,
         SdkEngineHandle handle,
-        JsonObject begin)
+        JsonObject begin,
+        JsonObject? fuzzContext = null)
     {
-        JsonElement result = bridge.Call(new JsonObject
+        JsonObject request = new()
         {
             ["begin"] = begin.DeepClone(),
             ["engine_handle"] = handle.Value,
             ["format"] = SdkEngineBridge.CallFormat,
             ["operation"] = BeginOperationName,
-        });
+        };
+        if (fuzzContext is not null)
+        {
+            request["fuzz_context"] = fuzzContext.DeepClone();
+        }
+        JsonElement result = bridge.Call(request);
         ulong operationHandle = PositiveHandle(
             result, "operation_handle", "operation_id");
         JsonElement operationIdValue = result.GetProperty("operation_id");

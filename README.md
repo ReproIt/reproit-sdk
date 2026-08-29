@@ -19,6 +19,16 @@ The public packages support managed capture only. They send no successful or inc
 operation to Repro It Cloud. A capture error or Cloud outage does not change the application
 result.
 
+All five SDKs implement the same distributed fuzz context boundary. Inbound HTTP
+adapters validate `ReproIt-Fuzz-Context`. Delivered-work adapters validate
+`reproit.fuzz.context`. Outbound adapters propagate the active signed context
+and causal parent operation. An invalid fuzz context stays incomplete and never
+becomes a production capture.
+
+The SDK does not start or control a fuzz campaign. `reproit-fuzzer` owns search
+and target control. The SDK only records bounded campaign provenance on eligible
+captures.
+
 Store `REPROIT_MANAGED_PROJECT_TOKEN` in the deployment secret store. Do not put the token in
 tracked configuration. The SDK works in a host process or an OCI container. It does not require a
 container engine, sidecar, orchestrator, or container control socket.

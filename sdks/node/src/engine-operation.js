@@ -7,6 +7,13 @@ import {
   loadNativeEngine,
 } from "./native-engine.js";
 import { acquireRuntimeObservationAdapters } from "./runtime-observation-adapters.js";
+import {
+  currentFuzzContext,
+  fuzzBeginIdentity,
+  nativeFuzzInput,
+  runWithFuzzContext,
+  withFuzzParent,
+} from "./distributed-fuzz.js";
 
 const POLL_MILLISECONDS = 50;
 const OPEN_DEPENDENCY = Symbol("open-dependency");
@@ -58,11 +65,15 @@ export class ManagedEngineProject {
     }
   }
 
-  begin(begin) {
+  begin(begin, fuzzContext = null) {
     if (this.#closed) return new OperationContext();
     let native;
     try {
-      native = this.#bridge.operationBegin(this.#engineHandle, begin);
+      native = this.#bridge.operationBegin(
+        this.#engineHandle,
+        begin,
+        fuzzContext === null ? null : nativeFuzzInput(fuzzContext),
+      );
     } catch {
       return new OperationContext();
     }
@@ -505,9 +516,14 @@ export function currentOperationContext() {
 
 // Run one framework-neutral boundary without changing its outcome.
 export function runOperation(project, preparation, operation, failure) {
-  const context = project.begin(preparation.begin);
+  const fuzzContext = preparation.fuzzContext ?? currentFuzzContext();
+  const begin = beginWithFuzzContext(preparation.begin, fuzzContext);
+  const context = project.begin(begin, fuzzContext);
   for (const value of preparation.inputs) context.recordInput(value);
-  return ACTIVE_OPERATION.run(context, () => {
+  const activeFuzz = fuzzContext !== null && context.operationId !== null
+    ? withFuzzParent(fuzzContext, context.operationId)
+    : null;
+  return ACTIVE_OPERATION.run(context, () => runWithFuzzContext(activeFuzz, () => {
     let result;
     try {
       result = operation(context);
@@ -529,7 +545,24 @@ export function runOperation(project, preparation, operation, failure) {
     }
     context.closeSuccess(preparation.completion);
     return result;
-  });
+  }));
+}
+
+function beginWithFuzzContext(original, fuzzContext) {
+  if (fuzzContext === null) return original;
+  const parents = [...(original.causal_parent_ids ?? [])];
+  if (
+    fuzzContext.parentOperationId !== null &&
+    !parents.includes(fuzzContext.parentOperationId)
+  ) {
+    parents.push(fuzzContext.parentOperationId);
+  }
+  return {
+    ...original,
+    campaign_context: fuzzBeginIdentity(fuzzContext),
+    causal_parent_ids: parents,
+    format: "reproit.operation-begin.v2",
+  };
 }
 
 function finishFailure(context, completion, original, failure) {

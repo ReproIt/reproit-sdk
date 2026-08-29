@@ -19,6 +19,7 @@ if (args is ["automatic-native"])
 SdkEngineBridgeConformance.Run();
 AutomaticOperationConformance.Run();
 AutomaticHttpAdapterConformance.Run();
+DistributedFuzzConformance.Run();
 PublicSurfaceConformance.Run();
 
 if (Environment.GetEnvironmentVariable("REPROIT_PROTOCOL_VECTORS") is not null)

@@ -833,6 +833,7 @@ fn started_sdk_with_sink(sink: Arc<dyn CandidateSink>) -> (Sdk, OperationId, Ope
         &OperationBeginPayload {
             adapter_id: "test-adapter".to_owned(),
             adapter_version: "1.0.0".to_owned(),
+            campaign_context: None,
             causal_parent_ids: vec![causal_parent_id],
             format: OperationBeginFormat::V1,
             operation_kind: OperationKind::RequestResponse,

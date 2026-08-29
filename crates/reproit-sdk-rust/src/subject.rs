@@ -186,6 +186,7 @@ fn package_windows_subject() -> Result<RustSubjectPackage, Error> {
 }
 
 enum NativeDebugArtifact {
+    #[cfg(not(windows))]
     EmbeddedDwarf,
     #[cfg(windows)]
     AdjacentNativePdb(PathBuf),
@@ -194,6 +195,7 @@ enum NativeDebugArtifact {
 impl NativeDebugArtifact {
     const fn file_count(&self) -> usize {
         match self {
+            #[cfg(not(windows))]
             Self::EmbeddedDwarf => 0,
             #[cfg(windows)]
             Self::AdjacentNativePdb(_) => 1,
@@ -246,6 +248,7 @@ fn package_native_subject(
         )?);
     }
     match debug_artifact {
+        #[cfg(not(windows))]
         NativeDebugArtifact::EmbeddedDwarf => {
             if !captured
                 .iter()

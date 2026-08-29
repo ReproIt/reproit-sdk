@@ -47,7 +47,7 @@ fn module_snapshot() -> Result<BTreeSet<PathBuf>, PlatformError> {
     if result == 0
         || needed_bytes == 0
         || needed_bytes > buffer_bytes
-        || needed_bytes % module_bytes != 0
+        || !needed_bytes.is_multiple_of(module_bytes)
     {
         return Err(if needed_bytes > buffer_bytes {
             PlatformError::Unbounded

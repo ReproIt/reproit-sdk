@@ -16,6 +16,7 @@
   "types": "./src/index.d.ts",
   "files": [
     "src/encoding.js",
+    "src/distributed-fuzz.js",
     "src/engine-operation.js",
     "src/http-adapter.js",
     "src/index.d.ts",

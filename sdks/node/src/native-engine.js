@@ -251,13 +251,15 @@ export class NativeEngineBridge {
     });
   }
 
-  operationBegin(engineHandle, begin) {
-    const result = this.#callResult({
+  operationBegin(engineHandle, begin, fuzzContext = null) {
+    const request = {
       begin,
       engine_handle: requestHandle(engineHandle),
       format: NATIVE_ENGINE_CALL_FORMAT,
       operation: ENGINE_OPERATION.OPERATION_BEGIN,
-    });
+    };
+    if (fuzzContext !== null) request.fuzz_context = fuzzContext;
+    const result = this.#callResult(request);
     if (
       !sameKeys(result, ["operation_handle", "operation_id"]) ||
       typeof result.operation_id !== "string" ||

@@ -42,6 +42,8 @@ internal static class AutomaticHttpAdapter
         "Authorization",
         "Cookie",
         "Proxy-Authorization",
+        "ReproIt-Fuzz-Context",
+        "ReproIt-Parent-Operation",
     };
     private static readonly HashSet<string> SensitiveResponseHeaders = new(
         StringComparer.OrdinalIgnoreCase)
@@ -364,6 +366,12 @@ internal static class AutomaticHttpAdapter
                 MarkUnowned(operation);
                 return;
             }
+            if (operation.FuzzContext is FuzzCampaignContext fuzzContext &&
+                !TryAddFuzzHeaders(request, fuzzContext, operation.OperationId))
+            {
+                MarkUnowned(operation);
+                return;
+            }
             JsonObject requestInput;
             try
             {
@@ -399,6 +407,21 @@ internal static class AutomaticHttpAdapter
                 }
                 active.Add(request, connection);
             }
+        }
+
+        private static bool TryAddFuzzHeaders(
+            HttpRequestMessage request,
+            FuzzCampaignContext context,
+            string operationId)
+        {
+            _ = request.Headers.Remove(DistributedFuzz.ContextHttpHeader);
+            _ = request.Headers.Remove(DistributedFuzz.ParentHttpHeader);
+            return request.Headers.TryAddWithoutValidation(
+                    DistributedFuzz.ContextHttpHeader,
+                    context.Encoded) &&
+                request.Headers.TryAddWithoutValidation(
+                    DistributedFuzz.ParentHttpHeader,
+                    operationId);
         }
 
         private void ObserveStop(object? payload)

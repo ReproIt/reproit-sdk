@@ -205,27 +205,52 @@ func openAutomaticProjectWith(
 func (project *AutomaticProject) StartOperation(
 	start AutomaticOperationStart,
 ) (*AutomaticOperation, error) {
+	return project.startOperation(start, nil)
+}
+
+func (project *AutomaticProject) startOperation(
+	start AutomaticOperationStart,
+	fuzzContext *FuzzCampaignContext,
+) (*AutomaticOperation, error) {
 	project.mu.Lock()
 	defer project.mu.Unlock()
 	if project.closed {
 		return nil, ErrAutomaticCapture
 	}
-	causalParents := make([]any, len(start.CausalParentIDs))
-	for index, parent := range start.CausalParentIDs {
+	causalParentIDs := append([]string(nil), start.CausalParentIDs...)
+	if fuzzContext != nil && fuzzContext.parentOperation != "" &&
+		!containsString(causalParentIDs, fuzzContext.parentOperation) {
+		causalParentIDs = append(causalParentIDs, fuzzContext.parentOperation)
+	}
+	causalParents := make([]any, len(causalParentIDs))
+	for index, parent := range causalParentIDs {
 		causalParents[index] = parent
 	}
-	begin, err := CanonicalBytes(map[string]any{
+	beginValue := map[string]any{
 		"adapter_id":        start.AdapterID,
 		"adapter_version":   start.AdapterVersion,
 		"causal_parent_ids": causalParents,
 		"format":            "reproit.operation-begin.v1",
 		"operation_kind":    string(start.Kind),
 		"operation_name":    start.Name,
-	})
+	}
+	if fuzzContext != nil {
+		beginValue["campaign_context"] = fuzzContext.beginIdentity()
+		beginValue["format"] = "reproit.operation-begin.v2"
+	}
+	begin, err := CanonicalBytes(beginValue)
 	if err != nil {
 		return nil, ErrAutomaticCapture
 	}
-	started, err := project.bridge.beginOperation(project.handle, json.RawMessage(begin))
+	var nativeFuzzContext *sdkEngineFuzzContextInput
+	if fuzzContext != nil {
+		nativeFuzzContext = fuzzContext.nativeInput()
+	}
+	started, err := project.bridge.beginOperation(
+		project.handle,
+		json.RawMessage(begin),
+		nativeFuzzContext,
+	)
 	if err != nil {
 		return nil, ErrAutomaticCapture
 	}
@@ -249,7 +274,8 @@ func (project *AutomaticProject) StartOperationContext(
 	if parent == nil || parent.Err() != nil {
 		return nil, nil, ErrAutomaticCapture
 	}
-	operation, err := project.StartOperation(start)
+	fuzzContext, _ := fuzzContextFromContext(parent)
+	operation, err := project.startOperation(start, fuzzContext)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -261,6 +287,9 @@ func (project *AutomaticProject) StartOperationContext(
 	operation.binding = binding
 	operation.mu.Unlock()
 	child := context.WithValue(parent, automaticOperationContextKey{}, binding)
+	if fuzzContext != nil {
+		child = context.WithValue(child, fuzzContextKey{}, fuzzContext.withParent(operation.operationID))
+	}
 	stop := context.AfterFunc(child, operation.Cancel)
 	operation.setContextCancellation(stop)
 	if child.Err() != nil {
@@ -268,6 +297,15 @@ func (project *AutomaticProject) StartOperationContext(
 		return nil, nil, ErrAutomaticCapture
 	}
 	return child, operation, nil
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func activeAutomaticOperation(

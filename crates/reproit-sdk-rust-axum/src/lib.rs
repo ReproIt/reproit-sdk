@@ -20,8 +20,10 @@ use reproit_core::{
     model::{OperationBeginFormat, OperationBeginPayload, OperationKind},
 };
 use reproit_sdk_rust::{
-    AutomaticOperationContext, RequestResponseFailureClassifier, RequestResponseHeader,
-    RequestResponseOperation, RustOperationFactory,
+    AutomaticOperationContext, FUZZ_CONTEXT_HTTP_HEADER, FUZZ_PARENT_HTTP_HEADER,
+    FuzzCampaignContext, FuzzContextValidator, RequestResponseFailureClassifier,
+    RequestResponseHeader, RequestResponseOperation, RustOperationFactory,
+    inbound_fuzz_context as validate_inbound_fuzz_context,
 };
 
 const ADAPTER_ID: &str = "axum";
@@ -38,6 +40,7 @@ pub struct OperationContext {
 pub struct AxumRequestCapture {
     classifier: Arc<dyn RequestResponseFailureClassifier>,
     factory: Arc<dyn RustOperationFactory>,
+    fuzz_context_validator: Option<Arc<dyn FuzzContextValidator>>,
     operation_name: String,
 }
 
@@ -54,8 +57,15 @@ impl AxumRequestCapture {
         Ok(Self {
             classifier,
             factory,
+            fuzz_context_validator: None,
             operation_name,
         })
+    }
+
+    #[must_use]
+    pub fn with_fuzz_context_validator(mut self, validator: Arc<dyn FuzzContextValidator>) -> Self {
+        self.fuzz_context_validator = Some(validator);
+        self
     }
 }
 
@@ -64,27 +74,51 @@ pub async fn capture_axum_request(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let causal_parent_id = request
+    let inherited_parent_id = request
         .extensions()
         .get::<OperationContext>()
         .map(|context| context.operation_id);
+    let Ok(fuzz_context) = inbound_fuzz_context(
+        request.headers(),
+        configuration.fuzz_context_validator.as_deref(),
+    ) else {
+        return next.run(request).await;
+    };
+    let causal_parent_id = fuzz_context
+        .as_ref()
+        .and_then(FuzzCampaignContext::parent_operation_id)
+        .or(inherited_parent_id);
     let begin = OperationBeginPayload {
         adapter_id: ADAPTER_ID.to_owned(),
         adapter_version: ADAPTER_VERSION.to_owned(),
+        campaign_context: fuzz_context
+            .as_ref()
+            .map(|context| context.identity().clone()),
         causal_parent_ids: causal_parent_id.into_iter().collect(),
-        format: OperationBeginFormat::V1,
+        format: if fuzz_context.is_some() {
+            OperationBeginFormat::V2
+        } else {
+            OperationBeginFormat::V1
+        },
         operation_kind: OperationKind::RequestResponse,
         operation_name: configuration.operation_name.clone(),
     };
     let Some(content_type) = request_content_type(request.headers()) else {
         return next.run(request).await;
     };
-    let Ok(operation) = RequestResponseOperation::start(
-        configuration.factory.as_ref(),
-        &begin,
-        &content_type,
-        configuration.classifier,
-    ) else {
+    let start_operation = || {
+        RequestResponseOperation::start(
+            configuration.factory.as_ref(),
+            &begin,
+            &content_type,
+            configuration.classifier,
+        )
+    };
+    let started = match &fuzz_context {
+        Some(context) => context.scope_sync(start_operation),
+        None => start_operation(),
+    };
+    let Ok(operation) = started else {
         return next.run(request).await;
     };
     let Some(operation_id) = operation.operation_id() else {
@@ -103,16 +137,36 @@ pub async fn capture_axum_request(
         terminal: false,
     });
     request.extensions_mut().insert(context);
+    if let Some(context) = &fuzz_context {
+        request
+            .extensions_mut()
+            .insert(context.with_parent(operation_id));
+    }
 
-    let response = match automatic_context.as_ref() {
-        Some(context) => context.scope(next.run(request)).await,
-        None => next.run(request).await,
+    let response = match (automatic_context.as_ref(), fuzz_context.as_ref()) {
+        (Some(operation), Some(fuzz)) => {
+            fuzz.with_parent(operation_id)
+                .scope(operation.scope(next.run(request)))
+                .await
+        }
+        (Some(operation), None) => operation.scope(next.run(request)).await,
+        (None, Some(fuzz)) => {
+            fuzz.with_parent(operation_id)
+                .scope(next.run(request))
+                .await
+        }
+        (None, None) => next.run(request).await,
     };
     if !lock_capture(&capture).input_complete() {
         lock_capture(&capture).abandon();
         return response;
     }
-    capture_response(response, capture, automatic_context)
+    capture_response(
+        response,
+        capture,
+        automatic_context,
+        fuzz_context.map(|context| context.with_parent(operation_id)),
+    )
 }
 
 struct RequestCaptureBody {
@@ -181,6 +235,7 @@ fn capture_response(
     response: Response,
     capture: Arc<Mutex<RequestResponseOperation>>,
     automatic_context: Option<AutomaticOperationContext>,
+    fuzz_context: Option<FuzzCampaignContext>,
 ) -> Response {
     let (parts, body) = response.into_parts();
     let headers = parts
@@ -205,6 +260,7 @@ fn capture_response(
         Body::new(ResponseCaptureBody {
             automatic_context,
             capture,
+            fuzz_context,
             inner: body,
             terminal: false,
         }),
@@ -214,6 +270,7 @@ fn capture_response(
 struct ResponseCaptureBody {
     automatic_context: Option<AutomaticOperationContext>,
     capture: Arc<Mutex<RequestResponseOperation>>,
+    fuzz_context: Option<FuzzCampaignContext>,
     inner: Body,
     terminal: bool,
 }
@@ -227,11 +284,17 @@ impl HttpBody for ResponseCaptureBody {
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.get_mut();
-        let frame = match this.automatic_context.as_ref() {
-            Some(operation_context) => {
+        let frame = match (this.automatic_context.as_ref(), this.fuzz_context.as_ref()) {
+            (Some(operation_context), Some(fuzz_context)) => fuzz_context.scope_sync(|| {
+                operation_context.scope_poll(|| Pin::new(&mut this.inner).poll_frame(context))
+            }),
+            (Some(operation_context), None) => {
                 operation_context.scope_poll(|| Pin::new(&mut this.inner).poll_frame(context))
             }
-            None => Pin::new(&mut this.inner).poll_frame(context),
+            (None, Some(fuzz_context)) => {
+                fuzz_context.scope_sync(|| Pin::new(&mut this.inner).poll_frame(context))
+            }
+            (None, None) => Pin::new(&mut this.inner).poll_frame(context),
         };
         match frame {
             Poll::Ready(Some(Ok(frame))) => {
@@ -292,6 +355,21 @@ fn request_content_type(headers: &HeaderMap) -> Option<String> {
         }
         None => Some(DEFAULT_CONTENT_TYPE.to_owned()),
     }
+}
+
+fn inbound_fuzz_context(
+    headers: &HeaderMap,
+    validator: Option<&dyn FuzzContextValidator>,
+) -> Result<Option<FuzzCampaignContext>, ()> {
+    let encoded = headers
+        .get(FUZZ_CONTEXT_HTTP_HEADER)
+        .map(|value| value.to_str().map_err(|_| ()))
+        .transpose()?;
+    let parent = headers
+        .get(FUZZ_PARENT_HTTP_HEADER)
+        .map(|value| value.to_str().map_err(|_| ()))
+        .transpose()?;
+    validate_inbound_fuzz_context(encoded, parent, validator).map_err(|_| ())
 }
 
 fn lock_capture(

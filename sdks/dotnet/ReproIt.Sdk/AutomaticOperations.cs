@@ -178,6 +178,7 @@ public sealed class AutomaticProject : IDisposable
     /// <summary>Starts one request-response, stream, or delivered-work operation.</summary>
     public AutomaticOperation StartOperation(AutomaticOperationStart start)
     {
+        FuzzCampaignContext? fuzzContext = DistributedFuzz.Active();
         lock (stateLock)
         {
             if (closed)
@@ -191,16 +192,31 @@ public sealed class AutomaticProject : IDisposable
                 {
                     causalParents.Add(parent);
                 }
-                SdkEngineOperationStart operation = bridge.BeginOperation(handle, new JsonObject
+                if (fuzzContext?.ParentOperationId is string parentOperationId &&
+                    !start.CausalParentIds.Contains(parentOperationId, StringComparer.Ordinal))
+                {
+                    causalParents.Add(parentOperationId);
+                }
+                JsonObject begin = new()
                 {
                     ["adapter_id"] = start.AdapterId,
                     ["adapter_version"] = start.AdapterVersion,
                     ["causal_parent_ids"] = causalParents,
-                    ["format"] = "reproit.operation-begin.v1",
+                    ["format"] = fuzzContext is null
+                        ? "reproit.operation-begin.v1"
+                        : "reproit.operation-begin.v2",
                     ["operation_kind"] = OperationKind(start.Kind),
                     ["operation_name"] = start.Name,
-                });
-                AutomaticOperation result = new(this, bridge, operation);
+                };
+                if (fuzzContext is not null)
+                {
+                    begin["campaign_context"] = fuzzContext.BeginIdentity();
+                }
+                SdkEngineOperationStart operation = bridge.BeginOperation(
+                    handle,
+                    begin,
+                    fuzzContext?.NativeInput());
+                AutomaticOperation result = new(this, bridge, operation, fuzzContext);
                 result.ActivateAutomatically();
                 return result;
             }
@@ -321,16 +337,20 @@ public sealed class AutomaticOperation : IDisposable
     internal AutomaticOperation(
         AutomaticProject project,
         SdkEngineBridge bridge,
-        SdkEngineOperationStart operation)
+        SdkEngineOperationStart operation,
+        FuzzCampaignContext? fuzzContext = null)
     {
         this.project = project;
         this.bridge = bridge;
         handle = operation.Handle;
         OperationId = operation.OperationId;
+        FuzzContext = fuzzContext?.WithParent(OperationId);
     }
 
     /// <summary>Gets the stable identity for causal child operations.</summary>
     public string OperationId { get; }
+
+    internal FuzzCampaignContext? FuzzContext { get; }
 
     internal AutomaticOperationActivation Activate() =>
         AutomaticOperationContext.Activate(this);

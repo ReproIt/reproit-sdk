@@ -1,6 +1,10 @@
 use super::*;
 use crate::observation::MAX_OBSERVATION_SESSIONS;
-use reproit_core::crypto::encode_base64url;
+use reproit_core::{
+    canonical,
+    crypto::{encode_base64url, secret_key, sign_bytes, verification_key},
+    model::{FuzzContextFormat, FuzzContextIdentity, OperationBeginFormat, OperationKind},
+};
 use std::{
     cell::Cell,
     sync::{
@@ -40,6 +44,48 @@ fn contract_call_returns_the_exact_abi_version() {
     assert_eq!(value["format"], RESPONSE_FORMAT);
     assert_eq!(value["ok"], true);
     assert_eq!(value["result"]["abi_version"], ABI_VERSION);
+}
+
+#[test]
+fn operation_begin_fuzz_input_requires_a_valid_signature_and_identity() {
+    let signing_key = secret_key([9_u8; 32]);
+    let mut context = FuzzContext {
+        campaign_id: "fc_01890f3e-7b1c-7cc0-8a1b-123456789abc".parse().unwrap(),
+        case_id: "case_01890f3e-7b1d-7cc0-8a1b-123456789abc".parse().unwrap(),
+        expires_at: "2026-08-30T00:00:00.000Z".parse().unwrap(),
+        format: FuzzContextFormat::V1,
+        project_id: "prj_01890f3e-7b1e-7cc0-8a1b-123456789abc".parse().unwrap(),
+        service_id: "svc_01890f3e-7b1f-7cc0-8a1b-123456789abc".parse().unwrap(),
+        signature: String::new(),
+    };
+    context.signature = sign_bytes(&canonical::canonical_bytes(&context).unwrap(), &signing_key);
+    let encoded = encode_base64url(&canonical::canonical_bytes(&context).unwrap());
+    let identity = FuzzContextIdentity {
+        campaign_id: context.campaign_id,
+        case_id: context.case_id,
+        context_digest: reproit_core::model::fuzz_context_digest(&context).unwrap(),
+    };
+    let begin = OperationBeginPayload {
+        adapter_id: "engine-test".to_owned(),
+        adapter_version: "1".to_owned(),
+        campaign_context: Some(identity),
+        causal_parent_ids: Vec::new(),
+        format: OperationBeginFormat::V2,
+        operation_kind: OperationKind::RequestResponse,
+        operation_name: "checkout".to_owned(),
+    };
+    let mut input = FuzzContextInput {
+        encoded,
+        now: "2026-08-29T00:00:00.000Z".parse().unwrap(),
+        project_id: context.project_id,
+        service_id: context.service_id,
+        verification_key: encode_base64url(&verification_key(&signing_key)),
+    };
+    assert!(validate_fuzz_context_input(&begin, Some(&input)).is_ok());
+
+    input.verification_key = encode_base64url(&verification_key(&secret_key([8_u8; 32])));
+    assert!(validate_fuzz_context_input(&begin, Some(&input)).is_err());
+    assert!(validate_fuzz_context_input(&begin, None).is_err());
 }
 
 #[test]

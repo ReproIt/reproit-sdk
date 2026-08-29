@@ -8,6 +8,11 @@ import {
   markOperationUnowned,
 } from "./engine-operation.js";
 import {
+  FUZZ_CONTEXT_HTTP_HEADER,
+  FUZZ_PARENT_HTTP_HEADER,
+  currentFuzzContext,
+} from "./distributed-fuzz.js";
+import {
   dependencyRequest,
   dependencyResponse,
   startDependency,
@@ -28,7 +33,8 @@ const UNSUPPORTED_EVIDENCE = Buffer.from("node-http-unsupported-v1", "utf8");
 const SUPPORTED_OPTION_NAMES = new Set(["headers", "method"]);
 const SENSITIVE_HEADERS = new Set([
   "authorization", "cookie", "proxy-authenticate", "proxy-authorization",
-  "set-cookie", "www-authenticate",
+  "set-cookie", "www-authenticate", "reproit-fuzz-context",
+  "reproit-parent-operation",
 ]);
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 let activeResponseStreams = 0;
@@ -79,7 +85,11 @@ function managedGet(call, requiredProtocol) {
   }
   let liveRequest;
   try {
-    liveRequest = Reflect.apply(call.original, call.receiver, call.arguments);
+    liveRequest = Reflect.apply(
+      call.original,
+      call.receiver,
+      outboundFuzzArguments(call.arguments),
+    );
   } catch (error) {
     dependency.abandon();
     throw error;
@@ -112,6 +122,23 @@ function managedGet(call, requiredProtocol) {
   liveRequest.once("connect", () => markUnowned());
   markUnsupportedRequestUse(liveRequest);
   return liveRequest;
+}
+
+function outboundFuzzArguments(arguments_) {
+  const fuzzContext = currentFuzzContext();
+  const operation = currentOperationContext();
+  if (fuzzContext === null || operation === null || operation.operationId === null) {
+    return arguments_;
+  }
+  const second = arguments_[1];
+  const options = typeof second === "function" || second === undefined ? {} : second;
+  const callback = typeof second === "function" ? second : arguments_[2];
+  const headers = { ...(options.headers ?? {}) };
+  headers[FUZZ_CONTEXT_HTTP_HEADER] = fuzzContext.encoded;
+  headers[FUZZ_PARENT_HTTP_HEADER] = operation.operationId;
+  const propagated = [arguments_[0], { ...options, headers }];
+  if (callback !== undefined) propagated.push(callback);
+  return propagated;
 }
 
 function requestValue(arguments_, requiredProtocol) {

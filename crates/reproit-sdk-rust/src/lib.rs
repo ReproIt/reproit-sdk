@@ -29,6 +29,7 @@ pub use reproit_core::{
 mod automatic_context;
 mod automatic_engine;
 mod automatic_world;
+mod distributed_fuzz;
 mod managed;
 mod managed_deployment;
 mod managed_identity;
@@ -48,6 +49,11 @@ pub use automatic_context::{
 #[doc(hidden)]
 pub use automatic_engine::{
     AutomaticManagedEngine, AutomaticManagedOperation, AutomaticManagedRustOperationFactory,
+};
+pub use distributed_fuzz::{
+    FUZZ_CONTEXT_HTTP_HEADER, FUZZ_CONTEXT_QUEUE_METADATA, FUZZ_PARENT_HTTP_HEADER,
+    FUZZ_PARENT_QUEUE_METADATA, FuzzCampaignContext, FuzzContextScope, FuzzContextValidator,
+    SignedFuzzContextValidator, inbound_fuzz_context, inbound_queue_fuzz_context,
 };
 pub use managed::{
     ManagedCandidateArtifact, ManagedCandidateGrantDelivery, ManagedCandidateIngressDelivery,
@@ -182,7 +188,7 @@ impl Sdk {
         start: CandidateStart,
         payload: &OperationBeginPayload,
     ) -> Result<(), Error> {
-        self.begin_inner(start, payload, true)
+        self.begin_inner(start, payload, true, None)
     }
 
     pub fn begin_automatic(
@@ -190,6 +196,7 @@ impl Sdk {
         start: AutomaticCandidateStart,
         payload: &OperationBeginPayload,
     ) -> Result<(), Error> {
+        let campaign_context = distributed_fuzz::FuzzCampaignContext::current().ok();
         self.begin_inner(
             CandidateStart {
                 capture_id: start.capture_id,
@@ -199,7 +206,17 @@ impl Sdk {
             },
             payload,
             false,
+            campaign_context,
         )
+    }
+
+    pub fn begin_with_fuzz_context(
+        &self,
+        start: CandidateStart,
+        payload: &OperationBeginPayload,
+        campaign_context: &distributed_fuzz::FuzzCampaignContext,
+    ) -> Result<(), Error> {
+        self.begin_inner(start, payload, true, Some(campaign_context.clone()))
     }
 
     fn begin_inner(
@@ -207,7 +224,15 @@ impl Sdk {
         start: CandidateStart,
         payload: &OperationBeginPayload,
         world_bound: bool,
+        campaign_context: Option<distributed_fuzz::FuzzCampaignContext>,
     ) -> Result<(), Error> {
+        let campaign_context = match (&payload.campaign_context, campaign_context) {
+            (Some(expected), Some(context)) if context.identity() == expected => {
+                Some(context.context().clone())
+            }
+            (None, None) => None,
+            _ => return Err(Error::schema_invalid()),
+        };
         let record = event_record(EventKind::Begin, 0, payload)?;
         let record_bytes = record_size(&record);
         let mut state = self.lock_state();
@@ -222,6 +247,7 @@ impl Sdk {
             start.operation_id,
             ActiveOperation {
                 bytes: record_bytes,
+                campaign_context,
                 records: vec![record],
                 start,
                 world_bound,
@@ -350,6 +376,7 @@ impl Sdk {
             operation.records.push(terminal_record);
             let processing_mode = operation.start.deployment.processing_mode;
             let candidate = Candidate {
+                campaign_context: operation.campaign_context,
                 capture_id: operation.start.capture_id,
                 deployment: operation.start.deployment,
                 failure: payload.failure.clone(),
@@ -483,6 +510,7 @@ impl Drop for State {
 
 struct ActiveOperation {
     bytes: usize,
+    campaign_context: Option<reproit_core::model::FuzzContext>,
     records: Vec<EventRecord>,
     start: CandidateStart,
     world_bound: bool,

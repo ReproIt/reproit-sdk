@@ -83,7 +83,7 @@ func TestSDKEngineTypedOperations(t *testing.T) {
 	if err != nil || engineHandle != 11 {
 		t.Fatal("The typed engine-open response was not accepted.")
 	}
-	start, err := bridge.beginOperation(engineHandle, json.RawMessage(`{}`))
+	start, err := bridge.beginOperation(engineHandle, json.RawMessage(`{}`), nil)
 	if err != nil || start.Handle != 12 || start.OperationID != "op_test" {
 		t.Fatal("The typed operation-begin response was not accepted.")
 	}

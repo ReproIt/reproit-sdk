@@ -13,17 +13,18 @@ use std::{
 
 use reproit_backend::config::BackendSdk;
 use reproit_core::{
-    Error, ErrorCode,
-    crypto::decode_base64url_bytes,
-    identity::{Digest, OperationId},
+    Error, ErrorCode, canonical,
+    crypto::{decode_base64url, decode_base64url_bytes},
+    identity::{Digest, OperationId, ProjectId, ServiceId, Timestamp},
     model::{
-        AutomaticObservationClass, DependencyOutcome, FailureIdentity, OperationBeginPayload,
-        OperationInputPayload, SubjectClosureManifest, TriggerCompletion,
+        AutomaticObservationClass, DependencyOutcome, FailureIdentity, FuzzContext,
+        OperationBeginPayload, OperationInputPayload, SubjectClosureManifest, TriggerCompletion,
+        verify_fuzz_context,
     },
 };
 use reproit_sdk_rust::{
-    AutomaticManagedEngine, AutomaticManagedOperation, ManagedProjectToken, OfficialManagedProject,
-    PackagedSubjectObject, SubjectPackage,
+    AutomaticManagedEngine, AutomaticManagedOperation, FuzzCampaignContext, ManagedProjectToken,
+    OfficialManagedProject, PackagedSubjectObject, SubjectPackage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -99,6 +100,8 @@ enum EngineCall {
         begin: OperationBeginPayload,
         engine_handle: u64,
         format: String,
+        #[serde(default)]
+        fuzz_context: Option<FuzzContextInput>,
     },
     OperationInput {
         format: String,
@@ -202,6 +205,16 @@ struct SubjectObjectInput {
     size: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FuzzContextInput {
+    encoded: String,
+    now: Timestamp,
+    project_id: ProjectId,
+    service_id: ServiceId,
+    verification_key: String,
+}
+
 struct EngineOpenConfiguration {
     build_repository_id: String,
     observation_adapters: Vec<ObservationAdapterInput>,
@@ -294,8 +307,9 @@ impl Registry {
             EngineCall::OperationBegin {
                 begin,
                 engine_handle,
+                fuzz_context,
                 ..
-            } => self.begin_operation(engine_handle, &begin),
+            } => self.begin_operation(engine_handle, &begin, fuzz_context.as_ref()),
             EngineCall::OperationInput {
                 input,
                 operation_handle,
@@ -488,15 +502,17 @@ impl Registry {
         &mut self,
         engine_handle: u64,
         begin: &OperationBeginPayload,
+        fuzz_context: Option<&FuzzContextInput>,
     ) -> Result<Value, Error> {
         if self.operations.len() >= MAX_OPERATIONS {
             return Err(quota_error());
         }
-        let operation = self
-            .engines
-            .get(&engine_handle)
-            .ok_or_else(not_found)?
-            .start(begin)?;
+        let engine = self.engines.get(&engine_handle).ok_or_else(not_found)?;
+        let context = validate_fuzz_context_input(begin, fuzz_context)?;
+        let operation = match context {
+            Some(context) => context.scope_sync(|| engine.start(begin))?,
+            None => engine.start(begin)?,
+        };
         let operation_id = operation.operation_id().to_string();
         let handle = self.allocate_handle()?;
         self.operations.insert(
@@ -573,6 +589,36 @@ impl Registry {
         );
         let work = task.work();
         Ok((handle, task, work))
+    }
+}
+
+fn validate_fuzz_context_input(
+    begin: &OperationBeginPayload,
+    input: Option<&FuzzContextInput>,
+) -> Result<Option<FuzzCampaignContext>, Error> {
+    match (&begin.campaign_context, input) {
+        (None, None) => Ok(None),
+        (Some(identity), Some(input)) => {
+            let bytes = decode_base64url_bytes(&input.encoded)?;
+            if bytes.len() > 4_096 {
+                return Err(Error::schema_invalid());
+            }
+            let context: FuzzContext = canonical::parse_strict(&bytes)?;
+            if canonical::canonical_bytes(&context)? != bytes {
+                return Err(Error::schema_invalid());
+            }
+            let verification_key = decode_base64url::<32>(&input.verification_key)?;
+            verify_fuzz_context(
+                &context,
+                &verification_key,
+                input.project_id,
+                input.service_id,
+                &input.now,
+            )?;
+            identity.matches(&context)?;
+            FuzzCampaignContext::from_verified(input.encoded.clone(), &context, None).map(Some)
+        }
+        _ => Err(Error::schema_invalid()),
     }
 }
 

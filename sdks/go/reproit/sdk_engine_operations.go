@@ -84,6 +84,14 @@ type sdkEngineOperationStart struct {
 	OperationID string
 }
 
+type sdkEngineFuzzContextInput struct {
+	Encoded         string `json:"encoded"`
+	Now             string `json:"now"`
+	ProjectID       string `json:"project_id"`
+	ServiceID       string `json:"service_id"`
+	VerificationKey string `json:"verification_key"`
+}
+
 type sdkEngineObservationStart struct {
 	Handle          sdkEngineObservationHandle
 	SessionPosition uint64
@@ -143,13 +151,15 @@ func (bridge *sdkEngineBridge) closeEngine(handle sdkEngineHandle) error {
 func (bridge *sdkEngineBridge) beginOperation(
 	handle sdkEngineHandle,
 	begin json.RawMessage,
+	fuzzContext *sdkEngineFuzzContextInput,
 ) (sdkEngineOperationStart, error) {
 	result, err := bridge.call(struct {
-		Begin        json.RawMessage `json:"begin"`
-		EngineHandle sdkEngineHandle `json:"engine_handle"`
-		Format       string          `json:"format"`
-		Operation    string          `json:"operation"`
-	}{begin, handle, sdkEngineCallFormat, sdkEngineOperationBegin})
+		Begin        json.RawMessage            `json:"begin"`
+		EngineHandle sdkEngineHandle            `json:"engine_handle"`
+		Format       string                     `json:"format"`
+		FuzzContext  *sdkEngineFuzzContextInput `json:"fuzz_context,omitempty"`
+		Operation    string                     `json:"operation"`
+	}{begin, handle, sdkEngineCallFormat, fuzzContext, sdkEngineOperationBegin})
 	if err != nil {
 		return sdkEngineOperationStart{}, err
 	}

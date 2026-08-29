@@ -23,9 +23,9 @@ getrandom = "=0.4.3"
 hickory-resolver = { version = "=0.26.1", default-features = false, features = ["system-config", "tokio"] }
 libc = "=0.2.189"
 proptest = "=1.11.0"
-reproit-backend = { git = "https://github.com/ReproIt/reproit-core", rev = "78ebef7ae73315bf179a751edc322ab957cd4482", version = "=1.0.0" }
-reproit-cloud-api = { git = "https://github.com/ReproIt/reproit-core", rev = "78ebef7ae73315bf179a751edc322ab957cd4482", version = "=1.0.0" }
-reproit-core = { git = "https://github.com/ReproIt/reproit-core", rev = "78ebef7ae73315bf179a751edc322ab957cd4482", version = "=1.0.0" }
+reproit-backend = { git = "https://github.com/ReproIt/reproit-core", rev = "e8d4b9be18aad9d94aae530b076339c4c795f8e5", version = "=1.0.0" }
+reproit-cloud-api = { git = "https://github.com/ReproIt/reproit-core", rev = "e8d4b9be18aad9d94aae530b076339c4c795f8e5", version = "=1.0.0" }
+reproit-core = { git = "https://github.com/ReproIt/reproit-core", rev = "e8d4b9be18aad9d94aae530b076339c4c795f8e5", version = "=1.0.0" }
 reproit-sdk-platform = { path = "crates/reproit-sdk-platform", version = "=1.0.0" }
 rustls = { version = "=0.23.40", default-features = false, features = ["aws_lc_rs", "std"] }
 rustls-platform-verifier = "=0.7.0"

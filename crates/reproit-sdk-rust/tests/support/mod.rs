@@ -50,6 +50,7 @@ pub fn fixture() -> SdkFixture {
         begin: OperationBeginPayload {
             adapter_id: "axum".to_owned(),
             adapter_version: "0.8.9".to_owned(),
+            campaign_context: None,
             causal_parent_ids: Vec::new(),
             format: OperationBeginFormat::V1,
             operation_kind: OperationKind::RequestResponse,

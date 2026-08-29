@@ -241,6 +241,7 @@ fn begin(engine_handle: u64) -> u64 {
     let begin = OperationBeginPayload {
         adapter_id: "c-abi-test".to_owned(),
         adapter_version: "1.0.0".to_owned(),
+        campaign_context: None,
         causal_parent_ids: Vec::new(),
         format: OperationBeginFormat::V1,
         operation_kind: OperationKind::RequestResponse,

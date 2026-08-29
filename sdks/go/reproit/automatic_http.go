@@ -27,6 +27,7 @@ const (
 var automaticHTTPSensitiveHeaders = map[string]struct{}{
 	"authorization": {}, "cookie": {}, "proxy-authenticate": {},
 	"proxy-authorization": {}, "set-cookie": {}, "www-authenticate": {},
+	"reproit-fuzz-context": {}, "reproit-parent-operation": {},
 }
 
 type automaticHTTPAdapterLease struct {
@@ -183,6 +184,12 @@ func (transport *automaticHTTPTransport) RoundTrip(
 	operation, active := activeAutomaticOperation(request.Context())
 	if !active {
 		return transport.base.RoundTrip(request)
+	}
+	if fuzzContext, ok := fuzzContextFromContext(request.Context()); ok {
+		request = request.Clone(request.Context())
+		request.Header = request.Header.Clone()
+		request.Header.Set(FuzzContextHTTPHeader, fuzzContext.encoded)
+		request.Header.Set(FuzzParentHTTPHeader, operation.OperationID())
 	}
 	semanticRequest, supported := makeAutomaticHTTPRequest(request)
 	if !supported {

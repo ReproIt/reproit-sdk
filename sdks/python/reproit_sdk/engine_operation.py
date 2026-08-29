@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from .managed_subject import package_running_python_subject
+from .distributed_fuzz import (
+    FuzzCampaignContext,
+    _activate_fuzz_context,
+    _current_fuzz_context,
+    _reset_fuzz_context,
+)
 from .native_engine import (
     MAX_SINK_WAITERS,
     MAX_SINK_WAIT_MS,
@@ -40,6 +46,7 @@ class OperationPreparation:
     begin: Mapping[str, Any]
     inputs: Sequence[Mapping[str, Any]]
     completion: NativeTriggerCompletion
+    fuzz_context: FuzzCampaignContext | None = None
 
 
 class ManagedEngineProject:
@@ -152,12 +159,24 @@ class ManagedEngineProject:
 
                 _release_automatic_adapters()
 
-    def _begin(self, begin: Mapping[str, Any]) -> OperationContext:
+    def _begin(
+        self,
+        begin: Mapping[str, Any],
+        fuzz_context: FuzzCampaignContext | None,
+    ) -> OperationContext:
         with self._lock:
             if self._closed:
                 return OperationContext(None, None)
         try:
-            native = self._bridge.operation_begin(self._engine_handle, begin)
+            native = (
+                self._bridge.operation_begin(self._engine_handle, begin)
+                if fuzz_context is None
+                else self._bridge.operation_begin(
+                    self._engine_handle,
+                    begin,
+                    fuzz_context.native_input(),
+                )
+            )
         except Exception:
             return OperationContext(None, None)
         return OperationContext(self, native)
@@ -485,7 +504,9 @@ def run_operation(
     failure: Callable[[BaseException], Mapping[str, Any] | None],
 ) -> _Result | Awaitable[_Result]:
     """Run one framework-neutral boundary without changing its outcome."""
-    context = project._begin(preparation.begin)
+    fuzz_context = preparation.fuzz_context or _current_fuzz_context()
+    begin = _begin_with_fuzz_context(preparation.begin, fuzz_context)
+    context = project._begin(begin, fuzz_context)
     from .http_adapter import _mark_unsupported_operation as _mark_http_unsupported
     from .sqlite_adapter import _mark_unsupported_operation
 
@@ -493,13 +514,20 @@ def run_operation(
     _mark_unsupported_operation(context)
     for value in preparation.inputs:
         context.record_input(value)
+    active_fuzz = (
+        fuzz_context.with_parent(context.operation_id)
+        if fuzz_context is not None and context.operation_id is not None
+        else None
+    )
     token = _ACTIVE_OPERATION.set(context)
+    fuzz_token = _activate_fuzz_context(active_fuzz)
     try:
         result = operation(context)
     except BaseException as original:
         _finish_failure(context, preparation.completion, original, failure)
         raise
     finally:
+        _reset_fuzz_context(fuzz_token)
         _ACTIVE_OPERATION.reset(token)
     if inspect.isawaitable(result):
         return _finish_awaitable(
@@ -507,6 +535,7 @@ def run_operation(
             context,
             preparation.completion,
             failure,
+            active_fuzz,
         )
     context._close_success(preparation.completion)
     return result
@@ -517,8 +546,10 @@ async def _finish_awaitable(
     context: OperationContext,
     completion: NativeTriggerCompletion,
     failure: Callable[[BaseException], Mapping[str, Any] | None],
+    fuzz_context: FuzzCampaignContext | None,
 ) -> _Result:
     token = _ACTIVE_OPERATION.set(context)
+    fuzz_token = _activate_fuzz_context(fuzz_context)
     try:
         value = await result
     except BaseException as original:
@@ -528,7 +559,25 @@ async def _finish_awaitable(
         context._close_success(completion)
         return value
     finally:
+        _reset_fuzz_context(fuzz_token)
         _ACTIVE_OPERATION.reset(token)
+
+
+def _begin_with_fuzz_context(
+    original: Mapping[str, Any],
+    fuzz_context: FuzzCampaignContext | None,
+) -> Mapping[str, Any]:
+    if fuzz_context is None:
+        return original
+    begin = dict(original)
+    parents = list(begin.get("causal_parent_ids", []))
+    inherited = fuzz_context.parent_operation_id
+    if inherited is not None and inherited not in parents:
+        parents.append(inherited)
+    begin["campaign_context"] = fuzz_context.begin_identity()
+    begin["causal_parent_ids"] = parents
+    begin["format"] = "reproit.operation-begin.v2"
+    return begin
 
 
 def _finish_failure(

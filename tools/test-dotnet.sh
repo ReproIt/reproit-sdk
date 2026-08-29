@@ -39,6 +39,9 @@ exec docker run --rm --platform "$native_oci_platform" --network none --read-onl
   mcr.microsoft.com/dotnet/sdk:10.0@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0 \
   bash -lc '
     cp -R /source/sdks/dotnet/. /work/
+    mkdir -p /work/ReproIt.Sdk.Conformance/conformance
+    cp /source/conformance/distributed-fuzz-context-vectors.json \
+      /work/ReproIt.Sdk.Conformance/conformance/
     cd /work/ReproIt.Sdk.Conformance
     dotnet run --configuration Release
   '

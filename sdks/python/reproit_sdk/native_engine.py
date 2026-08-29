@@ -340,15 +340,19 @@ class NativeEngineBridge:
         self,
         engine_handle: NativeEngineHandle,
         begin: Mapping[str, Any],
+        fuzz_context: Mapping[str, str] | None = None,
     ) -> NativeOperation:
         """Start one operation from an existing Core begin payload."""
+        request: dict[str, object] = {
+            "begin": _copy_mapping(begin),
+            "engine_handle": _request_handle(engine_handle),
+            "format": CALL_FORMAT,
+            "operation": _EngineOperation.OPERATION_BEGIN,
+        }
+        if fuzz_context is not None:
+            request["fuzz_context"] = _copy_mapping(fuzz_context)
         result = self._call_result(
-            {
-                "begin": _copy_mapping(begin),
-                "engine_handle": _request_handle(engine_handle),
-                "format": CALL_FORMAT,
-                "operation": _EngineOperation.OPERATION_BEGIN,
-            }
+            request
         )
         if set(result) != {"operation_handle", "operation_id"}:
             raise _response_invalid()

@@ -1,0 +1,22 @@
+{
+  "encoded_context": "eyJjYW1wYWlnbl9pZCI6ImZjXzAxODkwZjNlLTdiMWMtN2NjMC04YTFiLTEyMzQ1Njc4OWFiYyIsImNhc2VfaWQiOiJjYXNlXzAxODkwZjNlLTdiMWQtN2NjMC04YTFiLTEyMzQ1Njc4OWFiYyIsImV4cGlyZXNfYXQiOiIyMDI2LTA4LTMwVDAwOjAwOjAwLjAwMFoiLCJmb3JtYXQiOiJyZXByb2l0LmZ1enotY29udGV4dC52MSIsInByb2plY3RfaWQiOiJwcmpfMDE4OTBmM2UtN2IxZS03Y2MwLThhMWItMTIzNDU2Nzg5YWJjIiwic2VydmljZV9pZCI6InN2Y18wMTg5MGYzZS03YjFmLTdjYzAtOGExYi0xMjM0NTY3ODlhYmMiLCJzaWduYXR1cmUiOiIwdU55ODY1bDRsSk51S2Z2QmVrODEzUDhjYUhkV1lBWUlkTEhWSzJMQ2VMU05ISEstZk9BdGdTLWdEaHVsODdqYjZTdmRJQXpfbkxGMHFvU3F6ai1CdyJ9",
+  "expected": {
+    "campaign_id": "fc_01890f3e-7b1c-7cc0-8a1b-123456789abc",
+    "case_id": "case_01890f3e-7b1d-7cc0-8a1b-123456789abc",
+    "context_digest": "sha256:f4550c3e0af858c962dbf856ead3e511b5499da5c96537249c2ec81f078c95c2",
+    "project_id": "prj_01890f3e-7b1e-7cc0-8a1b-123456789abc",
+    "service_id": "svc_01890f3e-7b1f-7cc0-8a1b-123456789abc"
+  },
+  "format": "reproit.distributed-fuzz-context-vectors.v1",
+  "http": {
+    "context_header": "ReproIt-Fuzz-Context",
+    "parent_header": "ReproIt-Parent-Operation"
+  },
+  "now": "2026-08-29T00:00:00.000Z",
+  "parent_operation_id": "op_01890f3e-7b20-7cc0-8a1b-123456789abc",
+  "queue": {
+    "context_metadata": "reproit.fuzz.context",
+    "parent_metadata": "reproit.parent.operation"
+  },
+  "verification_key": "_RckOFqgx1tk-3jNYC-h2ZH96_drE8WO1wLqyDXp9hg"
+}
