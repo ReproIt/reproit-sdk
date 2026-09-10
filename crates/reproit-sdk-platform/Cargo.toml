@@ -7,6 +7,12 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[dependencies]
+process-wrap = { version = "=10.0.0", default-features = false, features = ["std", "process-group", "job-object"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",

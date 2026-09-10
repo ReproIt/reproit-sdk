@@ -39,6 +39,10 @@ command.
 The SDK sends only complete failed operations to managed Repro It Cloud. It keeps successful,
 incomplete, unsupported, and resource-limited operations local.
 
+When a local fuzzer starts the application, it sets `REPROIT_FUZZ_TARGET=1`. The SDK records this
+as `fuzz-campaign` discovery provenance on failed captures. Cloud stores the capture through the
+normal Repro upload path. Runs without this variable remain production captures.
+
 ## Verify SDK source
 
 ```sh

@@ -140,7 +140,7 @@ impl AutomaticManagedEngine {
         )?);
         let mut deployment = self.project.deployment()?;
         recorder.bind_deployment(&mut deployment)?;
-        let sdk = Sdk::new(recorder.clone());
+        let sdk = Sdk::new_from_environment(recorder.clone());
         sdk.begin_automatic(
             AutomaticCandidateStart {
                 capture_id,

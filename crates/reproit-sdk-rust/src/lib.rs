@@ -19,10 +19,10 @@ pub use reproit_core::{
     Error,
     model::{
         AutomaticObservationClass, AutomaticObservationPayloadFormat, DependencyCursorFormat,
-        DependencyCursorPayload, FailurePayload, FailurePayloadFormat, InputChannel,
-        NativeObservationFenceReceiptFormat, OperationBeginFormat, OperationBeginPayload,
-        OperationInputFormat, OperationInputPayload, OperationKind, SemanticAdapterOwnership,
-        TriggerCompletion, WorldCheckpoint, WorldCheckpointFormat,
+        DependencyCursorPayload, DiscoverySource, FailurePayload, FailurePayloadFormat,
+        InputChannel, NativeObservationFenceReceiptFormat, OperationBeginFormat,
+        OperationBeginPayload, OperationInputFormat, OperationInputPayload, OperationKind,
+        SemanticAdapterOwnership, TriggerCompletion, WorldCheckpoint, WorldCheckpointFormat,
     },
 };
 
@@ -99,6 +99,7 @@ pub const MAX_WORLD_BYTES: u64 = 2 * 1_024 * 1_024 * 1_024;
 pub const MAX_CANDIDATE_CLOSURE_BYTES: u64 = 4 * 1_024 * 1_024 * 1_024;
 pub const MAX_PROCESS_CAPTURE_BYTES: u64 = 4 * 1_024 * 1_024 * 1_024;
 pub const CANDIDATE_DELIVERY_LIFETIME_MS: u64 = 1_800_000;
+pub const FUZZ_DISCOVERY_ENVIRONMENT: &str = "REPROIT_FUZZ_TARGET";
 const FAILURE_SUPPRESSION_MS: u64 = 60_000;
 const FAILURE_TOKENS_MILLI_CAPACITY: u64 = 4_000;
 
@@ -171,13 +172,38 @@ pub struct AutomaticCandidateStart {
 
 #[derive(Clone)]
 pub struct Sdk {
+    discovery_source: DiscoverySource,
     state: Arc<Mutex<State>>,
     sink: Arc<dyn CandidateSink>,
 }
 
 impl Sdk {
     pub fn new(sink: Arc<dyn CandidateSink>) -> Self {
+        Self::new_with_discovery_source(sink, DiscoverySource::Production)
+    }
+
+    pub fn new_for_fuzz(sink: Arc<dyn CandidateSink>) -> Self {
+        Self::new_with_discovery_source(sink, DiscoverySource::FuzzCampaign)
+    }
+
+    pub fn new_from_environment(sink: Arc<dyn CandidateSink>) -> Self {
+        let source = if matches!(
+            std::env::var(FUZZ_DISCOVERY_ENVIRONMENT).as_deref(),
+            Ok("1")
+        ) {
+            DiscoverySource::FuzzCampaign
+        } else {
+            DiscoverySource::Production
+        };
+        Self::new_with_discovery_source(sink, source)
+    }
+
+    fn new_with_discovery_source(
+        sink: Arc<dyn CandidateSink>,
+        discovery_source: DiscoverySource,
+    ) -> Self {
         Self {
+            discovery_source,
             state: Arc::new(Mutex::new(State::new())),
             sink,
         }
@@ -233,6 +259,11 @@ impl Sdk {
             (None, None) => None,
             _ => return Err(Error::schema_invalid()),
         };
+        let discovery_source = if campaign_context.is_some() {
+            DiscoverySource::FuzzCampaign
+        } else {
+            self.discovery_source
+        };
         let record = event_record(EventKind::Begin, 0, payload)?;
         let record_bytes = record_size(&record);
         let mut state = self.lock_state();
@@ -248,6 +279,7 @@ impl Sdk {
             ActiveOperation {
                 bytes: record_bytes,
                 campaign_context,
+                discovery_source,
                 records: vec![record],
                 start,
                 world_bound,
@@ -330,21 +362,7 @@ impl Sdk {
             state.recall.eligible_failure_observed =
                 state.recall.eligible_failure_observed.saturating_add(1);
         }
-        let failure_record = {
-            let state = self.lock_state();
-            let operation = state
-                .operations
-                .get(&operation_id)
-                .ok_or_else(incomplete_candidate)?;
-            if !operation.world_bound {
-                return Err(incomplete_candidate());
-            }
-            event_record(
-                EventKind::Failure,
-                u16::try_from(operation.records.len()).map_err(|_| runtime_quota())?,
-                payload,
-            )?
-        };
+        let failure_record = self.failure_record(operation_id, payload)?;
 
         {
             let mut state = self.lock_state();
@@ -379,6 +397,8 @@ impl Sdk {
                 campaign_context: operation.campaign_context,
                 capture_id: operation.start.capture_id,
                 deployment: operation.start.deployment,
+                discovery_source: (operation.discovery_source != DiscoverySource::Production)
+                    .then_some(operation.discovery_source),
                 failure: payload.failure.clone(),
                 format: CandidateFormat::V1,
                 operation_id,
@@ -425,6 +445,26 @@ impl Sdk {
             }
         }
         Ok(())
+    }
+
+    fn failure_record(
+        &self,
+        operation_id: OperationId,
+        payload: &FailurePayload,
+    ) -> Result<EventRecord, Error> {
+        let state = self.lock_state();
+        let operation = state
+            .operations
+            .get(&operation_id)
+            .ok_or_else(incomplete_candidate)?;
+        if !operation.world_bound {
+            return Err(incomplete_candidate());
+        }
+        event_record(
+            EventKind::Failure,
+            u16::try_from(operation.records.len()).map_err(|_| runtime_quota())?,
+            payload,
+        )
     }
 
     pub fn active_operations(&self) -> usize {
@@ -511,6 +551,7 @@ impl Drop for State {
 struct ActiveOperation {
     bytes: usize,
     campaign_context: Option<reproit_core::model::FuzzContext>,
+    discovery_source: DiscoverySource,
     records: Vec<EventRecord>,
     start: CandidateStart,
     world_bound: bool,

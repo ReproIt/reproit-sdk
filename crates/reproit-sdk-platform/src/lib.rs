@@ -8,6 +8,8 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+pub mod process;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostPlatform {
     pub architecture: &'static str,

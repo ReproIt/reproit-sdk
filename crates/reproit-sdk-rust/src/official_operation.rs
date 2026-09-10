@@ -221,7 +221,7 @@ impl OfficialManagedRustOperation {
         let recorder = Arc::new(ManagedRustLocalRecorder::new(operation_id)?);
         let mut deployment = project.deployment()?;
         recorder.bind_deployment(&mut deployment)?;
-        let sdk = Sdk::new(recorder.clone());
+        let sdk = Sdk::new_from_environment(recorder.clone());
         sdk.begin(
             CandidateStart {
                 capture_id,

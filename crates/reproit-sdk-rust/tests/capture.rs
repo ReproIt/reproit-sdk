@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use reproit_core::model::{Candidate, Validate};
+use reproit_core::model::{Candidate, DiscoverySource, Validate};
 use reproit_sdk_rust::{
     AutomaticCandidateStart, CandidateSink, CandidateStart, MAX_ACTIVE_OPERATIONS, Sdk,
 };
@@ -61,6 +61,25 @@ fn failure_sends_one_complete_candidate() {
     assert_eq!(candidates[0].failure, fixture.failure.failure);
     candidates[0].validate().unwrap();
     assert_eq!(sdk.active_operations(), 0);
+}
+
+#[test]
+fn fuzz_sdk_marks_the_candidate_without_campaign_context() {
+    let _process = process_test();
+    let fixture = fixture("orders.fuzz");
+    let sink = Arc::new(Sink::default());
+    let sdk = Sdk::new_for_fuzz(sink.clone());
+    sdk.begin(fixture.start.clone(), &fixture.begin).unwrap();
+    sdk.fail(fixture.start.operation_id, &fixture.failure)
+        .unwrap();
+
+    let candidates = sink.candidates.lock().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].campaign_context, None);
+    assert_eq!(
+        candidates[0].discovery_source(),
+        Ok(DiscoverySource::FuzzCampaign)
+    );
 }
 
 #[test]
