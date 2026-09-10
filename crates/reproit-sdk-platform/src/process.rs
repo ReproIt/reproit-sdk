@@ -55,7 +55,20 @@ impl ProcessTree {
     /// Stop descendants even when the direct child has already exited.
     pub fn terminate(&mut self) -> io::Result<ExitStatus> {
         if !self.stopped {
-            if let Err(error) = self.child.start_kill() {
+            self.child.try_wait()?;
+            let signal = self.child.start_kill();
+            // Darwin can reject a signal to a zombie. Reap it before checking the group again.
+            #[cfg(target_os = "macos")]
+            let signal = if signal
+                .as_ref()
+                .is_err_and(|error| error.raw_os_error() == Some(1))
+                && self.child.try_wait()?.is_some()
+            {
+                self.child.start_kill()
+            } else {
+                signal
+            };
+            if let Err(error) = signal {
                 // ESRCH means that the owned Unix process group is already absent.
                 #[cfg(unix)]
                 if error.raw_os_error() != Some(3) {
