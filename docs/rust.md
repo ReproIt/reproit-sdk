@@ -2,6 +2,9 @@
 
 Use the Rust SDK at one supported Backend operation boundary.
 
+The [orders example](orders-example.md) uses the current SDK with an Axum checkout route.
+It includes a local defect check and the requirements for a managed capture run.
+
 The SDK installs package-owned guards for all seven World observation classes.
 The guards use the shared Linux coverage sentinel. A failed operation can leave
 the process only when the native trace is healthy and every kernel-visible effect
