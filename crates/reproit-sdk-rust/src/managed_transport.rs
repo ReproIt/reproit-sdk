@@ -590,7 +590,7 @@ fn resolve_on_owned_runtime(host: &str, timeout: Duration) -> Result<Vec<std::ne
     options.timeout = timeout;
     let resolver = builder.build().map_err(|_| service_unavailable())?;
     let lookup = runtime
-        .block_on(tokio::time::timeout(timeout, resolver.lookup_ip(host)))
+        .block_on(async { tokio::time::timeout(timeout, resolver.lookup_ip(host)).await })
         .map_err(|_| service_unavailable())?
         .map_err(|_| service_unavailable())?;
     let addresses = collect_bounded_addresses(lookup.iter())?;
@@ -680,6 +680,14 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
+
+    #[test]
+    fn owned_dns_runtime_resolves_a_literal_without_an_ambient_runtime() {
+        assert_eq!(
+            resolve_bounded("127.0.0.1", Duration::from_secs(1)).expect("resolve loopback"),
+            vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        );
+    }
 
     #[test]
     fn official_origin_accepts_one_canonical_https_origin() {
