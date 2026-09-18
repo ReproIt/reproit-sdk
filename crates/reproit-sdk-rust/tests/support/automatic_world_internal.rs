@@ -28,6 +28,9 @@ const SEMANTIC_DEPENDENCY_CLASSES: [AutomaticObservationClass; 3] = [
     AutomaticObservationClass::Queue,
 ];
 
+#[path = "automatic_replay_internal.rs"]
+mod replay;
+
 #[derive(Default)]
 struct Sink;
 

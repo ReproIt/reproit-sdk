@@ -20,8 +20,9 @@ use reproit_core::{
     },
 };
 use reproit_sdk_rust::{
-    AutomaticManagedEngine, AutomaticManagedRustOperationFactory, ExactResponseFailureClassifier,
-    ManagedProjectToken, OfficialManagedProject, package_running_rust_subject,
+    AutomaticManagedEngine, AutomaticManagedRustOperationFactory, AutomaticReplayOperation,
+    ExactResponseFailureClassifier, ManagedProjectToken, OfficialManagedProject,
+    package_running_rust_subject,
 };
 use reproit_sdk_rust_axum::{AxumRequestCapture, capture_axum_request};
 use serde::{Deserialize, Serialize};
@@ -137,7 +138,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if env::var("REPROIT_TRIGGER").as_deref() == Ok("stdin") {
         let mut trigger = Vec::new();
         std::io::stdin().take(1_025).read_to_end(&mut trigger)?;
-        let (output, exit_code) = replay(trigger).await?;
+        let (output, exit_code) = if let Some(directory) = env::var_os("REPROIT_REPLAY_ROOT") {
+            let operation =
+                AutomaticReplayOperation::from_directory(std::path::Path::new(&directory))?;
+            let result = operation.context().scope(replay(trigger)).await?;
+            operation.finish()?;
+            result
+        } else {
+            replay(trigger).await?
+        };
         std::io::stdout().write_all(&output)?;
         std::process::exit(exit_code);
     }

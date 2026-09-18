@@ -333,6 +333,7 @@ impl AutomaticOperationShared {
         &self,
         action: impl FnOnce(&mut AutomaticWorldCoordinator) -> Result<T, Error>,
     ) -> Result<T, Error> {
+        let _engine_call_guard = reproit_sdk_sentinel::engine_call_scope();
         let mut state = self.lock_state()?;
         if state.invalid_context {
             return Err(invalid_context());
@@ -363,6 +364,7 @@ impl AutomaticOperationShared {
         class: AutomaticObservationClass,
         causal_parent_id: Option<OperationId>,
     ) -> Result<(u64, u64), Error> {
+        let _engine_call_guard = reproit_sdk_sentinel::engine_call_scope();
         let mut state = self.lock_state()?;
         if state.invalid_context {
             return Err(invalid_context());
@@ -386,6 +388,7 @@ impl AutomaticOperationShared {
     }
 
     fn abandon_session(&self, session_id: u64) -> Result<(), Error> {
+        let _engine_call_guard = reproit_sdk_sentinel::engine_call_scope();
         let mut state = self.lock_state()?;
         let result = state
             .coordinator
@@ -397,6 +400,7 @@ impl AutomaticOperationShared {
     }
 
     fn fail_session(&self, session_id: u64) {
+        let _engine_call_guard = reproit_sdk_sentinel::engine_call_scope();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(coordinator) = state.coordinator.as_mut() {
             let _result = coordinator.abandon_observation(session_id);

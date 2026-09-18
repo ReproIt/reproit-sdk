@@ -28,6 +28,7 @@ pub use reproit_core::{
 
 mod automatic_context;
 mod automatic_engine;
+mod automatic_replay;
 mod automatic_world;
 mod distributed_fuzz;
 mod managed;
@@ -50,6 +51,7 @@ pub use automatic_context::{
 pub use automatic_engine::{
     AutomaticManagedEngine, AutomaticManagedOperation, AutomaticManagedRustOperationFactory,
 };
+pub use automatic_replay::AutomaticReplayOperation;
 pub use distributed_fuzz::{
     FUZZ_CONTEXT_HTTP_HEADER, FUZZ_CONTEXT_QUEUE_METADATA, FUZZ_PARENT_HTTP_HEADER,
     FUZZ_PARENT_QUEUE_METADATA, FuzzCampaignContext, FuzzContextScope, FuzzContextValidator,

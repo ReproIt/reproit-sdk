@@ -49,10 +49,10 @@ const RUST_NATIVE_GUARD_ADAPTER_ID: &str = "rust-native-coverage-sentinel";
 const RUST_NATIVE_GUARD_ADAPTER_VERSION: &str = "1.0.0";
 static NEXT_NATIVE_OPERATION_HANDLE: AtomicU64 = AtomicU64::new(1);
 
-struct NativeSentinelLease;
+pub(crate) struct NativeSentinelLease;
 
 impl NativeSentinelLease {
-    fn acquire() -> Arc<Self> {
+    pub(crate) fn acquire() -> Arc<Self> {
         native_sentinel::engine_opened();
         Arc::new(Self)
     }
@@ -483,7 +483,7 @@ fn new_operation_id() -> Result<OperationId, Error> {
     format!("op_{}", Uuid::now_v7()).parse()
 }
 
-fn next_native_operation_handle() -> Result<u64, Error> {
+pub(crate) fn next_native_operation_handle() -> Result<u64, Error> {
     NEXT_NATIVE_OPERATION_HANDLE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |handle| {
             handle.checked_add(1)

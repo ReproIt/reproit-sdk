@@ -8,6 +8,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 
+use reproit_backend::automatic_replay::AutomaticReplay;
 use reproit_core::{
     Error, ErrorCode, canonical,
     crypto::encode_base64url,
@@ -18,11 +19,8 @@ use reproit_core::{
         ClosurePolicyFormat, ClosureReceipt, ClosureRule, DependencyOutcome,
         DependencyTranscriptInteraction, LogicalObjectRole, NativeObservationFenceReceipt,
         NativeObservationFenceReceiptFormat, ProviderResourceClaim, RecoverablePoint,
-        RecoverablePointFormat, SemanticAdapterOwnership, SemanticDependencyRequest,
-        SemanticDependencyResponse, SemanticObservationOperation, SemanticObservationOutcome,
-        SemanticObservationRequest, SemanticObservationResponse, TriggerCompletion, Validate as _,
+        RecoverablePointFormat, SemanticAdapterOwnership, TriggerCompletion, Validate as _,
         WorldCheckpoint, WorldCheckpointFormat, WorldClosure, WorldClosureFormat,
-        validate_semantic_dependency_pair, validate_semantic_observation_pair,
     },
 };
 use sha2::{Digest as _, Sha256};
@@ -37,6 +35,9 @@ use crate::{
 
 #[path = "automatic_world_artifacts.rs"]
 mod automatic_world_artifacts;
+#[path = "automatic_world_semantics.rs"]
+mod automatic_world_semantics;
+use automatic_world_semantics::semantic_contract_for;
 
 const ADAPTER_ID: &str = "reproit-native";
 const ADAPTER_VERSION: &str = "1.0.0";
@@ -61,7 +62,6 @@ pub(crate) const MAX_AUTOMATIC_OBSERVATION_SESSIONS_PER_OPERATION: usize = 64;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AutomaticObservationAction {
     Capture,
-    #[allow(dead_code)]
     Replay,
 }
 
@@ -82,7 +82,6 @@ pub(crate) enum AutomaticObservationStream {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum AutomaticObservationSessionState {
     Request,
     Capture,
@@ -102,10 +101,15 @@ pub(crate) struct AutomaticWorldCoordinator {
     overflowed: bool,
     registrations: BTreeMap<AutomaticObservationClass, AutomaticObservationRegistration>,
     reservation: crate::resources::LogicalByteReservation,
-    sdk: Sdk,
+    mode: AutomaticWorldMode,
     sessions: BTreeMap<u64, ObservationSession>,
     next_session_positions: BTreeMap<AutomaticObservationClass, u64>,
     spool: TempDir,
+}
+
+enum AutomaticWorldMode {
+    Capture(Sdk),
+    Replay(AutomaticReplay),
 }
 
 #[derive(Clone)]
@@ -182,72 +186,6 @@ enum SemanticContract {
     ProcessObservation,
 }
 
-impl ObservationSession {
-    fn validate_semantic_request(&self) -> Result<(), Error> {
-        let Some(contract) = self.semantic_contract else {
-            return Ok(());
-        };
-        let class = match contract {
-            SemanticContract::Dependency => {
-                read_semantic_record::<SemanticDependencyRequest>(
-                    &self.request_path,
-                    self.request_bytes,
-                )?
-                .observation_class
-            }
-            SemanticContract::ProcessObservation => {
-                let request = read_semantic_record::<SemanticObservationRequest>(
-                    &self.request_path,
-                    self.request_bytes,
-                )?;
-                observation_class(request.operation)
-            }
-        };
-        if class != self.class {
-            return Err(invalid_transition());
-        }
-        Ok(())
-    }
-
-    fn validate_semantic_pair(&self, outcome: DependencyOutcome) -> Result<(), Error> {
-        let Some(contract) = self.semantic_contract else {
-            return Ok(());
-        };
-        let semantic_outcome = match contract {
-            SemanticContract::Dependency => {
-                let request = read_semantic_record::<SemanticDependencyRequest>(
-                    &self.request_path,
-                    self.request_bytes,
-                )?;
-                let response = read_semantic_record::<SemanticDependencyResponse>(
-                    &self.response_path,
-                    self.response_bytes,
-                )?;
-                validate_semantic_dependency_pair(&request, &response)
-                    .map_err(|_| invalid_transition())?;
-                response.outcome
-            }
-            SemanticContract::ProcessObservation => {
-                let request = read_semantic_record::<SemanticObservationRequest>(
-                    &self.request_path,
-                    self.request_bytes,
-                )?;
-                let response = read_semantic_record::<SemanticObservationResponse>(
-                    &self.response_path,
-                    self.response_bytes,
-                )?;
-                validate_semantic_observation_pair(&request, &response)
-                    .map_err(|_| invalid_transition())?;
-                response.outcome
-            }
-        };
-        if dependency_outcome(semantic_outcome) != outcome {
-            return Err(invalid_transition());
-        }
-        Ok(())
-    }
-}
-
 impl AutomaticWorldCoordinator {
     #[cfg(test)]
     fn new(sdk: Sdk, operation_id: OperationId) -> Result<Self, Error> {
@@ -256,6 +194,34 @@ impl AutomaticWorldCoordinator {
 
     pub(crate) fn new_with_registrations(
         sdk: Sdk,
+        operation_id: OperationId,
+        registrations: BTreeMap<AutomaticObservationClass, AutomaticObservationRegistration>,
+    ) -> Result<Self, Error> {
+        Self::new_mode(
+            AutomaticWorldMode::Capture(sdk),
+            operation_id,
+            registrations,
+        )
+    }
+
+    pub(crate) fn new_replay(
+        replay: AutomaticReplay,
+        operation_id: OperationId,
+    ) -> Result<Self, Error> {
+        let mut coordinator = Self::new_mode(
+            AutomaticWorldMode::Replay(replay),
+            operation_id,
+            BTreeMap::new(),
+        )?;
+        coordinator.next_session_positions = AutomaticObservationClass::ALL
+            .into_iter()
+            .map(|class| (class, AutomaticReplay::first_position(class)))
+            .collect();
+        Ok(coordinator)
+    }
+
+    fn new_mode(
+        mode: AutomaticWorldMode,
         operation_id: OperationId,
         registrations: BTreeMap<AutomaticObservationClass, AutomaticObservationRegistration>,
     ) -> Result<Self, Error> {
@@ -275,11 +241,28 @@ impl AutomaticWorldCoordinator {
             overflowed: false,
             registrations,
             reservation: crate::resources::LogicalByteReservation::new(),
-            sdk,
+            mode,
             sessions: BTreeMap::new(),
             next_session_positions: BTreeMap::new(),
             spool,
         })
+    }
+
+    fn capture_sdk(&self) -> Result<&Sdk, Error> {
+        match &self.mode {
+            AutomaticWorldMode::Capture(sdk) => Ok(sdk),
+            AutomaticWorldMode::Replay(_) => Err(invalid_transition()),
+        }
+    }
+
+    pub(crate) fn finish_replay(self) -> Result<(), Error> {
+        if self.incomplete_session || self.overflowed || !self.sessions.is_empty() {
+            return Err(world_not_closed());
+        }
+        match &self.mode {
+            AutomaticWorldMode::Replay(replay) => replay.require_complete(),
+            AutomaticWorldMode::Capture(_) => Err(invalid_transition()),
+        }
     }
 
     #[cfg(test)]
@@ -352,7 +335,9 @@ impl AutomaticWorldCoordinator {
         causal_parent_id: Option<OperationId>,
         semantic_contract: bool,
     ) -> Result<u64, Error> {
-        if !self.registrations.contains_key(&class) {
+        if matches!(self.mode, AutomaticWorldMode::Capture(_))
+            && !self.registrations.contains_key(&class)
+        {
             self.incomplete_session = true;
             return Err(world_not_closed());
         }
@@ -471,8 +456,26 @@ impl AutomaticWorldCoordinator {
             self.incomplete_session = true;
             return Err(invalid_transition());
         }
-        session.state = AutomaticObservationSessionState::Capture;
-        Ok(AutomaticObservationAction::Capture)
+        match &mut self.mode {
+            AutomaticWorldMode::Capture(_) => {
+                session.state = AutomaticObservationSessionState::Capture;
+                Ok(AutomaticObservationAction::Capture)
+            }
+            AutomaticWorldMode::Replay(replay) => {
+                let request = fs::read(&session.request_path).map_err(local_storage_error)?;
+                let recorded =
+                    replay.take_response(session.class, session.session_position, &request)?;
+                session.response_bytes = recorded.response.len() as u64;
+                if !self.reservation.reserve(session.response_bytes) {
+                    self.incomplete_session = true;
+                    return Err(capture_limit());
+                }
+                fs::write(&session.response_path, recorded.response)
+                    .map_err(local_storage_error)?;
+                session.state = AutomaticObservationSessionState::Replay { response_offset: 0 };
+                Ok(AutomaticObservationAction::Replay)
+            }
+        }
     }
 
     pub(crate) fn read_observation_response(
@@ -529,7 +532,9 @@ impl AutomaticWorldCoordinator {
             self.incomplete_session = true;
             return Err(error);
         }
-        if let Err(error) = self.commit_session(&session, outcome, session_position) {
+        if matches!(self.mode, AutomaticWorldMode::Capture(_))
+            && let Err(error) = self.commit_session(&session, outcome, session_position)
+        {
             self.incomplete_session = true;
             return Err(error);
         }
@@ -599,6 +604,10 @@ impl AutomaticWorldCoordinator {
         causal_parent_id: Option<OperationId>,
         evidence: &[u8],
     ) -> Result<(), Error> {
+        if matches!(self.mode, AutomaticWorldMode::Replay(_)) {
+            self.incomplete_session = true;
+            return Err(world_not_closed());
+        }
         if evidence.is_empty()
             || self.observations.len() >= MAX_EVENTS
             || evidence.len() as u64 > MAX_WORLD_ARTIFACT_BYTES
@@ -643,7 +652,7 @@ impl AutomaticWorldCoordinator {
             operation_id: self.operation_id,
             owner_adapter_id: None,
         };
-        self.sdk
+        self.capture_sdk()?
             .record_observation(self.operation_id, &observation)?;
         self.observations.push(observation);
         Ok(())
@@ -844,59 +853,6 @@ fn append_chunk(path: &Path, chunk: &[u8]) -> Result<(), Error> {
         .map_err(local_storage_error)?;
     file.write_all(chunk).map_err(local_storage_error)?;
     file.flush().map_err(local_storage_error)
-}
-
-fn semantic_contract_for(class: AutomaticObservationClass) -> SemanticContract {
-    match class {
-        AutomaticObservationClass::Database
-        | AutomaticObservationClass::OutboundHttp
-        | AutomaticObservationClass::Queue => SemanticContract::Dependency,
-        AutomaticObservationClass::Clock
-        | AutomaticObservationClass::Environment
-        | AutomaticObservationClass::Filesystem
-        | AutomaticObservationClass::Randomness => SemanticContract::ProcessObservation,
-    }
-}
-
-fn observation_class(operation: SemanticObservationOperation) -> AutomaticObservationClass {
-    match operation {
-        SemanticObservationOperation::ClockWallTime => AutomaticObservationClass::Clock,
-        SemanticObservationOperation::EnvironmentRead => AutomaticObservationClass::Environment,
-        SemanticObservationOperation::FilesystemRead => AutomaticObservationClass::Filesystem,
-        SemanticObservationOperation::RandomBytes => AutomaticObservationClass::Randomness,
-    }
-}
-
-fn dependency_outcome(outcome: SemanticObservationOutcome) -> DependencyOutcome {
-    match outcome {
-        SemanticObservationOutcome::Error => DependencyOutcome::Error,
-        SemanticObservationOutcome::Response => DependencyOutcome::Response,
-    }
-}
-
-fn read_semantic_record<T>(path: &Path, declared_bytes: u64) -> Result<T, Error>
-where
-    T: for<'de> serde::Deserialize<'de> + serde::Serialize + reproit_core::model::Validate,
-{
-    if declared_bytes == 0 || declared_bytes > MAX_SEMANTIC_RECORD_BYTES {
-        return Err(invalid_transition());
-    }
-    let mut bytes = Vec::with_capacity(usize::try_from(declared_bytes).unwrap_or_default());
-    File::open(path)
-        .map_err(local_storage_error)?
-        .take(MAX_SEMANTIC_RECORD_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(local_storage_error)?;
-    if u64::try_from(bytes.len()).ok() != Some(declared_bytes) {
-        return Err(invalid_transition());
-    }
-    let record: T = canonical::parse_strict(&bytes).map_err(|_| invalid_transition())?;
-    record.validate().map_err(|_| invalid_transition())?;
-    let canonical = canonical::canonical_bytes(&record).map_err(|_| invalid_transition())?;
-    if canonical != bytes {
-        return Err(invalid_transition());
-    }
-    Ok(record)
 }
 
 fn adapter_ownership(

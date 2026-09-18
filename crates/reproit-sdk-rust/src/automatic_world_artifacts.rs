@@ -74,7 +74,7 @@ impl AutomaticWorldCoordinator {
             operation_id: self.operation_id,
             owner_adapter_id: Some(owner_adapter_id),
         };
-        self.sdk
+        self.capture_sdk()?
             .record_observation(self.operation_id, &observation)?;
         self.observations.push(observation);
         Ok(())
@@ -194,7 +194,8 @@ impl AutomaticWorldCoordinator {
             format: DependencyCursorFormat::V1,
         };
         payload.validate()?;
-        self.sdk.record_dependency(self.operation_id, &payload)?;
+        self.capture_sdk()?
+            .record_dependency(self.operation_id, &payload)?;
         self.artifacts.push(ObservationArtifact {
             artifact: ManagedCandidateArtifact {
                 media_type: DEPENDENCY_TRANSCRIPT_MEDIA_TYPE.to_owned(),
