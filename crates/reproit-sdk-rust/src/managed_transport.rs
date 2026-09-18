@@ -567,6 +567,9 @@ fn connect_resolved(destination: &str, timeout: Duration) -> Result<TcpStream, E
 }
 
 fn resolve_bounded(host: &str, timeout: Duration) -> Result<Vec<std::net::IpAddr>, Error> {
+    if let Ok(address) = host.parse() {
+        return Ok(vec![address]);
+    }
     let host = host.to_owned();
     thread::Builder::new()
         .name("reproit-managed-dns".to_owned())
@@ -677,15 +680,19 @@ fn service_unavailable() -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::*;
 
     #[test]
-    fn owned_dns_runtime_resolves_a_literal_without_an_ambient_runtime() {
+    fn literal_addresses_do_not_require_dns_or_a_runtime() {
         assert_eq!(
-            resolve_bounded("127.0.0.1", Duration::from_secs(1)).expect("resolve loopback"),
+            resolve_bounded("127.0.0.1", Duration::ZERO).expect("resolve IPv4 loopback"),
             vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        );
+        assert_eq!(
+            resolve_bounded("::1", Duration::ZERO).expect("resolve IPv6 loopback"),
+            vec![IpAddr::V6(Ipv6Addr::LOCALHOST)],
         );
     }
 
