@@ -25,7 +25,7 @@ pub struct AutomaticReplayOperation {
 }
 
 impl AutomaticReplayOperation {
-    /// Read `capsule.json` and verified `objects/{object_id}` payloads.
+    /// Read `capsule.json` and verified payloads named by object ID.
     pub fn from_directory(directory: &Path) -> Result<Self, Error> {
         let bytes = read_bounded_file(&directory.join("capsule.json"), 32 * 1_024 * 1_024)?;
         let capsule: ReplayCapsule = canonical::parse_strict(&bytes)?;
@@ -34,7 +34,7 @@ impl AutomaticReplayOperation {
         }
         Self::from_capsule(&capsule, &mut |object| {
             read_bounded_file(
-                &directory.join("objects").join(object.object_id.to_string()),
+                &directory.join(object.object_id.to_string()),
                 object.plain_size,
             )
         })
