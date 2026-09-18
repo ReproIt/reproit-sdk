@@ -98,10 +98,14 @@ completed managed replay.
   and the Rust, Python, Go, Node.js, and .NET checks. The Node native addon check is skipped when
   no addon is supplied. The macOS result does not cover native Linux managed capture.
 - A native Linux run delivered the real failed HTTP order to local Cloud as an encrypted managed
-  candidate. This used a test build bound to the isolated local service.
+  candidate. The managed worker leased and decrypted it. This used a test build bound to the
+  isolated local service.
 - Native capture exposed a DNS runtime panic. The SDK now constructs its timeout inside the
   Tokio runtime. The regression test fails with the original code and passes with the fix.
 - The SDK source has unbound official service and signer constants. A managed run requires a
   service binding, whether the service runs locally or remotely.
+- Managed replay stops during subject materialization. The SDK records an `automatic-world`
+  snapshot, but the worker currently restores only `file-checkpoint` Worlds. This requires replay
+  support for the recorded snapshot and observations. Changing the provider name is not a fix.
 - No managed Repro ID, debugger session, retained reference, or managed check verdict has been
   obtained. These remain required before the full workflow is complete.
