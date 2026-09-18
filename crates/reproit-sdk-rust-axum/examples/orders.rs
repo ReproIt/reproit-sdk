@@ -1,15 +1,20 @@
-use std::{env, fs, sync::Arc};
+use std::{
+    env, fs,
+    io::{Read as _, Write as _},
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
+    body::{Body, to_bytes},
     extract::DefaultBodyLimit,
-    http::StatusCode,
+    http::{Request, StatusCode},
     middleware,
     response::{IntoResponse, Response},
     routing::post,
 };
 use reproit_core::{
-    Error, ErrorCode,
+    Error, ErrorCode, canonical,
     model::{
         ExceptionCategory, ExceptionFailureIdentity, FailureFrame, FailureIdentity, OperationKind,
     },
@@ -20,6 +25,7 @@ use reproit_sdk_rust::{
 };
 use reproit_sdk_rust_axum::{AxumRequestCapture, capture_axum_request};
 use serde::{Deserialize, Serialize};
+use tower::ServiceExt as _;
 
 const OVERFLOW: &str = "Order total overflowed.\n";
 
@@ -75,7 +81,19 @@ fn capture() -> Result<AxumRequestCapture, Box<dyn std::error::Error>> {
         })?;
         ManagedProjectToken::new(token)
     });
-    let failure = FailureIdentity::Exception(ExceptionFailureIdentity {
+    Ok(AxumRequestCapture::new(
+        Arc::new(factory),
+        "orders.checkout",
+        Arc::new(ExactResponseFailureClassifier::new(
+            500,
+            OVERFLOW.as_bytes().to_vec(),
+            failure_identity(),
+        )),
+    )?)
+}
+
+fn failure_identity() -> FailureIdentity {
+    FailureIdentity::Exception(ExceptionFailureIdentity {
         category: ExceptionCategory::Exception,
         cause_types: Vec::new(),
         frames: vec![FailureFrame {
@@ -89,20 +107,40 @@ fn capture() -> Result<AxumRequestCapture, Box<dyn std::error::Error>> {
         schema: "reproit.failure.v1".to_owned(),
         stable_code: None,
         type_name: "OrderTotalOverflow".to_owned(),
-    });
-    Ok(AxumRequestCapture::new(
-        Arc::new(factory),
-        "orders.checkout",
-        Arc::new(ExactResponseFailureClassifier::new(
-            500,
-            OVERFLOW.as_bytes().to_vec(),
-            failure,
-        )),
-    )?)
+    })
+}
+
+async fn replay(trigger: Vec<u8>) -> Result<(Vec<u8>, i32), Box<dyn std::error::Error>> {
+    if trigger.is_empty() || trigger.len() > 1_024 {
+        return Err("Use a nonempty order with at most 1024 bytes.".into());
+    }
+    let response = application()
+        .oneshot(
+            Request::post("/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(trigger))?,
+        )
+        .await?;
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 1_024).await?;
+    if status == StatusCode::INTERNAL_SERVER_ERROR && body == OVERFLOW {
+        return Ok((canonical::canonical_bytes(&failure_identity())?, 23));
+    }
+    if !status.is_success() {
+        return Err("The captured order did not produce a valid response.".into());
+    }
+    Ok((br#"{"result":"PASS"}"#.to_vec(), 0))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if env::var("REPROIT_TRIGGER").as_deref() == Ok("stdin") {
+        let mut trigger = Vec::new();
+        std::io::stdin().take(1_025).read_to_end(&mut trigger)?;
+        let (output, exit_code) = replay(trigger).await?;
+        std::io::stdout().write_all(&output)?;
+        std::process::exit(exit_code);
+    }
     let application = application().route_layer(middleware::from_fn_with_state(
         capture()?,
         capture_axum_request,
@@ -121,6 +159,25 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[tokio::test]
+    async fn replay_uses_the_checkout_route_and_rejects_invalid_input() {
+        let mut trigger = br#"{"quantity":3,"unit_price_cents":30000}"#.to_vec();
+        trigger.resize(1_024, b' ');
+        assert_eq!(
+            replay(trigger.clone()).await.expect("valid order"),
+            (br#"{"result":"PASS"}"#.to_vec(), 0),
+        );
+        trigger.push(b' ');
+        for invalid in [
+            Vec::new(),
+            trigger,
+            b"{}".to_vec(),
+            br#"{"quantity":0,"unit_price_cents":100}"#.to_vec(),
+        ] {
+            assert!(replay(invalid).await.is_err());
+        }
+    }
 
     #[tokio::test]
     async fn checkout_preserves_large_totals_and_rejects_invalid_orders() {
