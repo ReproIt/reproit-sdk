@@ -247,8 +247,12 @@ impl Runtime {
             libc::close(gate_pipe[0]);
             libc::close(ready_pipe[1]);
         }
+        // Kernels without Yama reject this optional restriction with EINVAL.
+        // The child must still attach to every thread before it reports ready.
         // Safety: Authorization is restricted to the exact tracer child.
-        let authorized = unsafe { libc::prctl(libc::PR_SET_PTRACER, child_pid, 0, 0, 0) } == 0;
+        let authorization = unsafe { libc::prctl(libc::PR_SET_PTRACER, child_pid, 0, 0, 0) };
+        let authorized = authorization == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL);
         let gate = u8::from(authorized);
         // Safety: The descriptor and one-byte source are valid.
         let gate_written = unsafe { libc::write(gate_pipe[1], (&raw const gate).cast(), 1) } == 1;
