@@ -100,10 +100,13 @@ impl ManagedTlsEndpoint {
         if accepted == 0 || rejected != 0 {
             return Err(endpoint_invalid());
         }
-        let client =
-            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+        let client = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|_| endpoint_invalid())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
         let server_name =
             rustls::pki_types::ServerName::try_from(server_name).map_err(|_| endpoint_invalid())?;
         Ok(Self {
@@ -117,11 +120,14 @@ impl ManagedTlsEndpoint {
 
     fn official(origin: &str) -> Result<Self, Error> {
         let authority = official_authority(origin)?;
-        let client =
-            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-                .with_platform_verifier()
-                .map_err(|_| service_unavailable())?
-                .with_no_client_auth();
+        let client = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|_| endpoint_invalid())?
+        .with_platform_verifier()
+        .map_err(|_| service_unavailable())?
+        .with_no_client_auth();
         let server_name = rustls::pki_types::ServerName::try_from(authority.to_owned())
             .map_err(|_| endpoint_invalid())?;
         Ok(Self {
@@ -683,6 +689,11 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::*;
+
+    #[test]
+    fn managed_tls_accepts_applications_with_both_crypto_providers() {
+        assert!(ManagedTlsEndpoint::official("https://ingest.reproit.com").is_ok());
+    }
 
     #[test]
     fn literal_addresses_do_not_require_dns_or_a_runtime() {
